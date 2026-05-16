@@ -1,31 +1,43 @@
 import { NextRequest, NextResponse } from "next/server";
-import { v4 as uuidv4 } from "uuid";
-import { saveCase } from "@/lib/store";
-import { Case, CreateCaseRequest } from "@/lib/types";
+import { createSessionClient, createAdminClient } from "@/lib/supabase/server";
+import { CreateCaseRequest } from "@/lib/types";
 
 export async function POST(req: NextRequest) {
-  const body: CreateCaseRequest = await req.json();
+  const supabase = await createSessionClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "ログインが必要です" }, { status: 401 });
 
-  if (!body.topic?.trim() || !body.plaintiffName?.trim()) {
-    return NextResponse.json({ error: "議題と原告名は必須です" }, { status: 400 });
+  const body: CreateCaseRequest = await req.json();
+  if (!body.topic?.trim()) {
+    return NextResponse.json({ error: "議題は必須です" }, { status: 400 });
   }
 
-  const now = new Date().toISOString();
-  const newCase: Case = {
-    id: uuidv4(),
-    topic: body.topic.trim(),
-    plaintiff: { name: body.plaintiffName.trim(), joinedAt: now },
+  const admin = createAdminClient();
+
+  // 原告の表示名を取得
+  const { data: profile } = await admin
+    .from("profiles")
+    .select("display_name")
+    .eq("id", user.id)
+    .single();
+
+  const { data, error } = await admin
+    .from("cases")
+    .insert({
+      topic: body.topic.trim(),
+      plaintiff_id: user.id,
+      max_rounds: body.maxRounds ?? 3,
+    })
+    .select()
+    .single();
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  return NextResponse.json({
+    ...data,
+    plaintiff: { name: profile?.display_name ?? "提案者", joinedAt: data.created_at },
     defendant: null,
     arguments: [],
-    phase: "waiting",
-    currentTurn: "plaintiff",
-    round: 1,
-    maxRounds: body.maxRounds ?? 3,
     verdict: null,
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  saveCase(newCase);
-  return NextResponse.json(newCase, { status: 201 });
+  }, { status: 201 });
 }

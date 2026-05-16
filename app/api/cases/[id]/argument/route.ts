@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { v4 as uuidv4 } from "uuid";
-import { getCase, saveCase } from "@/lib/store";
+import { createAdminClient } from "@/lib/supabase/server";
 import { AddArgumentRequest } from "@/lib/types";
 
 export async function POST(
@@ -8,50 +7,77 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const c = getCase(id);
+  const admin = createAdminClient();
+
+  const { data: c } = await admin.from("cases").select("*").eq("id", id).single();
   if (!c) return NextResponse.json({ error: "ケースが見つかりません" }, { status: 404 });
-  if (c.phase === "waiting" || c.phase === "judging" || c.phase === "verdict") {
+  if (["waiting", "judging", "verdict"].includes(c.phase)) {
     return NextResponse.json({ error: "現在は発言できないフェーズです" }, { status: 409 });
   }
 
   const body: AddArgumentRequest = await req.json();
-  if (body.role !== c.currentTurn) {
+  if (body.role !== c.current_turn) {
     return NextResponse.json({ error: "あなたのターンではありません" }, { status: 409 });
   }
   if (!body.content?.trim()) {
     return NextResponse.json({ error: "発言内容は必須です" }, { status: 400 });
   }
 
-  const now = new Date().toISOString();
-  c.arguments.push({
-    id: uuidv4(),
+  await admin.from("arguments").insert({
+    case_id: id,
     role: body.role,
     phase: c.phase,
     round: c.round,
     content: body.content.trim(),
-    timestamp: now,
   });
 
   // ターン交代・フェーズ進行
-  if (c.currentTurn === "plaintiff") {
-    c.currentTurn = "defendant";
+  let nextTurn = c.current_turn;
+  let nextPhase = c.phase;
+  let nextRound = c.round;
+
+  if (c.current_turn === "plaintiff") {
+    nextTurn = "defendant";
   } else {
-    // 被告が発言したので1ラウンド完了
-    c.currentTurn = "plaintiff";
-    c.round += 1;
+    nextTurn = "plaintiff";
+    nextRound += 1;
 
     if (c.phase === "opening") {
-      c.phase = "argument";
-      c.round = 1;
-    } else if (c.phase === "argument" && c.round > c.maxRounds) {
-      c.phase = "closing";
-      c.round = 1;
+      nextPhase = "argument";
+      nextRound = 1;
+    } else if (c.phase === "argument" && nextRound > c.max_rounds) {
+      nextPhase = "closing";
+      nextRound = 1;
     } else if (c.phase === "closing") {
-      c.phase = "judging";
+      nextPhase = "judging";
     }
   }
 
-  c.updatedAt = now;
-  saveCase(c);
-  return NextResponse.json(c);
+  await admin.from("cases").update({
+    current_turn: nextTurn,
+    phase: nextPhase,
+    round: nextRound,
+    updated_at: new Date().toISOString(),
+  }).eq("id", id);
+
+  // 更新後のデータを返す
+  const { data: updatedCase } = await admin.from("cases").select("*").eq("id", id).single();
+  const { data: args } = await admin.from("arguments").select("*").eq("case_id", id).order("created_at");
+  const { data: plaintiff } = await admin.from("profiles").select("display_name").eq("id", c.plaintiff_id).single();
+
+  let defendant = null;
+  if (updatedCase?.defendant_id) {
+    const { data: d } = await admin.from("profiles").select("display_name").eq("id", updatedCase.defendant_id).single();
+    defendant = { name: d?.display_name ?? "反対者", joinedAt: updatedCase.updated_at };
+  } else if (updatedCase?.defendant_guest_name) {
+    defendant = { name: updatedCase.defendant_guest_name, joinedAt: updatedCase.updated_at };
+  }
+
+  return NextResponse.json({
+    ...updatedCase,
+    plaintiff: { name: plaintiff?.display_name ?? "提案者", joinedAt: updatedCase?.created_at },
+    defendant,
+    arguments: args ?? [],
+    verdict: null,
+  });
 }

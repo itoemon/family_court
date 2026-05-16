@@ -1,9 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { Case, Verdict } from "./types";
 
-const client = new Anthropic();
-
-export async function requestVerdict(c: Case): Promise<Verdict> {
+export async function requestVerdict(c: Case, apiKey: string): Promise<Verdict> {
+  const client = new Anthropic({ apiKey });
   const transcript = c.arguments
     .map((arg) => {
       const roleName = arg.role === "plaintiff" ? `原告（${c.plaintiff?.name}）` : `被告（${c.defendant?.name}）`;
