@@ -1,0 +1,26 @@
+:root {
+  --color-primary: #4a90d9;
+  --color-danger: #e74c3c;
+  --color-border: #e0e0e0;
+  --color-text: #333;
+  --color-text-muted: #999;
+  --color-surface-hover: #f7f7f7;
+  --color-title: #b83f45;
+  --font-base: "Helvetica Neue", Arial, sans-serif;
+}
+
+.container {
+  min-height: 100vh;
+  background: #f5f5f5;
+  font-family: var(--font-base);
+  color: var(--color-text);
+}
+
+.card {
+  max-width: 550px;
+  margin: 0 auto;
+  background: #fff;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  padding: 1.25rem 1.5rem 0.5rem;
+}
