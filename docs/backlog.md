@@ -8,19 +8,15 @@
 
 ## 未対応
 
-### [MEDIUM] logout() で signOut() のエラーが握り潰される
-- **ファイル**: `app/actions/auth.ts:8`
-- **内容**: `signOut()` の戻り値を検査していないため、失敗時もリダイレクトされサーバー側セッションが残存しうる
-- **修正案**: `const { error } = await supabase.auth.signOut()` で受け取り、エラー時にスローする
-- **由来**: audit_20260519_162635.md / MEDIUM-001
+### [MEDIUM] ログアウト失敗時にユーザーへの通知がない
 
-### [MEDIUM] Header の非同期処理に Suspense 境界がない
-- **ファイル**: `app/layout.tsx:32`
-- **内容**: `<Header />` が Suspense でラップされておらず、Supabase 通信の遅延時に全ページレンダリングがブロックされる
-- **修正案**: `<Suspense fallback={<div className="h-12 bg-stone-50 border-b border-stone-200" />}>` でラップ
-- **由来**: audit_20260519_162635.md / MEDIUM-002
+- **ファイル**: `app/actions/auth.ts`
+- **内容**: `signOut()` が失敗してもユーザーは気づかずリダイレクトされる。サーバーセッションが残存しうる
+- **修正案**: `useActionState` でエラーをクライアントに返す。ただしログアウトボタンを Client Component 化する必要があり、現設計（Server Action + `<form>`）との兼ね合いで要設計判断
+- **由来**: PR #2 コパ指摘
 
 ### [LOW] layout.tsx の `<main>` が子ページと二重になりうる
+
 - **ファイル**: `app/layout.tsx:33`
 - **内容**: layout が `<main>` でラップしているため、子ページが `<main>` を持つと HTML 仕様違反になる
 - **修正案**: layout のラッパーを `<div>` に変更するか、子ページは `<main>` を使わないと規約化する
@@ -30,4 +26,14 @@
 
 ## 対応済み
 
-_（対応完了したものはここに移動し、どのコミットで直したかを記録する）_
+### [MEDIUM] logout() で signOut() のエラーが握り潰される
+
+- **ファイル**: `app/actions/auth.ts`
+- **対応PR**: #2
+- **由来**: audit_20260519_162635.md / MEDIUM-001
+
+### [MEDIUM] Header の非同期処理に Suspense 境界がない
+
+- **ファイル**: `app/layout.tsx`
+- **対応PR**: #2
+- **由来**: audit_20260519_162635.md / MEDIUM-002
