@@ -36,7 +36,7 @@ run_architect() {
 
   claude -p "$(cat <<PROMPT
 あなたはソフトウェアアーキテクトです（エージェント名: アーキ）。
-以下の要件書と既存 ADR を読み、設計書を作成してください。
+以下の要件書と既存 ADR を読み、設計書を作成して $out_file に保存してください。
 
 # ディレクトリ権限
 参照可能:
@@ -56,8 +56,8 @@ $req_content
 $adr_content
 
 # 出力形式
-以下の構成で Markdown を出力してください。
-コードブロックや前置き・後書きは不要。設計書の本文だけを出力してください。
+以下の構成で $out_file に Markdown を書き込んでください。
+前置き・後書きは不要。設計書の本文だけを書いてください。
 
 ---
 # 設計書
@@ -73,7 +73,7 @@ $adr_content
 ## 注意事項・制約
 ---
 PROMPT
-)" > "$out_file"
+)" --allowedTools "Write,Read"
 
   log "設計書を出力しました: $out_file"
 }
@@ -157,7 +157,7 @@ run_auditor() {
 
   claude -p "$(cat <<PROMPT
 あなたはセキュリティ監査の専門家です（エージェント名: オーディ）。
-以下の実装差分・設計書・要件書を読み、監査レポートを作成してください。
+以下の実装差分・設計書・要件書を読み、監査レポートを $out_file に保存してください。
 
 # ディレクトリ権限
 参照可能:
@@ -183,7 +183,7 @@ $design_content
 $req_content
 
 # 出力形式
-以下の形式で Markdown を出力してください。前置き・後書きは不要。
+以下の形式で $out_file に Markdown を書き込んでください。前置き・後書きは不要。
 
 ---
 # 監査レポート
@@ -205,14 +205,15 @@ $req_content
 # 判定基準
 通過条件: HIGH が 0 件、かつ指摘総数が 5 件以下
 PROMPT
-)" > "$out_file"
+)" --allowedTools "Write,Read,Glob,Grep"
 
   log "監査ログを出力しました: $out_file"
 
   # 通過判定（HIGH の件数と合計指摘数を grep で数える）
+  # grep -c はマッチなしでも "0" を出力して exit 1 するため、|| を subshell の外に出す
   local high_count total_count
-  high_count=$(grep -c '^\### \[HIGH-' "$out_file" 2>/dev/null || echo 0)
-  total_count=$(grep -c '^\### \[' "$out_file" 2>/dev/null || echo 0)
+  high_count=$(grep -c '### \[HIGH-' "$out_file" 2>/dev/null) || high_count=0
+  total_count=$(grep -c '### \[' "$out_file" 2>/dev/null) || total_count=0
 
   log "HIGH: ${high_count}件 / 合計: ${total_count}件"
 
