@@ -15,6 +15,41 @@ require_claude() {
   command -v claude &>/dev/null || die "'claude' CLI が見つかりません。インストールしてください。"
 }
 
+# 監査通過後、MEDIUM/LOW の未修正指摘を docs/backlog.md の「未対応」セクションに追記する
+_append_backlog() {
+  local audit_file="$1"
+  local backlog="$REPO_ROOT/docs/backlog.md"
+  local audit_basename
+  audit_basename="$(basename "$audit_file")"
+
+  [[ -f "$backlog" ]] || return 0  # backlog.md がなければスキップ
+
+  local medium_low_count
+  medium_low_count=$(grep -c '### \[MEDIUM-\|### \[LOW-' "$audit_file" 2>/dev/null) || medium_low_count=0
+  [[ "$medium_low_count" -eq 0 ]] && return 0  # MEDIUM/LOW がなければスキップ
+
+  log "未修正の MEDIUM/LOW 指摘を backlog.md に追記します..."
+
+  # 「未対応」セクションの末尾（--- の直前）に追記
+  local entries
+  entries="$(grep -A6 '### \[MEDIUM-\|### \[LOW-' "$audit_file" | sed "s|$| (由来: $audit_basename)|")"
+
+  # 「## 未対応」と「---」の間に挿入
+  local tmp
+  tmp="$(awk -v block="$entries" '
+    /^---$/ && found {
+      print block
+      print ""
+      found=0
+    }
+    /^## 未対応/ { found=1 }
+    { print }
+  ' "$backlog")"
+  echo "$tmp" > "$backlog"
+
+  log "backlog.md を更新しました（+${medium_low_count}件）"
+}
+
 # ── アーキ ────────────────────────────────────────────────────────────────────
 # 入力: docs/knowledge/requirements/
 # 出力: docs/knowledge/design/design.md
@@ -34,9 +69,12 @@ run_architect() {
   local adr_content
   adr_content="$(cat "$DECISIONS"/*.md 2>/dev/null || echo '（ADR なし）')"
 
+  local backlog_content
+  backlog_content="$(cat "$REPO_ROOT/docs/backlog.md" 2>/dev/null || echo '（バックログなし）')"
+
   claude -p "$(cat <<PROMPT
 あなたはソフトウェアアーキテクトです（エージェント名: アーキ）。
-以下の要件書と既存 ADR を読み、設計書を作成して $out_file に保存してください。
+以下の要件書・既存 ADR・バックログを読み、設計書を作成して $out_file に保存してください。
 
 # ディレクトリ権限
 参照可能:
@@ -54,6 +92,9 @@ $req_content
 
 # 既存 ADR（技術的制約として参照）
 $adr_content
+
+# バックログ（過去の監査で未修正の指摘。今回の設計に関連するものは反映してください）
+$backlog_content
 
 # 出力形式
 以下の構成で $out_file に Markdown を書き込んでください。
@@ -219,6 +260,7 @@ PROMPT
 
   if [[ "$high_count" -eq 0 && "$total_count" -le 5 ]]; then
     log "監査通過"
+    _append_backlog "$out_file"
     return 0
   else
     log "監査不通過（ループ継続）"
