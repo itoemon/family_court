@@ -38,6 +38,17 @@ run_architect() {
 あなたはソフトウェアアーキテクトです（エージェント名: アーキ）。
 以下の要件書と既存 ADR を読み、設計書を作成してください。
 
+# ディレクトリ権限
+参照可能:
+  - docs/knowledge/requirements/  （要件書）
+  - docs/decisions/               （ADR）
+書き込み可能:
+  - docs/knowledge/design/        （設計書の出力先）
+触れてはいけない:
+  - app/, lib/, supabase/         （実装コード）
+  - docs/knowledge/audit-log/     （監査ログ）
+  - memory/                       （リードの個人メモ）
+
 # 要件書
 $req_content
 
@@ -90,6 +101,19 @@ run_engineer() {
 あなたはシニアエンジニアです（エージェント名: ビルド）。
 以下の設計書を読み、Next.js 14 App Router + TypeScript + Tailwind CSS + Supabase のコードを実装してください。
 
+# ディレクトリ権限
+参照可能:
+  - docs/knowledge/design/        （設計書）
+書き込み可能（feature ブランチのみ）:
+  - app/                          （ページ・API Routes）
+  - lib/                          （共有ロジック）
+  - supabase/                     （DBスキーマ）
+  - middleware.ts
+触れてはいけない:
+  - docs/                         （ドキュメント類）
+  - memory/                       （リードの個人メモ）
+  - main ブランチへの直接コミット（必ず feature ブランチを使う）
+
 # 設計書
 $design_content
 
@@ -134,6 +158,18 @@ run_auditor() {
   claude -p "$(cat <<PROMPT
 あなたはセキュリティ監査の専門家です（エージェント名: オーディ）。
 以下の実装差分・設計書・要件書を読み、監査レポートを作成してください。
+
+# ディレクトリ権限
+参照可能:
+  - app/, lib/, supabase/         （実装コード・読み取りのみ）
+  - docs/knowledge/design/        （設計書）
+  - docs/knowledge/requirements/  （要件書）
+書き込み可能:
+  - docs/knowledge/audit-log/     （監査ログの出力先）
+触れてはいけない:
+  - app/, lib/, supabase/         （実装コードへの書き込み）
+  - docs/knowledge/design/        （設計書への書き込み）
+  - memory/                       （リードの個人メモ）
 
 # 実装差分
 \`\`\`diff
