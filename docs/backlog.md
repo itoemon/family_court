@@ -8,6 +8,13 @@
 
 ## 未対応
 
+### [MEDIUM] ログアウト失敗時にユーザーへの通知がない
+
+- **ファイル**: `app/actions/auth.ts`
+- **内容**: `signOut()` が失敗してもユーザーは気づかずリダイレクトされる。サーバーセッションが残存しうる
+- **修正案**: `useActionState` でエラーをクライアントに返す。ただしログアウトボタンを Client Component 化する必要があり、現設計（Server Action + `<form>`）との兼ね合いで要設計判断
+- **由来**: PR #2 コパ指摘
+
 ### [LOW] layout.tsx の `<main>` が子ページと二重になりうる
 
 - **ファイル**: `app/layout.tsx:33`
@@ -22,11 +29,11 @@
 ### [MEDIUM] logout() で signOut() のエラーが握り潰される
 
 - **ファイル**: `app/actions/auth.ts`
-- **対応コミット**: feature/fix-medium-audit-issues
+- **対応PR**: #2
 - **由来**: audit_20260519_162635.md / MEDIUM-001
 
 ### [MEDIUM] Header の非同期処理に Suspense 境界がない
 
 - **ファイル**: `app/layout.tsx`
-- **対応コミット**: feature/fix-medium-audit-issues
+- **対応PR**: #2
 - **由来**: audit_20260519_162635.md / MEDIUM-002
