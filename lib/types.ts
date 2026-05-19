@@ -58,6 +58,5 @@ export interface JoinCaseRequest {
 }
 
 export interface AddArgumentRequest {
-  role: Role;
   content: string;
 }

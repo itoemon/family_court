@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient, createSessionClient } from "@/lib/supabase/server";
+import { generateGuestToken } from "@/lib/guest-token";
 import { JoinCaseRequest } from "@/lib/types";
 
 async function buildCaseResponse(admin: ReturnType<typeof createAdminClient>, caseId: string) {
@@ -87,5 +88,13 @@ export async function PATCH(
     return NextResponse.json({ error: "名前は必須です" }, { status: 400 });
   }
   await admin.from("cases").update({ defendant_guest_name: body.defendantName.trim(), phase: "opening" }).eq("id", id);
-  return NextResponse.json(await buildCaseResponse(admin, id));
+  const guestResponse = NextResponse.json(await buildCaseResponse(admin, id));
+  guestResponse.cookies.set(`guest_defendant_${id}`, generateGuestToken(id), {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    path: `/api/cases/${id}`,
+    maxAge: 60 * 60 * 24 * 7,
+  });
+  return guestResponse;
 }

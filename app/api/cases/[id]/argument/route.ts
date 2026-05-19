@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createAdminClient } from "@/lib/supabase/server";
-import { AddArgumentRequest } from "@/lib/types";
+import { createAdminClient, createSessionClient } from "@/lib/supabase/server";
+import { verifyGuestToken } from "@/lib/guest-token";
+import { AddArgumentRequest, Role } from "@/lib/types";
 
 export async function POST(
   req: NextRequest,
@@ -15,8 +16,33 @@ export async function POST(
     return NextResponse.json({ error: "現在は発言できないフェーズです" }, { status: 409 });
   }
 
+  // 呼び出し者の身元確認とロール導出
+  let callerRole: Role | null = null;
+
+  const supabase = await createSessionClient();
+  const { data: { user } } = await supabase.auth.getUser();
+
+  if (user) {
+    if (user.id === c.plaintiff_id) {
+      callerRole = "plaintiff";
+    } else if (c.defendant_id && user.id === c.defendant_id) {
+      callerRole = "defendant";
+    }
+  }
+
+  if (!callerRole && c.defendant_guest_name) {
+    const cookieToken = req.cookies.get(`guest_defendant_${id}`)?.value;
+    if (cookieToken && verifyGuestToken(id, cookieToken)) {
+      callerRole = "defendant";
+    }
+  }
+
+  if (!callerRole) {
+    return NextResponse.json({ error: "このケースへの発言権限がありません" }, { status: 403 });
+  }
+
   const body: AddArgumentRequest = await req.json();
-  if (body.role !== c.current_turn) {
+  if (callerRole !== c.current_turn) {
     return NextResponse.json({ error: "あなたのターンではありません" }, { status: 409 });
   }
   if (!body.content?.trim()) {
@@ -28,7 +54,7 @@ export async function POST(
 
   await admin.from("arguments").insert({
     case_id: id,
-    role: body.role,
+    role: callerRole,
     phase: c.phase,
     round: c.round,
     content: body.content.trim(),

@@ -150,7 +150,7 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
       const res = await fetch(`/api/cases/${caseId}/argument`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: myRole, content: argumentText }),
+        body: JSON.stringify({ content: argumentText }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
