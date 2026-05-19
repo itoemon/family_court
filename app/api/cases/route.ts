@@ -11,6 +11,9 @@ export async function POST(req: NextRequest) {
   if (!body.topic?.trim()) {
     return NextResponse.json({ error: "議題は必須です" }, { status: 400 });
   }
+  if (body.topic.trim().length > 200) {
+    return NextResponse.json({ error: "議題は200文字以内で入力してください" }, { status: 400 });
+  }
 
   const admin = createAdminClient();
 

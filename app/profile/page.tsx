@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import LogoutButton from "@/app/components/LogoutButton";
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -48,7 +49,8 @@ export default function ProfilePage() {
           ...(apiKey ? { apiKey } : {}),
         }),
       });
-      if (!res.ok) throw new Error();
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "保存に失敗しました");
       setHasApiKey(true);
       setApiKey("");
       setMessage("保存しました");
@@ -57,12 +59,6 @@ export default function ProfilePage() {
     } finally {
       setSaving(false);
     }
-  }
-
-  async function handleLogout() {
-    await supabase.auth.signOut();
-    router.push("/auth/login");
-    router.refresh();
   }
 
   if (loading) {
@@ -111,6 +107,7 @@ export default function ProfilePage() {
               />
               <p className="text-xs text-stone-400 mt-1.5">
                 話し合いのAI裁判官に使用されます。キーはサーバーで暗号化して保存します。
+                登録時はキーの有効性確認のため、軽微なテストリクエストを送信します。
               </p>
             </div>
 
@@ -130,12 +127,7 @@ export default function ProfilePage() {
           </form>
 
           <div className="pt-2 border-t border-stone-100">
-            <button
-              onClick={handleLogout}
-              className="w-full text-stone-400 hover:text-stone-600 text-sm py-2 transition-colors"
-            >
-              ログアウト
-            </button>
+            <LogoutButton className="w-full text-stone-400 hover:text-stone-600 text-sm py-2 transition-colors" />
           </div>
         </div>
 

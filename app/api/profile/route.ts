@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createSessionClient, createAdminClient } from "@/lib/supabase/server";
 import { encryptApiKey } from "@/lib/crypto";
+import { validateApiKey } from "@/lib/claude";
 
 export async function PATCH(req: NextRequest) {
   const supabase = await createSessionClient();
@@ -15,6 +16,13 @@ export async function PATCH(req: NextRequest) {
   };
 
   if (apiKey) {
+    const isValid = await validateApiKey(apiKey);
+    if (!isValid) {
+      return NextResponse.json(
+        { error: "APIキーが無効です。Anthropic コンソールで確認してください。" },
+        { status: 400 }
+      );
+    }
     updates.api_key_encrypted = encryptApiKey(apiKey);
   }
 

@@ -22,6 +22,9 @@ export async function POST(
   if (!body.content?.trim()) {
     return NextResponse.json({ error: "発言内容は必須です" }, { status: 400 });
   }
+  if (body.content.trim().length > 500) {
+    return NextResponse.json({ error: "発言は500文字以内で入力してください" }, { status: 400 });
+  }
 
   await admin.from("arguments").insert({
     case_id: id,
@@ -75,6 +78,7 @@ export async function POST(
 
   return NextResponse.json({
     ...updatedCase,
+    defendantId: updatedCase?.defendant_id ?? null,
     plaintiff: { name: plaintiff?.display_name ?? "提案者", joinedAt: updatedCase?.created_at },
     defendant,
     arguments: args ?? [],

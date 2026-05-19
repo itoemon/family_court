@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { createSessionClient } from '@/lib/supabase/server'
-import { logout } from '@/app/actions/auth'
+import LogoutButton from '@/app/components/LogoutButton'
 
 export default async function Header() {
   const supabase = await createSessionClient()
@@ -17,11 +17,7 @@ export default async function Header() {
             <Link href="/profile" className="text-stone-600 hover:text-stone-900 transition-colors">
               プロフィール
             </Link>
-            <form action={logout}>
-              <button type="submit" className="text-stone-500 hover:text-stone-700 text-sm">
-                ログアウト
-              </button>
-            </form>
+            <LogoutButton className="text-stone-500 hover:text-stone-700 text-sm" />
           </nav>
         ) : (
           <nav className="flex items-center gap-4">

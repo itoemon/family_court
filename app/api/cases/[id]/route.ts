@@ -34,6 +34,7 @@ async function buildCaseResponse(admin: ReturnType<typeof createAdminClient>, ca
 
   return {
     ...c,
+    defendantId: c.defendant_id ?? null,
     plaintiff: { name: plaintiff?.display_name ?? "提案者", joinedAt: c.created_at },
     defendant,
     arguments: args ?? [],

@@ -25,6 +25,7 @@ export interface Player {
 export interface Case {
   id: string;
   topic: string;
+  defendantId: string | null;
   plaintiff: Player | null;
   defendant: Player | null;
   arguments: Argument[];

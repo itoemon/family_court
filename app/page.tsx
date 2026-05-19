@@ -92,8 +92,10 @@ export default function Home() {
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
               placeholder="例：今晩の夕食はラーメンかカレーか"
+              maxLength={200}
               className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-rose-300 focus:border-transparent transition text-sm"
             />
+            <p className="text-right text-xs text-stone-400 mt-0.5">{topic.length}/200</p>
           </div>
 
           <div>

@@ -44,8 +44,26 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
   const roleParam = searchParams.get("role") as Role | null;
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (roleParam === "plaintiff") setMyRole("plaintiff");
   }, [roleParam]);
+
+  useEffect(() => {
+    if (!caseId || roleParam === "plaintiff") return;
+    async function restoreRole() {
+      const res = await fetch(`/api/cases/${caseId}`);
+      if (!res.ok) return;
+      const data: Case = await res.json();
+      if (data.defendantId) {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user?.id === data.defendantId) {
+          setMyRole("defendant");
+          setCaseData(data);
+        }
+      }
+    }
+    restoreRole();
+  }, [caseId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fetchCase = useCallback(async () => {
     if (!caseId) return;
@@ -60,6 +78,7 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
 
   useEffect(() => {
     if (!caseId) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchCase();
     const interval = setInterval(fetchCase, 2000);
     return () => clearInterval(interval);
@@ -67,6 +86,7 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
 
   useEffect(() => {
     if (caseData?.phase === "judging" && !requestingVerdict) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setRequestingVerdict(true);
       fetch(`/api/cases/${caseId}/verdict`, { method: "POST" })
         .then(() => fetchCase())
@@ -341,8 +361,10 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
               placeholder="気持ちや考えを伝えましょう..."
               rows={3}
               required
+              maxLength={500}
               className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-rose-300 focus:border-transparent transition resize-none text-sm"
             />
+            <p className="text-right text-xs text-stone-400 mt-0.5">{argumentText.length}/500</p>
             {error && <p className="text-rose-500 text-xs">{error}</p>}
             <button
               type="submit"
