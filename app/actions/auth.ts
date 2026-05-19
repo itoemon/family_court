@@ -5,6 +5,9 @@ import { redirect } from 'next/navigation'
 
 export async function logout() {
   const supabase = await createSessionClient()
-  await supabase.auth.signOut()
+  const { error } = await supabase.auth.signOut()
+  if (error) {
+    console.error('ログアウト失敗:', error.message)
+  }
   redirect('/')
 }
