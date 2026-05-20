@@ -1,56 +1,33 @@
-# docs/knowledge/ — エージェント作業領域
+# docs/knowledge/ — パイプライン作業領域
 
-パイプラインを構成する各エージェントが読み書きするディレクトリです。
+パイプラインを構成するエージェントが読み書きするディレクトリです。
 
 ---
 
-## 作業領域マップ
+## ディレクトリ構造
 
 ```
 docs/knowledge/
-├── requirements/   ← リードが書く。アーキが読む。
-├── design/         ← アーキが書く。ビルド・オーディが読む。
-└── audit-log/      ← オーディが書く。リードが読む。
+├── requirements.md   ← リードが書く（永続）
+├── environment.md    ← リードが書く（永続）
+├── design.md         ← アーキが書く（永続・上書き）
+├── task.md           ← リード/ダイチが書く（使い捨て・毎パイプライン更新）
+├── handoff/
+│   ├── arch-to-eng.md   ← アーキ→ビルド 引き継ぎ（使い捨て）
+│   ├── eng-to-aud.md    ← ビルド→テスタ・オーディ 引き継ぎ（使い捨て）
+│   └── test-to-aud.md   ← テスタ→オーディ 引き継ぎ（使い捨て）
+├── test-log/         ← テスタが書く（蓄積）
+└── audit-log/        ← オーディが書く（蓄積）
 ```
-
----
-
-## 各ディレクトリの詳細
-
-### `requirements/` — 要件書置き場
-
-| 項目 | 内容 |
-|------|------|
-| **書く人** | リード（ダイチとの対話を経て作成） |
-| **読む人** | アーキ、オーディ |
-| **主なファイル** | `requirements.md`（機能・非機能要件）、`review-criteria.md`（監査観点） |
-| **更新タイミング** | 新機能開発の開始時 |
-
-### `design/` — 設計書置き場
-
-| 項目 | 内容 |
-|------|------|
-| **書く人** | アーキ |
-| **読む人** | ビルド、オーディ |
-| **主なファイル** | `design.md` |
-| **更新タイミング** | アーキ起動のたびに上書き |
-
-### `audit-log/` — 監査ログ置き場
-
-| 項目 | 内容 |
-|------|------|
-| **書く人** | オーディ |
-| **読む人** | リード、パイプラインスクリプト |
-| **主なファイル** | `audit_YYYYMMDD_HHMMSS.md`（タイムスタンプ付き） |
-| **更新タイミング** | オーディ起動のたびに追記（上書きしない） |
 
 ---
 
 ## エージェントの権限サマリー
 
-| エージェント | 読んでよい場所 | 書いてよい場所 | 触れてはいけない場所 |
-|---|---|---|---|
-| **アーキ** | `requirements/`, `docs/decisions/` | `design/` | `app/`, `lib/`, `supabase/`, `audit-log/` |
-| **ビルド** | `design/` | `app/`, `lib/`, `supabase/`（feature ブランチのみ） | `docs/`, `memory/`, `main` ブランチ直接 |
-| **オーディ** | `design/`, `requirements/`, 実装コード（読み取りのみ） | `audit-log/` | それ以外への書き込み全般 |
-| **リード** | すべて | `docs/`, `memory/`, `requirements/` | 実装コード（原則として書かない） |
+| エージェント | 読む | 書く |
+|---|---|---|
+| アーキ | requirements.md, environment.md, task.md, decisions/ | design.md, handoff/arch-to-eng.md |
+| ビルド | design.md, environment.md, task.md, handoff/arch-to-eng.md | app/, lib/, supabase/, handoff/eng-to-aud.md |
+| テスタ | design.md, requirements.md, task.md, handoff/eng-to-aud.md | test-log/, handoff/test-to-aud.md |
+| オーディ | design.md, requirements.md, environment.md, task.md, handoff/eng-to-aud.md, handoff/test-to-aud.md | audit-log/ |
+| リード | すべて | requirements.md, environment.md, task.md |
