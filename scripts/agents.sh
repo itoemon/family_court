@@ -12,7 +12,8 @@ log() { echo "[agents.sh] $*"; }
 die() { echo "[agents.sh] ERROR: $*" >&2; exit 1; }
 
 require_claude() {
-  command -v claude &>/dev/null || die "'claude' CLI が見つかりません。インストールしてください。"
+  command -v claude   &>/dev/null || die "'claude' CLI が見つかりません。インストールしてください。"
+  command -v envsubst &>/dev/null || die "'envsubst' が見つかりません。macOS: brew install gettext && brew link gettext --force"
 }
 
 # プロンプトファイルを読み込み、環境変数を展開して返す

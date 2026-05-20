@@ -15,6 +15,7 @@ export default function ProfilePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [isError, setIsError] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -40,6 +41,7 @@ export default function ProfilePage() {
     e.preventDefault();
     setSaving(true);
     setMessage("");
+    setIsError(false);
     try {
       const res = await fetch("/api/profile", {
         method: "PATCH",
@@ -55,8 +57,8 @@ export default function ProfilePage() {
       setApiKey("");
       setMessage("保存しました");
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "保存中にエラーが発生しました";
-      setMessage(message);
+      setIsError(true);
+      setMessage(err instanceof Error ? err.message : "保存中にエラーが発生しました");
     } finally {
       setSaving(false);
     }
@@ -113,7 +115,7 @@ export default function ProfilePage() {
             </div>
 
             {message && (
-              <p className={`text-sm rounded-xl px-4 py-2 ${message.includes("失敗") ? "text-rose-500 bg-rose-50 border border-rose-100" : "text-emerald-600 bg-emerald-50 border border-emerald-100"}`}>
+              <p className={`text-sm rounded-xl px-4 py-2 ${isError ? "text-rose-500 bg-rose-50 border border-rose-100" : "text-emerald-600 bg-emerald-50 border border-emerald-100"}`}>
                 {message}
               </p>
             )}

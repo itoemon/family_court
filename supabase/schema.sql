@@ -118,7 +118,18 @@ create policy "誰でも判決を参照可"
   using (true);
 
 -- PostgREST ロールへの明示的な権限付与（Supabase SQL Editor 経由では自動付与されないため必須）
-grant all on public.profiles  to anon, authenticated, service_role;
-grant all on public.cases     to anon, authenticated, service_role;
-grant all on public.arguments to anon, authenticated, service_role;
-grant all on public.verdicts  to anon, authenticated, service_role;
+-- anon: 閲覧のみ（RLS でさらに絞る）
+grant select on public.profiles  to anon;
+grant select on public.cases     to anon;
+grant select on public.arguments to anon;
+grant select on public.verdicts  to anon;
+-- authenticated: プロフィール更新のみ追加（他テーブルへの書き込みは API Route 経由で service_role が担う）
+grant select, update on public.profiles  to authenticated;
+grant select         on public.cases     to authenticated;
+grant select         on public.arguments to authenticated;
+grant select         on public.verdicts  to authenticated;
+-- service_role: API Routes（createAdminClient）から使用するため全権
+grant all on public.profiles  to service_role;
+grant all on public.cases     to service_role;
+grant all on public.arguments to service_role;
+grant all on public.verdicts  to service_role;

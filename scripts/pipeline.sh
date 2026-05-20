@@ -43,7 +43,8 @@ while [[ $test_loop -lt $MAX_TEST_LOOPS ]]; do
 
   if [[ $test_loop -lt $MAX_TEST_LOOPS ]]; then
     log "テスト不合格 → ビルドに差し戻します..."
-    bash "$SCRIPTS/agents.sh" engineer
+    FEATURE_BRANCH="$(bash "$SCRIPTS/agents.sh" engineer | tail -1)"
+    log "再実装ブランチ: $FEATURE_BRANCH"
   fi
 done
 
