@@ -2,8 +2,8 @@
 
 > **注意**: このメモは task.md を補足するものです。task.md と矛盾する場合は task.md を優先してください。
 
-**タスク**: HIGH-001 発言エンドポイント認可バイパスの修正  
-**コミット**: a83e17b  
+**タスク**: PR #3 コパ指摘 4 件の修正
+**コミット**: 1e081ce
 **日時**: 2026-05-20
 
 ---
@@ -12,41 +12,67 @@
 
 ### 設計書通りに実装した点
 
-- `lib/guest-token.ts` を新設。`generateGuestToken` / `verifyGuestToken` の 2 関数のみ。
-- `verifyGuestToken` 内で `timingSafeEqual` 使用前に Buffer 長の一致を確認（`RangeError` 対策）。
-- `PATCH /api/cases/[id]` のゲスト参加成功パスで `guest_defendant_{caseId}` Cookie を httpOnly・SameSite=Strict・`path: /api/cases/{caseId}` で発行。
-- `POST /api/cases/[id]/argument` のフェーズ検証直後に身元確認ブロックを追加。`callerRole` を DB 照合で導出し、`body.role` は一切参照しない。
-- `AddArgumentRequest` 型から `role` を削除。
-- `app/case/[id]/page.tsx` の argument API 呼び出しから `role` フィールドを削除。
+- `lib/guest-token.ts`: `computeToken` の先頭に `GUEST_TOKEN_SECRET` 未設定ガードを追加。`!` アサーション除去。
+- `app/api/cases/[id]/route.ts`: GET ハンドラに `callerRole` 算出ロジックを追加しレスポンスに付与。`createSessionClient().auth.getUser()` + UUID 照合（認証済み）/ Cookie + `verifyGuestToken`（ゲスト）の順で判定。
+- `app/api/profile/route.ts`: PATCH 成功後、`update().select("api_key_encrypted").single()` でサーバー側の現在値を取得し `hasApiKey: boolean` をレスポンスに含める。
+- `app/case/[id]/page.tsx`: `restoreRole` の Supabase UUID 比較を削除し、`data.callerRole` から `setMyRole` するように変更。
+- `app/profile/page.tsx`: `setHasApiKey(data.hasApiKey)` に変更。catch で `err.message` を `setMessage` に反映。
 
 ### 設計書から逸脱した点
 
-なし。設計書・アーキ引き継ぎメモと完全に一致する実装を行った。
+**1. PATCH ハンドラの `generateGuestToken` に try-catch を追加（設計書に明記なし）**
+
+設計書 Fix 3 セクションに「各 API Route の catch ブロックで捕捉し 500 を返す」と記載があり、`generateGuestToken` を呼ぶ PATCH ハンドラもその対象と判断して追加した。変更は最小限（`generateGuestToken` 呼び出し箇所をラップするのみ）。
+
+**2. `callerRole === "plaintiff"` もクライアントで `setMyRole` する**
+
+元の `restoreRole` は defendant 復元専用だったが、新実装では plaintiff も復元される。URL パラメータ `?role=plaintiff` なしで原告がアクセスした場合も `myRole` が設定される。セキュリティ上の問題はない（判定はサーバー側で完結）。
+
+**3. `lib/types.ts` の `Case` に `callerRole?` を追加**
+
+設計書の「データモデル変更なし」は DB スキーマの意味と判断。API レスポンスの型定義に追加しないと TypeScript コンパイルエラーになるため追加した。optional（`?`）にしているのは PATCH レスポンスが `callerRole` を含まないため。
 
 ---
 
 ## オーディへの注意点
 
-1. **`GUEST_TOKEN_SECRET` 環境変数の未設定リスク**  
-   `lib/guest-token.ts` は `process.env.GUEST_TOKEN_SECRET!` を非 null アサーションで参照する。環境変数が未設定の場合、ゲスト参加・発言時にランタイムエラーになる（ビルドエラーにはならない）。`.env.local` および Vercel への設定がダイチによって完了しているか確認すること。
+### 重点テストケース
 
-2. **既存ゲストセッション（Cookie 未発行）の互換性**  
-   今回の変更以前にゲスト参加したセッションは Cookie を持たないため、発言時に 403 が返る。設計書で「本番デプロイ前の修正のため許容範囲内」と明記されているが、本番環境に既存ゲストセッションが存在する場合の影響を確認すること。
+1. **ゲスト被告のリロード復元**
+   - ゲストとして参加 → ページリロード → 発言フォームが表示されること（`myRole === "defendant"` が復元される）
+   - Cookie `guest_defendant_{id}` が存在しない状態でリロード → `myRole` が null のまま（Observer として扱われる）
 
-3. **Cookie の `path` スコープ**  
-   Cookie の `path` は `/api/cases/{caseId}` に限定されている。`/api/cases/{caseId}/argument` はこのパスに含まれるため正常に動作する。
+2. **`callerRole` の正確性**
+   - 原告（Supabase セッションあり）: `callerRole === "plaintiff"`
+   - 認証済み被告（Supabase セッションあり）: `callerRole === "defendant"`
+   - ゲスト被告（Cookie 有効）: `callerRole === "defendant"`
+   - Cookie なし・無効 / 第三者ユーザー: `callerRole === "observer"`
 
-4. **認証済みユーザーがケースと無関係な場合**  
-   ログイン済みでも当該ケースの `plaintiff_id` / `defendant_id` いずれにも一致しないユーザーは 403 になる（設計通り）。
+3. **`hasApiKey` の正確性**
+   - API キーなしで表示名のみ更新 → 既存キーがあれば `hasApiKey` は `true` のまま
+   - 初めて API キーを登録 → `hasApiKey === true` になること
 
-5. **ゲスト被告が別ブラウザでアクセスした場合**  
-   Cookie は httpOnly のため JS から読めず、別ブラウザ・シークレットモードでは Cookie が送信されないため 403 になる。現状はエラーメッセージ「このケースへの発言権限がありません」のみで、再参加 UI は未実装。フロント対応の必要性は次回以降の判断。
+4. **catch のエラーメッセージ表示**
+   - プロフィール保存失敗時（例：無効 API キー）→ "APIキーが無効です。Anthropic コンソールで確認してください。" が表示されること
+
+5. **`GUEST_TOKEN_SECRET` 未設定ガード**
+   - 環境変数未設定時、`GET /api/cases/[id]` と `PATCH /api/cases/[id]`（ゲスト参加）が 500 + JSON エラーメッセージを返すこと
+   - エラーメッセージに "GUEST_TOKEN_SECRET" という文字列が含まれないこと（情報隠蔽）
+
+### セキュリティ確認ポイント
+
+- GET レスポンスに `plaintiff_id` / `defendant_id` UUID が含まれている（MEDIUM-001 はスコープ外）。今回の修正でクライアントが UUID をロール判定に使わなくなったことで実害は減少しているが、将来のタスクで除去予定。
+- HMAC の決定論的問題（MEDIUM-002）は未修正のまま。
 
 ---
 
 ## 未実装・スコープ外にしたこと
 
-- **MEDIUM・LOW 指摘全般**: task.md の指示に従い HIGH-001 のみを対象とした。
-- **MEDIUM-003（verdicts テーブルへの UNIQUE 制約）**: ビルドの権限外。リードを通じてダイチが対応する。
-- **ゲスト再参加フローの UI**: アーキ引き継ぎで「次のオーディ指摘次第で検討」とされており、本タスクのスコープ外。
-- **`GUEST_TOKEN_SECRET` の実際の値設定**: コード実装のみを担当。値の生成（`openssl rand -hex 32`）と環境変数の設定はリードを通じてダイチが行う。
+| バックログ | 内容 |
+|-----------|------|
+| MEDIUM-001 | GET レスポンスから `plaintiff_id` / `defendant_id` UUID を除外 |
+| MEDIUM-002 | HMAC トークンの決定論的問題（取り消し・個別セッション無効化） |
+| LOW-001 (route.ts) | ゲスト名の最大長バリデーションなし |
+| LOW-001 (claude.ts) | `validateApiKey` のエラー種別区別 |
+| MEDIUM (auth.ts) | ログアウト失敗時のユーザー通知 |
+| LOW (layout.tsx) | `<main>` タグの二重ネスト |
