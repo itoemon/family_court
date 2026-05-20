@@ -51,11 +51,12 @@ export default function ProfilePage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "保存に失敗しました");
-      setHasApiKey(true);
+      setHasApiKey(data.hasApiKey);
       setApiKey("");
       setMessage("保存しました");
-    } catch {
-      setMessage("保存に失敗しました");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "保存中にエラーが発生しました";
+      setMessage(message);
     } finally {
       setSaving(false);
     }

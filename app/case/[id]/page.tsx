@@ -54,13 +54,10 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
       const res = await fetch(`/api/cases/${caseId}`);
       if (!res.ok) return;
       const data: Case = await res.json();
-      if (data.defendantId) {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user?.id === data.defendantId) {
-          setMyRole("defendant");
-          setCaseData(data);
-        }
+      if (data.callerRole === "plaintiff" || data.callerRole === "defendant") {
+        setMyRole(data.callerRole);
       }
+      setCaseData(data);
     }
     restoreRole();
   }, [caseId]); // eslint-disable-line react-hooks/exhaustive-deps

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient, createSessionClient } from "@/lib/supabase/server";
-import { generateGuestToken } from "@/lib/guest-token";
+import { generateGuestToken, verifyGuestToken } from "@/lib/guest-token";
 import { JoinCaseRequest } from "@/lib/types";
 
 async function buildCaseResponse(admin: ReturnType<typeof createAdminClient>, caseId: string) {
@@ -44,14 +44,37 @@ async function buildCaseResponse(admin: ReturnType<typeof createAdminClient>, ca
 }
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
   const admin = createAdminClient();
   const caseData = await buildCaseResponse(admin, id);
   if (!caseData) return NextResponse.json({ error: "ケースが見つかりません" }, { status: 404 });
-  return NextResponse.json(caseData);
+
+  let callerRole: "plaintiff" | "defendant" | "observer" = "observer";
+  try {
+    const supabase = await createSessionClient();
+    const { data: { user } } = await supabase.auth.getUser();
+
+    if (user) {
+      if (user.id === caseData.plaintiff_id) {
+        callerRole = "plaintiff";
+      } else if (caseData.defendant_id && user.id === caseData.defendant_id) {
+        callerRole = "defendant";
+      }
+    } else if (caseData.defendant_guest_name) {
+      const cookieToken = req.cookies.get(`guest_defendant_${id}`)?.value;
+      if (cookieToken && verifyGuestToken(id, cookieToken)) {
+        callerRole = "defendant";
+      }
+    }
+  } catch (err) {
+    console.error("callerRole determination failed:", err);
+    return NextResponse.json({ error: "サーバー設定エラーが発生しました。管理者に連絡してください。" }, { status: 500 });
+  }
+
+  return NextResponse.json({ ...caseData, callerRole });
 }
 
 export async function PATCH(
@@ -88,8 +111,15 @@ export async function PATCH(
     return NextResponse.json({ error: "名前は必須です" }, { status: 400 });
   }
   await admin.from("cases").update({ defendant_guest_name: body.defendantName.trim(), phase: "opening" }).eq("id", id);
+  let token: string;
+  try {
+    token = generateGuestToken(id);
+  } catch (err) {
+    console.error("generateGuestToken failed:", err);
+    return NextResponse.json({ error: "サーバー設定エラーが発生しました。管理者に連絡してください。" }, { status: 500 });
+  }
   const guestResponse = NextResponse.json(await buildCaseResponse(admin, id));
-  guestResponse.cookies.set(`guest_defendant_${id}`, generateGuestToken(id), {
+  guestResponse.cookies.set(`guest_defendant_${id}`, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "strict",
