@@ -1,10 +1,15 @@
 import Link from 'next/link'
 import { createSessionClient } from '@/lib/supabase/server'
-import LogoutButton from '@/app/components/LogoutButton'
+import { logout } from '@/app/actions/auth'
 
 export default async function Header() {
   const supabase = await createSessionClient()
   const { data: { user } } = await supabase.auth.getUser()
+
+  async function handleLogout() {
+    'use server'
+    await logout()
+  }
 
   return (
     <header className="bg-stone-50 border-b border-stone-200">
@@ -17,7 +22,11 @@ export default async function Header() {
             <Link href="/profile" className="text-stone-600 hover:text-stone-900 transition-colors">
               プロフィール
             </Link>
-            <LogoutButton className="text-stone-500 hover:text-stone-700 text-sm" />
+            <form action={handleLogout}>
+              <button type="submit" className="text-stone-500 hover:text-stone-700 text-sm">
+                ログアウト
+              </button>
+            </form>
           </nav>
         ) : (
           <nav className="flex items-center gap-4">

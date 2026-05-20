@@ -18,23 +18,27 @@ export async function POST(
 
   // 呼び出し者の身元確認とロール導出
   let callerRole: Role | null = null;
+  try {
+    const supabase = await createSessionClient();
+    const { data: { user } } = await supabase.auth.getUser();
 
-  const supabase = await createSessionClient();
-  const { data: { user } } = await supabase.auth.getUser();
-
-  if (user) {
-    if (user.id === c.plaintiff_id) {
-      callerRole = "plaintiff";
-    } else if (c.defendant_id && user.id === c.defendant_id) {
-      callerRole = "defendant";
+    if (user) {
+      if (user.id === c.plaintiff_id) {
+        callerRole = "plaintiff";
+      } else if (c.defendant_id && user.id === c.defendant_id) {
+        callerRole = "defendant";
+      }
     }
-  }
 
-  if (!callerRole && c.defendant_guest_name) {
-    const cookieToken = req.cookies.get(`guest_defendant_${id}`)?.value;
-    if (cookieToken && verifyGuestToken(id, cookieToken)) {
-      callerRole = "defendant";
+    if (!callerRole && c.defendant_guest_name) {
+      const cookieToken = req.cookies.get(`guest_defendant_${id}`)?.value;
+      if (cookieToken && verifyGuestToken(id, cookieToken)) {
+        callerRole = "defendant";
+      }
     }
+  } catch (err) {
+    console.error("callerRole determination failed:", err);
+    return NextResponse.json({ error: "サーバー設定エラーが発生しました。管理者に連絡してください。" }, { status: 500 });
   }
 
   if (!callerRole) {
