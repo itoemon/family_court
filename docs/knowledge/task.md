@@ -4,29 +4,31 @@
 
 ## 今回のタスク
 
-コパ（PR #3）の指摘対応。以下 4 件を修正する。
+コパ（PR #4）の指摘対応。以下 3 件を修正する。
 
 ## 修正対象
 
-### 1. ゲスト被告のmyRole復元（CRITICAL）
-ページリロード後に `myRole` が null になり、ゲスト被告が発言フォームを表示できない。
-`GET /api/cases/[id]` のレスポンスにサーバー側で `callerRole` を含めて返し、クライアントがそれを使って `myRole` を復元できるようにすること。
-Cookie の存在と `verifyGuestToken` による検証をサーバー側で行う。
+### 1. argument/route.ts — verifyGuestToken の try-catch 欠落（MEDIUM）
 
-### 2. setHasApiKey の状態不整合
-`app/profile/page.tsx` の保存処理で、APIキーを送信していない場合（表示名のみ更新）でも `setHasApiKey(true)` を呼んでいる。
-APIキーフィールドが入力されている場合のみ `setHasApiKey(true)` を呼ぶか、サーバーレスポンスで登録状態を返して同期すること。
+`app/api/cases/[id]/argument/route.ts` の POST ハンドラで `verifyGuestToken()` を try-catch なしで呼んでいる。
+`GUEST_TOKEN_SECRET` 未設定時などに例外がスローされると非 JSON の 500 が返り、エラー内容が漏れる可能性がある。
+`app/api/cases/[id]/route.ts` の GET/PATCH ハンドラと同様に try-catch で囲み、JSON 500 + 隠蔽メッセージを返すこと。
 
-### 3. GUEST_TOKEN_SECRET 未設定時のガード
-`lib/guest-token.ts` が `process.env.GUEST_TOKEN_SECRET!` を non-null アサーションで参照しており、未設定時に実行時例外になる。
-関数内で明示的にガードし、未設定時は原因が追えるエラーを返すこと（500 + 説明文）。
+### 2. Header.tsx — LogoutButton（'use client'）の使用を廃止（LOW）
 
-### 4. catch でエラーメッセージが活かされない
-`app/profile/page.tsx` の API 呼び出しで `data.error` を `Error` に載せているが、catch 側が常に固定メッセージを表示しており `err.message` が使われていない。
-catch(err) で `err.message` を表示に反映すること。
+`app/components/Header.tsx` が `LogoutButton`（`'use client'`）を使っており、Server Component のヘッダーにクライアント JS が引き込まれている。
+ヘッダーのログアウトは `<form action={logout}><button type="submit">ログアウト</button></form>` のサーバーフォームに戻すこと。
+スタイルは既存の Header のデザインを維持すること。
+
+### 3. LogoutButton.tsx — 'use client' のスコープを絞る（LOW）
+
+`app/components/LogoutButton.tsx` が `'use client'` + `useActionState` を使っており、全利用箇所にクライアント JS が影響する。
+プロフィールページ（`app/profile/page.tsx`）では引き続き LogoutButton を使ってよいが、
+Header ではサーバーフォームを使う（修正 2 と対になる）。
+LogoutButton 自体を削除する必要はない。ただし、クライアント状態（エラー表示）が実際に必要な場所でのみ使用されるよう整理すること。
 
 ## スコープ外
 
-- MEDIUM/LOW バックログの指摘（別タスクで管理）
+- 上記 3 件以外の変更
 - UI デザインの変更
 - 新機能追加
