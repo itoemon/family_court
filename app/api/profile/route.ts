@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createSessionClient, createAdminClient } from "@/lib/supabase/server";
+import { createSessionClient } from "@/lib/supabase/server";
 import { encryptApiKey } from "@/lib/crypto";
 import { validateApiKey } from "@/lib/claude";
 
@@ -26,8 +26,7 @@ export async function PATCH(req: NextRequest) {
     updates.api_key_encrypted = encryptApiKey(apiKey);
   }
 
-  const admin = createAdminClient();
-  const { data: updatedProfile, error } = await admin
+  const { data: updatedProfile, error } = await supabase
     .from("profiles")
     .update(updates)
     .eq("id", user.id)

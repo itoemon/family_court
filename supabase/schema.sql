@@ -116,3 +116,9 @@ alter table public.verdicts enable row level security;
 create policy "誰でも判決を参照可"
   on public.verdicts for select
   using (true);
+
+-- PostgREST ロールへの明示的な権限付与（Supabase SQL Editor 経由では自動付与されないため必須）
+grant all on public.profiles  to anon, authenticated, service_role;
+grant all on public.cases     to anon, authenticated, service_role;
+grant all on public.arguments to anon, authenticated, service_role;
+grant all on public.verdicts  to anon, authenticated, service_role;

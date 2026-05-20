@@ -93,7 +93,7 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [caseData?.arguments]);
+  }, [caseData?.arguments?.length]);
 
   async function handleJoinAsAccount() {
     setError("");
