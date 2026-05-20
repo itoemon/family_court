@@ -2,9 +2,9 @@
 
 > **注意**: このメモは task.md を補足するものです。task.md と矛盾する場合は task.md を優先してください。
 
-**タスク**: PR #3 コパ指摘 4 件の修正
-**コミット**: 1e081ce
-**日時**: 2026-05-20
+**タスク**: PR #4 コパ指摘 3 件の修正
+**コミット**: e843f53
+**日時**: 2026-05-21
 
 ---
 
@@ -12,25 +12,20 @@
 
 ### 設計書通りに実装した点
 
-- `lib/guest-token.ts`: `computeToken` の先頭に `GUEST_TOKEN_SECRET` 未設定ガードを追加。`!` アサーション除去。
-- `app/api/cases/[id]/route.ts`: GET ハンドラに `callerRole` 算出ロジックを追加しレスポンスに付与。`createSessionClient().auth.getUser()` + UUID 照合（認証済み）/ Cookie + `verifyGuestToken`（ゲスト）の順で判定。
-- `app/api/profile/route.ts`: PATCH 成功後、`update().select("api_key_encrypted").single()` でサーバー側の現在値を取得し `hasApiKey: boolean` をレスポンスに含める。
-- `app/case/[id]/page.tsx`: `restoreRole` の Supabase UUID 比較を削除し、`data.callerRole` から `setMyRole` するように変更。
-- `app/profile/page.tsx`: `setHasApiKey(data.hasApiKey)` に変更。catch で `err.message` を `setMessage` に反映。
+- `app/api/cases/[id]/argument/route.ts`: `callerRole` 導出ブロック（`createSessionClient()` → `getUser()` → UUID照合 → `verifyGuestToken`）全体を try-catch で囲み、例外発生時に JSON 500 + 隠蔽メッセージを返すよう修正。
+- `app/components/Header.tsx`: `LogoutButton`（`'use client'`）の import を廃止し、インライン Server Action `handleLogout` を定義して `<form action={handleLogout}>` に置き換え。
 
 ### 設計書から逸脱した点
 
-**1. PATCH ハンドラの `generateGuestToken` に try-catch を追加（設計書に明記なし）**
+**1. `<form action={logout}>` の代わりにインライン Server Action を使用**
 
-設計書 Fix 3 セクションに「各 API Route の catch ブロックで捕捉し 500 を返す」と記載があり、`generateGuestToken` を呼ぶ PATCH ハンドラもその対象と判断して追加した。変更は最小限（`generateGuestToken` 呼び出し箇所をラップするのみ）。
+task.md の記述例は `<form action={logout}>` だが、`logout` の戻り型（`Promise<void | { error: string }>`）が React 19 の form action 型（`(formData: FormData) => void | Promise<void>`）と不一致であり、TypeScript コンパイルエラーになる。
 
-**2. `callerRole === "plaintiff"` もクライアントで `setMyRole` する**
+そのため、Header.tsx 内にインライン Server Action `handleLogout` を定義し、内部で `await logout()` を呼び出す形にした。`handleLogout` の戻り型は `Promise<void>` であり form action 型に適合する。また、Header ではログアウトエラー表示が不要なため、`logout()` の戻り値（`{ error: string }`）は破棄して問題ない。
 
-元の `restoreRole` は defendant 復元専用だったが、新実装では plaintiff も復元される。URL パラメータ `?role=plaintiff` なしで原告がアクセスした場合も `myRole` が設定される。セキュリティ上の問題はない（判定はサーバー側で完結）。
+**2. `LogoutButton.tsx` 自体は変更なし**
 
-**3. `lib/types.ts` の `Case` に `callerRole?` を追加**
-
-設計書の「データモデル変更なし」は DB スキーマの意味と判断。API レスポンスの型定義に追加しないと TypeScript コンパイルエラーになるため追加した。optional（`?`）にしているのは PATCH レスポンスが `callerRole` を含まないため。
+task.md の Fix 3（「'use client' のスコープを絞る」）は、Header.tsx での使用廃止（Fix 2）により達成されるため、`LogoutButton.tsx` 本体への変更は不要と判断した。profile ページでは引き続き `LogoutButton` を使用しており、エラー表示（`useActionState`）が意味を持つ。
 
 ---
 
@@ -38,35 +33,29 @@
 
 ### 重点テストケース
 
-1. **ゲスト被告のリロード復元**
-   - ゲストとして参加 → ページリロード → 発言フォームが表示されること（`myRole === "defendant"` が復元される）
-   - Cookie `guest_defendant_{id}` が存在しない状態でリロード → `myRole` が null のまま（Observer として扱われる）
+1. **ヘッダーのログアウト（Server Action 化）**
+   - ヘッダーの「ログアウト」ボタンを押下 → ルートへリダイレクトされること
+   - ヘッダーが Server Component のまま動作しており、クライアント JS が不要なこと（`LogoutButton` の `useActionState` が引き込まれていない）
 
-2. **`callerRole` の正確性**
-   - 原告（Supabase セッションあり）: `callerRole === "plaintiff"`
-   - 認証済み被告（Supabase セッションあり）: `callerRole === "defendant"`
-   - ゲスト被告（Cookie 有効）: `callerRole === "defendant"`
-   - Cookie なし・無効 / 第三者ユーザー: `callerRole === "observer"`
+2. **プロフィールページの LogoutButton（変更なし）**
+   - プロフィールページのログアウトボタンが引き続き動作すること
+   - ログアウト失敗時に `state.error` が表示される動線は維持されている（ただしテスト困難な経路）
 
-3. **`hasApiKey` の正確性**
-   - API キーなしで表示名のみ更新 → 既存キーがあれば `hasApiKey` は `true` のまま
-   - 初めて API キーを登録 → `hasApiKey === true` になること
-
-4. **catch のエラーメッセージ表示**
-   - プロフィール保存失敗時（例：無効 API キー）→ "APIキーが無効です。Anthropic コンソールで確認してください。" が表示されること
-
-5. **`GUEST_TOKEN_SECRET` 未設定ガード**
-   - 環境変数未設定時、`GET /api/cases/[id]` と `PATCH /api/cases/[id]`（ゲスト参加）が 500 + JSON エラーメッセージを返すこと
+3. **`verifyGuestToken` の try-catch（argument/route.ts）**
+   - `GUEST_TOKEN_SECRET` が未設定の状態で POST `/api/cases/[id]/argument` を呼び出した場合、500 + `{ error: "サーバー設定エラーが発生しました。管理者に連絡してください。" }` が返ること
    - エラーメッセージに "GUEST_TOKEN_SECRET" という文字列が含まれないこと（情報隠蔽）
+   - `GUEST_TOKEN_SECRET` が正常設定されている場合、従来通りにゲスト被告が発言できること
 
 ### セキュリティ確認ポイント
 
-- GET レスポンスに `plaintiff_id` / `defendant_id` UUID が含まれている（MEDIUM-001 はスコープ外）。今回の修正でクライアントが UUID をロール判定に使わなくなったことで実害は減少しているが、将来のタスクで除去予定。
-- HMAC の決定論的問題（MEDIUM-002）は未修正のまま。
+- Header の `handleLogout` は Server Action であり、クライアントへの `logout` 関数の露出はない。
+- `argument/route.ts` の catch ブロックで、スタックトレースや環境変数名をクライアントに渡さないことを確認すること。
 
 ---
 
 ## 未実装・スコープ外にしたこと
+
+（PR #3 から継続のバックログ。今回のスコープ外）
 
 | バックログ | 内容 |
 |-----------|------|
