@@ -336,7 +336,12 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
             <div className="bg-amber-50 border border-amber-100 rounded-2xl px-6 py-5 text-center max-w-xs">
               <p className="text-2xl mb-2 animate-pulse">⚖️</p>
               <p className="text-amber-700 font-medium text-sm">AI が審議中です</p>
-              <p className="text-amber-500 text-xs mt-1">しばらくお待ちください...</p>
+              <p className="text-amber-500 text-xs mt-1">しばらくお待ちください</p>
+              <div className="flex justify-center gap-1.5 mt-3">
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-bounce" style={{ animationDelay: "0ms" }} />
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-bounce" style={{ animationDelay: "150ms" }} />
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-bounce" style={{ animationDelay: "300ms" }} />
+              </div>
             </div>
           </div>
         )}
@@ -376,8 +381,13 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
 
       {!canSpeak && myRole && !["waiting", "judging", "verdict"].includes(caseData.phase) && (
         <div className="bg-white border-t border-stone-100 sticky bottom-0">
-          <div className="max-w-2xl mx-auto px-4 py-4 text-center">
-            <p className="text-stone-400 text-sm">{opponentName ?? "相手"} さんの返答を待っています...</p>
+          <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-center gap-2">
+            <p className="text-stone-400 text-sm">{opponentName ?? "相手"} さんの返答を待っています</p>
+            <span className="inline-flex items-center gap-0.5">
+              <span className="w-1 h-1 rounded-full bg-stone-400 animate-bounce" style={{ animationDelay: "0ms" }} />
+              <span className="w-1 h-1 rounded-full bg-stone-400 animate-bounce" style={{ animationDelay: "150ms" }} />
+              <span className="w-1 h-1 rounded-full bg-stone-400 animate-bounce" style={{ animationDelay: "300ms" }} />
+            </span>
           </div>
         </div>
       )}
