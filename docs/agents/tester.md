@@ -209,49 +209,50 @@ test('CRITICAL-M02: ページリロード後もセッションが維持される
 
 // CRITICAL-M03: 第三者の割り込み拒否（認証済み第三者）
 //
-// 原告 A がケースを作成し被告 B が参加した後、
-// 別の認証済みユーザー C（= ctxB を再利用して email_b でログイン）が
-// 同じ URL を開いても発言フォームが表示されない（observer 扱い）ことを確認する。
+// A がケースを作成し、ゲストが被告として参加（defendant_guest_name がセット）した後、
+// 認証済みユーザー B（= plaintiff でも defendant_id でもない）が同じ URL を開いても
+// 発言フォームが表示されない（observer 扱い）ことを確認する。
 //
-// 実装上、POST /api/cases/[id]/argument は defendant_id / plaintiff_id に
-// 一致しない user.id を 403 で拒否するため、フロントでもフォームは非表示になる。
+// ゲスト被告ケースを使うことで第三者テストを E2E_TEST_EMAIL_C なしで完結させる。
+// 実装: GET /api/cases/[id] は user.id が plaintiff_id にも defendant_id にも
+// 一致しない場合 callerRole = "observer" を返し、フロントはフォームを非表示にする。
 test('CRITICAL-M03: 第三者認証ユーザーが被告として発言できない', async ({ browser }) => {
   const emailA = process.env.E2E_TEST_EMAIL_A   ?? '';
   const emailB = process.env.E2E_TEST_EMAIL_B   ?? '';
-  const emailC = process.env.E2E_TEST_EMAIL_C   ?? emailB; // C が未設定なら B を第三者として使う
   const passA  = process.env.E2E_TEST_PASSWORD_A ?? '';
   const passB  = process.env.E2E_TEST_PASSWORD_B ?? '';
-  const passC  = process.env.E2E_TEST_PASSWORD_C ?? passB;
 
-  const ctxA = await browser.newContext();
-  const ctxB = await browser.newContext();
-  const ctxC = await browser.newContext();
-  const pageA = await ctxA.newPage();
-  const pageB = await ctxB.newPage();
-  const pageC = await ctxC.newPage();
+  const ctxA     = await browser.newContext();
+  const ctxGuest = await browser.newContext(); // 未ログイン（ゲスト被告）
+  const ctxB     = await browser.newContext(); // 認証済みだが無関係の第三者
+  const pageA     = await ctxA.newPage();
+  const pageGuest = await ctxGuest.newPage();
+  const pageB     = await ctxB.newPage();
 
   try {
-    // A がケースを作成し B が被告として参加
+    // A（原告）がケースを作成
     await loginAs(pageA, emailA, passA);
     const caseUrl = await createCase(pageA, 'M03: 第三者割り込みテスト');
+
+    // ゲストが被告として参加（defendant_guest_name がセットされ、Cookie トークンが発行される）
+    await pageGuest.goto(caseUrl);
+    await pageGuest.click('button:has-text("ゲストとして参加")');
+    await pageGuest.fill('input[type="text"]', 'ゲスト被告');
+    await pageGuest.click('button[type="submit"]');
+    await pageGuest.waitForSelector('textarea', { timeout: 10_000 });
+
+    // B（第三者・認証済みだが plaintiff でも defendant_id でもない）が同じ URL を開く
     await loginAs(pageB, emailB, passB);
     await pageB.goto(caseUrl);
-    await pageB.click('button:has-text("アカウントでログインして参加")');
-    await pageB.waitForSelector('textarea', { timeout: 10_000 });
-
-    // C（第三者）でログインして同じ URL を開く
-    await loginAs(pageC, emailC, passC);
-    await pageC.goto(caseUrl);
-    // 被告参加ボタンは「既に被告が参加しています」で弾かれるため表示されないはず
-    // 発言フォームも表示されない（observer 扱い）
-    await pageC.waitForTimeout(2_000); // ポーリング反映を待つ
-    const textarea = pageC.locator('textarea');
+    // 発言フォームが表示されない（observer 扱い）ことを確認
+    await pageB.waitForTimeout(2_000); // ポーリング反映を待つ
+    const textarea = pageB.locator('textarea');
     const isVisible = await textarea.isVisible().catch(() => false);
     expect(isVisible).toBe(false);
   } finally {
     await ctxA.close();
+    await ctxGuest.close();
     await ctxB.close();
-    await ctxC.close();
   }
 });
 
