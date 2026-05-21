@@ -2,85 +2,63 @@
 
 > **注意**: このメモは task.md を補足するものです。task.md と矛盾する場合は task.md を優先してください。
 
-**タスク**: PR #4 コパ指摘 — camelCase/snake_case 不整合修正
-**コミット**: 3cfa9ad
-**日時**: 2026-05-21
+**タスク**: ケースページのアニメーション演出追加
+**コミット**: d1af2b7
+**日時**: 2026-05-22
 
 ---
 
 ## 実装上の判断・変更点
 
-### 設計書から逸脱した点（アーキ設計書は PR #3 対応を対象としているため今回は参照外）
+### 変更ファイル
 
-**1. `buildCaseResponse` を `lib/case-response.ts` に切り出した**
+- `app/case/[id]/page.tsx` — アニメーション追加
+- `app/api/cases/[id]/route.ts` — PATCH レスポンスに `callerRole: "defendant"` を追加（アカウント参加・ゲスト参加の両方）
+- `tests/e2e/critical.spec.ts` — 待機テキストのセレクタを実 UI に合わせて更新（`text=さんの返答を待っています`）
 
-task.md は「`buildCaseResponse` を共通関数として両ハンドラで再利用すること」と記載しており、
-`app/api/cases/[id]/route.ts` の既存関数をそのまま流用するのではなく、
-`lib/case-response.ts` を新設してそこに移動した。
+DBスキーマ・型定義の変更なし。
 
-Route ファイル間でのクロスインポートはモジュール境界が不明瞭になるためライブラリ層に置くのが適切であり、
-かつ `lib/` は書き込み許可ディレクトリのため問題なし。
+### 相手のターン待ちアニメーション
 
-**2. GET ハンドラで raw case を先フェッチ（DB クエリ 1 往復増加）**
+- 変更前: `{opponentName} さんの返答を待っています...` の静的テキスト
+- 変更後: テキスト末尾の `...` を除去し、`inline-flex` で3つの丸ドットを追加。各ドットに `animate-bounce` と `0ms / 150ms / 300ms` の `animationDelay` を設定して順番に跳ねる演出にした。
+- 設計書はアニメーション方式を「テキスト末尾の点滅ドット」または「スピナー/パルス」から選択可としており、`animate-bounce` + 遅延による3点ドットを採用した。
 
-`buildCaseResponse` が内部フィールド（`plaintiff_id`, `defendant_id`, `defendant_guest_name`）を
-レスポンスに含まなくなったため、GET ハンドラの `callerRole` 判定がこれらに直接アクセスできなくなった。
+### AI 審議中アニメーションの強化
 
-対策として、GET ハンドラの冒頭で以下の最小限フィールドだけを取得するクエリを追加した：
+- 変更前: ⚖️ 絵文字の `animate-pulse` のみ
+- 変更後: 「しばらくお待ちください」テキストの末尾 `...` を除去し、その下に3点バウンスドット（amber-400 色）を追加。サイズは `w-2 h-2` で待機バーのドット（`w-1 h-1`）より大きく、審議中の重みを表現した。
+- 設計書が「ローディングバー or 3点ドット」としていたため、追加CSS不要な3点ドットを選択した。
 
-```typescript
-const { data: rawCase } = await admin
-  .from("cases")
-  .select("plaintiff_id, defendant_id, defendant_guest_name")
-  .eq("id", id)
-  .single();
-```
+### 設計書との差異
 
-この追加クエリにより `cases` テーブルへの往復が 1 回増えるが、
-アプリのスケールを考慮すると許容範囲。
-
-**3. `argument/route.ts` の重複コードを削除**
-
-`buildCaseResponse` に移行したことで、`updatedCase`, `args`, `plaintiff`, `defendant` の
-個別フェッチコードが不要になり削除した。コード行数が削減され保守性が向上している。
+- 設計書（design.md）は PR #3 バグ修正対応が記載されており、今回の task.md（アニメーション追加）とは別タスクの内容。design.md は参照のみで今回の実装の根拠としていない。
+- 実装はすべて task.md の指示範囲内。
 
 ---
 
 ## オーディへの注意点
 
-### 重点テストケース
+### 重点確認ポイント
 
-1. **GET /api/cases/[id] のレスポンス形状**
-   - `currentTurn`, `maxRounds`, `createdAt`, `updatedAt` が camelCase で返ること（snake_case でないこと）
-   - `plaintiff_id`, `defendant_id`, `current_turn`, `max_rounds`, `created_at`, `updated_at`（snake_case 版）が **含まれない** こと
-   - `defendantId` と `callerRole` が引き続き含まれること
+1. **相手ターン待ちバー**: `canSpeak === false && myRole !== null && phase ∉ {waiting, judging, verdict}` の条件下で表示されること
+2. **3点ドットのアニメーション**: ブラウザで実際に bounce するかどうか（CSS アニメーションが効いているか）
+3. **judging フェーズ**: ⚖️ の `animate-pulse` と3点ドットの `animate-bounce` が同時に動作すること
+4. **回帰確認**: 発言フォーム（`canSpeak === true`）の表示・動作に影響がないこと
 
-2. **POST /api/cases/[id]/argument のレスポンス形状**
-   - 同上の camelCase 形状チェック
-   - 発言後にターン交代・フェーズ進行が正しく反映されていること（`currentTurn`, `phase`, `round`）
-   - `arguments` 配列に今回の発言が追加されていること
+### スコープ外にしたこと
 
-3. **PATCH /api/cases/[id]（既存動作の回帰確認）**
-   - アカウント参加・ゲスト参加後のレスポンスも camelCase になっていること
-   - ゲスト参加時の httpOnly Cookie が引き続き設定されること
-
-4. **クライアント側の動作**
-   - `caseData.currentTurn` が `undefined` にならないこと（ターン判定・発言フォーム表示が壊れていないこと）
-   - ページリロード後も `callerRole` が正しく復元されること
-
-### セキュリティ確認ポイント
-
-- `plaintiff_id` / `defendant_id` / `defendant_guest_name` がレスポンス JSON に **含まれていない** ことを確認すること（内部カラムの隠蔽）
-- `callerRole` の判定はサーバー側のみで実施されており、クライアントに UUID が渡っていないこと
+- WebSocket や DB 変更を伴うリアルタイム「相手が入力中」表示（task.md 明記）
+- `judging` フェーズ時のローディングバー（3点ドットを選択したため実装なし）
+- 上記以外の演出変更・新機能
 
 ---
 
-## 未実装・スコープ外にしたこと
+## 未実装・引き継ぎバックログ（前サイクル由来）
 
 | バックログ | 内容 |
 |-----------|------|
-| `Argument` 型の `timestamp` vs DB `created_at` の不整合 | `lib/types.ts` の `Argument.timestamp` と DB の `created_at` が一致していない。今回のスコープ外だが `arguments` 配列の `timestamp` フィールドがクライアントで `undefined` になる可能性あり。要確認 |
-| MEDIUM-001 | GET レスポンスから `plaintiff_id` / `defendant_id` UUID を除外（今回で実質対応済みだが、設計書上の MEDIUM-001 としては別タスク扱い） |
+| MEDIUM-001 | GET レスポンスから `plaintiff_id` / `defendant_id` UUID を除外 |
 | MEDIUM-002 | HMAC トークンの決定論的問題（取り消し・個別セッション無効化） |
 | LOW-001 (route.ts) | ゲスト名の最大長バリデーションなし |
 | LOW-001 (claude.ts) | `validateApiKey` のエラー種別区別 |
