@@ -46,7 +46,7 @@ async function createCase(page: any, topic: string): Promise<string> {
 async function joinAsAccount(page: any) {
   await page.click('button:has-text("アカウントでログインして参加")');
   await page.click('button:has-text("ログインして参加する")');
-  await page.waitForSelector('text=相手の返答を待っています', { timeout: 10_000 });
+  await page.waitForSelector('text=さんの返答を待っています', { timeout: 10_000 });
 }
 
 // ────────────────────────────────────────────────────────────
@@ -162,7 +162,7 @@ test('CRITICAL-M03: 第三者認証ユーザーが被告として発言できな
     await pageGuest.click('button:has-text("ゲストとして参加")');
     await pageGuest.fill('input[type="text"]', 'ゲスト被告');
     await pageGuest.click('button[type="submit"]');
-    await pageGuest.waitForSelector('text=相手の返答を待っています', { timeout: 10_000 });
+    await pageGuest.waitForSelector('text=さんの返答を待っています', { timeout: 10_000 });
 
     // B（第三者）がケースを開く
     await loginAs(pageB, emailB, passB);
@@ -200,7 +200,7 @@ test('CRITICAL-M04: ゲスト被告が Cookie トークンで発言できる', a
     await pageGuest.click('button:has-text("ゲストとして参加")');
     await pageGuest.fill('input[type="text"]', 'ゲスト太郎');
     await pageGuest.click('button[type="submit"]');
-    await pageGuest.waitForSelector('text=相手の返答を待っています', { timeout: 10_000 });
+    await pageGuest.waitForSelector('text=さんの返答を待っています', { timeout: 10_000 });
 
     // A が最初の発言
     await pageA.waitForSelector('textarea', { timeout: 10_000 });
