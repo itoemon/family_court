@@ -49,13 +49,14 @@ Playwright を使って localhost:3000 に対して E2E テストを実行し、
 
 **必須 CRITICAL シナリオ（毎回実行）**
 
-このアプリは 2 ユーザー間の非同期会話が前提のため、以下の 3 シナリオは常に CRITICAL として実行すること:
+このアプリは 2 ユーザー間の非同期会話が前提のため、以下の 4 シナリオは常に CRITICAL として実行すること:
 
 | シナリオ ID | 内容 |
 |---|---|
-| CRITICAL-M01 | 2 ユーザー間の会話フロー（原告がケース作成 → 被告が参加 → ターン交代で発言 → 判決） |
-| CRITICAL-M02 | セッション復元（ページリロード後も会話セッションが維持されることを確認） |
-| CRITICAL-M03 | 第三者の割り込み拒否（第三者ユーザーが被告として割り込めないことを確認） |
+| CRITICAL-M01 | 2 ユーザー間の会話フロー（両者認証済み：原告作成 → 被告がアカウントで参加 → ターン交代） |
+| CRITICAL-M02 | セッション復元（ページリロード後もセッションが維持され、発言フォームが再表示される） |
+| CRITICAL-M03 | 第三者の割り込み拒否（第三者認証ユーザーが被告として発言できないことを確認） |
+| CRITICAL-M04 | ゲスト被告フロー（未ログインコンテキストがゲスト名で参加 → Cookie トークンで発言できる） |
 
 ## 3. dev サーバーを起動する
 ```bash
@@ -101,91 +102,24 @@ async function loginAs(page: any, email: string, password: string) {
   await page.waitForURL('/', { timeout: 10_000 });
 }
 
-// CRITICAL-M01: 2 ユーザー間の会話フロー
-test('CRITICAL-M01: 2ユーザー間でターン交代の会話ができる', async ({ browser }) => {
-  // 環境変数からテストユーザー認証情報を取得
-  const emailA  = process.env.E2E_TEST_EMAIL_A   ?? '';
-  const emailB  = process.env.E2E_TEST_EMAIL_B   ?? '';
-  const passA   = process.env.E2E_TEST_PASSWORD_A ?? '';
-  const passB   = process.env.E2E_TEST_PASSWORD_B ?? '';
+// ケース作成ヘルパー
+// 原告がログイン済みの状態で呼び出す。作成されたケースの URL を返す。
+async function createCase(page: any, topic: string): Promise<string> {
+  await page.goto('/');
+  await page.click('button:has-text("話し合いを始める")');
+  await page.fill('input[name="topic"]', topic);
+  await page.click('button[type="submit"]');
+  await page.waitForURL(/\/case\//, { timeout: 15_000 });
+  // URL から caseId のみ抽出（?role=plaintiff を除去）
+  return page.url().split('?')[0];
+}
 
-  // 独立したブラウザコンテキストを 2 つ用意（Cookie・LocalStorage が完全に分離）
-  const ctxA = await browser.newContext();
-  const ctxB = await browser.newContext();
-  const pageA = await ctxA.newPage();
-  const pageB = await ctxB.newPage();
-
-  try {
-    // ユーザー A（原告）でログイン
-    await loginAs(pageA, emailA, passA);
-
-    // ユーザー A がケースを作成
-    await pageA.goto('/');
-    await pageA.click('button:has-text("話し合いを始める")');
-    await pageA.fill('input[name="topic"]', 'E2Eテスト用トピック');
-    await pageA.fill('input[name="defendantName"]', 'テスト被告');
-    await pageA.click('button[type="submit"]');
-    await pageA.waitForURL(/\/case\//, { timeout: 15_000 });
-
-    // ケース URL を取得して被告側で開く
-    const caseUrl = pageA.url();
-
-    // ユーザー B（被告）でログイン → 同じケースを開く
-    await loginAs(pageB, emailB, passB);
-    await pageB.goto(caseUrl);
-
-    // ユーザー A が最初の発言を投稿
-    await pageA.fill('textarea[name="content"]', '原告の最初の発言');
-    await pageA.click('button:has-text("発言する")');
-    await pageA.waitForSelector('text=原告の最初の発言', { timeout: 10_000 });
-
-    // ユーザー B（被告）が返答を投稿
-    await pageB.reload(); // ポーリングまたはリロードで最新状態を取得
-    await pageB.fill('textarea[name="content"]', '被告の返答');
-    await pageB.click('button:has-text("発言する")');
-    await pageB.waitForSelector('text=被告の返答', { timeout: 10_000 });
-
-    // ユーザー A 側にも被告の返答が表示されることを確認
-    await pageA.reload();
-    await expect(pageA.locator('text=被告の返答')).toBeVisible();
-  } finally {
-    await ctxA.close();
-    await ctxB.close();
-  }
-});
-
-// CRITICAL-M02: セッション復元
-test('CRITICAL-M02: ページリロード後も会話セッションが維持される', async ({ browser }) => {
-  const emailA = process.env.E2E_TEST_EMAIL_A   ?? '';
-  const passA  = process.env.E2E_TEST_PASSWORD_A ?? '';
-
-  const ctx = await browser.newContext();
-  const page = await ctx.newPage();
-
-  try {
-    await loginAs(page, emailA, passA);
-
-    // ケース一覧から既存のケースに移動（または新規作成）
-    await page.goto('/');
-    // ケースが存在する場合は最初のケースを開く
-    const caseLink = page.locator('a[href^="/case/"]').first();
-    await caseLink.waitFor({ timeout: 5_000 });
-    await caseLink.click();
-    const caseUrl = page.url();
-
-    // リロード後も同じ URL が保持されることを確認
-    await page.reload();
-    await page.waitForURL(caseUrl, { timeout: 10_000 });
-
-    // ケースの内容（トピック等）が再表示されることを確認
-    await expect(page.locator('h1, h2').first()).toBeVisible();
-  } finally {
-    await ctx.close();
-  }
-});
-
-// CRITICAL-M03: 第三者の割り込み拒否
-test('CRITICAL-M03: 第三者ユーザーが被告として割り込めない', async ({ browser }) => {
+// CRITICAL-M01: 2ユーザー間の会話フロー（両者認証済み）
+//
+// ケース作成時点では被告情報は存在しない。
+// 被告が共有 URL を開いて「アカウントでログインして参加」を押すと
+// PATCH /api/cases/[id] { asGuest: false } が呼ばれ defendant_id がセットされる。
+test('CRITICAL-M01: 2ユーザー間でターン交代の会話ができる（両者認証済み）', async ({ browser }) => {
   const emailA = process.env.E2E_TEST_EMAIL_A   ?? '';
   const emailB = process.env.E2E_TEST_EMAIL_B   ?? '';
   const passA  = process.env.E2E_TEST_PASSWORD_A ?? '';
@@ -197,27 +131,175 @@ test('CRITICAL-M03: 第三者ユーザーが被告として割り込めない', 
   const pageB = await ctxB.newPage();
 
   try {
-    // ユーザー A がゲスト名指定でケースを作成（被告は別ユーザー B ではない）
+    // ユーザー A（原告）がケースを作成
     await loginAs(pageA, emailA, passA);
-    await pageA.goto('/');
-    await pageA.click('button:has-text("話し合いを始める")');
-    await pageA.fill('input[name="topic"]', '第三者割り込みテスト');
-    await pageA.fill('input[name="defendantName"]', '想定被告ゲスト');
-    await pageA.click('button[type="submit"]');
-    await pageA.waitForURL(/\/case\//, { timeout: 15_000 });
-    const caseUrl = pageA.url();
+    const caseUrl = await createCase(pageA, 'M01: E2Eテスト用トピック');
 
-    // ユーザー B（第三者）でログインしてケースを開く
+    // ユーザー B（被告）が URL を開き、アカウントで参加
     await loginAs(pageB, emailB, passB);
     await pageB.goto(caseUrl);
+    await pageB.click('button:has-text("アカウントでログインして参加")');
+    await pageB.waitForSelector('textarea', { timeout: 10_000 });  // 発言フォームが出るまで待機
 
-    // ユーザー B が被告として発言しようとしても発言フォームが表示されないことを確認
-    const form = pageB.locator('textarea[name="content"]');
-    const isVisible = await form.isVisible().catch(() => false);
+    // ユーザー A が最初の発言を投稿（opening フェーズ・原告のターン）
+    await pageA.waitForSelector('textarea', { timeout: 10_000 });
+    await pageA.fill('textarea', '原告の最初の発言');
+    await pageA.click('button:has-text("送る")');
+    await pageA.waitForSelector('text=原告の最初の発言', { timeout: 10_000 });
+
+    // ユーザー B（被告）が返答を投稿
+    await pageB.reload();  // ポーリングを待たずリロードで最新状態を取得
+    await pageB.fill('textarea', '被告の返答');
+    await pageB.click('button:has-text("送る")');
+    await pageB.waitForSelector('text=被告の返答', { timeout: 10_000 });
+
+    // ユーザー A 側にも被告の返答が反映されることを確認
+    await pageA.reload();
+    await expect(pageA.locator('text=被告の返答')).toBeVisible();
+  } finally {
+    await ctxA.close();
+    await ctxB.close();
+  }
+});
+
+// CRITICAL-M02: セッション復元
+//
+// ページリロード後もログインセッション・ロール（原告 or 被告）が維持され、
+// 発言フォームが再表示されることを確認する。
+test('CRITICAL-M02: ページリロード後もセッションが維持される', async ({ browser }) => {
+  const emailA = process.env.E2E_TEST_EMAIL_A   ?? '';
+  const emailB = process.env.E2E_TEST_EMAIL_B   ?? '';
+  const passA  = process.env.E2E_TEST_PASSWORD_A ?? '';
+  const passB  = process.env.E2E_TEST_PASSWORD_B ?? '';
+
+  const ctxA = await browser.newContext();
+  const ctxB = await browser.newContext();
+  const pageA = await ctxA.newPage();
+  const pageB = await ctxB.newPage();
+
+  try {
+    // ケースを作成して被告を参加させる（M01 の前半と同じ手順）
+    await loginAs(pageA, emailA, passA);
+    const caseUrl = await createCase(pageA, 'M02: セッション復元テスト');
+    await loginAs(pageB, emailB, passB);
+    await pageB.goto(caseUrl);
+    await pageB.click('button:has-text("アカウントでログインして参加")');
+    await pageB.waitForSelector('textarea', { timeout: 10_000 });
+
+    // 原告側: リロード後も発言フォームが表示されることを確認
+    await pageA.reload();
+    await pageA.waitForURL(new RegExp(caseUrl), { timeout: 10_000 });
+    await expect(pageA.locator('textarea').first()).toBeVisible();
+
+    // 被告側: リロード後も発言フォームが表示されることを確認（被告のターンになるまで待機）
+    await pageA.fill('textarea', '原告の発言（セッション確認用）');
+    await pageA.click('button:has-text("送る")');
+    await pageA.waitForSelector('text=原告の発言（セッション確認用）', { timeout: 10_000 });
+
+    await pageB.reload();
+    await pageB.waitForURL(new RegExp(caseUrl), { timeout: 10_000 });
+    await expect(pageB.locator('textarea').first()).toBeVisible();
+  } finally {
+    await ctxA.close();
+    await ctxB.close();
+  }
+});
+
+// CRITICAL-M03: 第三者の割り込み拒否（認証済み第三者）
+//
+// 原告 A がケースを作成し被告 B が参加した後、
+// 別の認証済みユーザー C（= ctxB を再利用して email_b でログイン）が
+// 同じ URL を開いても発言フォームが表示されない（observer 扱い）ことを確認する。
+//
+// 実装上、POST /api/cases/[id]/argument は defendant_id / plaintiff_id に
+// 一致しない user.id を 403 で拒否するため、フロントでもフォームは非表示になる。
+test('CRITICAL-M03: 第三者認証ユーザーが被告として発言できない', async ({ browser }) => {
+  const emailA = process.env.E2E_TEST_EMAIL_A   ?? '';
+  const emailB = process.env.E2E_TEST_EMAIL_B   ?? '';
+  const emailC = process.env.E2E_TEST_EMAIL_C   ?? emailB; // C が未設定なら B を第三者として使う
+  const passA  = process.env.E2E_TEST_PASSWORD_A ?? '';
+  const passB  = process.env.E2E_TEST_PASSWORD_B ?? '';
+  const passC  = process.env.E2E_TEST_PASSWORD_C ?? passB;
+
+  const ctxA = await browser.newContext();
+  const ctxB = await browser.newContext();
+  const ctxC = await browser.newContext();
+  const pageA = await ctxA.newPage();
+  const pageB = await ctxB.newPage();
+  const pageC = await ctxC.newPage();
+
+  try {
+    // A がケースを作成し B が被告として参加
+    await loginAs(pageA, emailA, passA);
+    const caseUrl = await createCase(pageA, 'M03: 第三者割り込みテスト');
+    await loginAs(pageB, emailB, passB);
+    await pageB.goto(caseUrl);
+    await pageB.click('button:has-text("アカウントでログインして参加")');
+    await pageB.waitForSelector('textarea', { timeout: 10_000 });
+
+    // C（第三者）でログインして同じ URL を開く
+    await loginAs(pageC, emailC, passC);
+    await pageC.goto(caseUrl);
+    // 被告参加ボタンは「既に被告が参加しています」で弾かれるため表示されないはず
+    // 発言フォームも表示されない（observer 扱い）
+    await pageC.waitForTimeout(2_000); // ポーリング反映を待つ
+    const textarea = pageC.locator('textarea');
+    const isVisible = await textarea.isVisible().catch(() => false);
     expect(isVisible).toBe(false);
   } finally {
     await ctxA.close();
     await ctxB.close();
+    await ctxC.close();
+  }
+});
+
+// CRITICAL-M04: ゲスト被告フロー
+//
+// 被告が未ログイン状態でケースに参加するフロー。
+// PATCH /api/cases/[id] { asGuest: true } により defendant_guest_name がセットされ、
+// レスポンスの Set-Cookie で guest_defendant_{id} トークンが発行される。
+// 以降、このトークン Cookie を持つコンテキストのみが被告として発言できる。
+test('CRITICAL-M04: ゲスト被告が Cookie トークンで発言できる', async ({ browser }) => {
+  const emailA = process.env.E2E_TEST_EMAIL_A   ?? '';
+  const passA  = process.env.E2E_TEST_PASSWORD_A ?? '';
+
+  const ctxA    = await browser.newContext();
+  const ctxGuest = await browser.newContext(); // 未ログイン（Cookie なし）
+  const pageA    = await ctxA.newPage();
+  const pageGuest = await ctxGuest.newPage();
+
+  try {
+    // ユーザー A（原告）がケースを作成
+    await loginAs(pageA, emailA, passA);
+    const caseUrl = await createCase(pageA, 'M04: ゲスト被告テスト');
+
+    // ゲストコンテキスト（未ログイン）がケース URL を開く
+    await pageGuest.goto(caseUrl);
+    // 「ゲストとして参加」を選択し名前を入力
+    await pageGuest.click('button:has-text("ゲストとして参加")');
+    await pageGuest.fill('input[type="text"]', 'ゲスト太郎');
+    await pageGuest.click('button[type="submit"]');
+    // 参加完了 → 発言フォームが表示されることを確認（Cookie トークンが付与された証拠）
+    await pageGuest.waitForSelector('textarea', { timeout: 10_000 });
+
+    // ユーザー A が opening フェーズで最初の発言
+    await pageA.waitForSelector('textarea', { timeout: 10_000 });
+    await pageA.fill('textarea', '原告からゲスト被告へ');
+    await pageA.click('button:has-text("送る")');
+    await pageA.waitForSelector('text=原告からゲスト被告へ', { timeout: 10_000 });
+
+    // ゲストが返答を投稿（Cookie が有効であることを確認）
+    await pageGuest.reload();
+    await pageGuest.fill('textarea', 'ゲスト被告の返答');
+    await pageGuest.click('button:has-text("送る")');
+    await pageGuest.waitForSelector('text=ゲスト被告の返答', { timeout: 10_000 });
+
+    // 原告側にもゲストの返答が反映されることを確認
+    await pageA.reload();
+    await expect(pageA.locator('text=ゲスト被告の返答')).toBeVisible();
+  } finally {
+    await ctxA.close();
+    await ctxGuest.close();
   }
 });
 ```
@@ -257,7 +339,7 @@ CRITICAL シナリオの失敗が 0 件
 
 ## シナリオ一覧
 
-### [CRITICAL-M01] 2ユーザー間の会話フロー
+### [CRITICAL-M01] 2ユーザー間の会話フロー（両者認証済み）
 - 結果: ✅ 通過 / ❌ 失敗
 - 内容: 確認した内容
 - 失敗時の詳細: （失敗した場合のみ）
@@ -267,6 +349,10 @@ CRITICAL シナリオの失敗が 0 件
 - 内容: 確認した内容
 
 ### [CRITICAL-M03] 第三者の割り込み拒否
+- 結果: ✅ 通過 / ❌ 失敗
+- 内容: 確認した内容
+
+### [CRITICAL-M04] ゲスト被告フロー
 - 結果: ✅ 通過 / ❌ 失敗
 - 内容: 確認した内容
 
