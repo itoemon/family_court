@@ -4,27 +4,29 @@
 
 ## 今回のタスク
 
-コパ（PR #4）指摘の camelCase/snake_case 不整合を修正する。
+ケースページのアニメーション演出を追加・強化する。
 
-## 修正対象
+## 実装対象
 
-### 1. cases/[id]/route.ts — buildCaseResponse の snake_case → camelCase マッピング（HIGH）
+### 1. 相手のターン待ち中のアニメーション
 
-`app/api/cases/[id]/route.ts` の `buildCaseResponse` 関数が DB 行（`current_turn`, `max_rounds`, `created_at`, `updated_at`）を `...c` でそのままスプレッドして返している。
-クライアント側の `Case` 型は camelCase（`currentTurn`, `maxRounds`, `createdAt`, `updatedAt`）を期待しているため、`caseData.currentTurn` が `undefined` となりターン判定・発言フォーム表示が壊れている。
+`app/case/[id]/page.tsx` の「相手の返答を待っています...」表示部分に
+待機アニメーションを追加する。
 
-レスポンスオブジェクトを明示的に組み立て、snake_case → camelCase にマッピングすること。
-また `plaintiff_id` / `defendant_id` などクライアントが不要な内部カラムはレスポンスから除外すること（`callerRole`, `defendantId` は除く）。
+現状は静的なテキストのみ。以下のいずれかで演出する:
+- テキストの末尾に点滅するドット（`...` が順番に光る）
+- または小さなスピナー／パルスアイコン
 
-### 2. cases/[id]/argument/route.ts — POST レスポンスの同様修正（HIGH）
+### 2. AI 思考中アニメーションの強化
 
-`app/api/cases/[id]/argument/route.ts` の POST ハンドラも `...updatedCase` でスプレッドして返しており、同じ snake_case 問題がある。
-こちらも `buildCaseResponse` と同様に明示的な camelCase マッピングに統一すること。
+`judging` フェーズ時に表示される「AI が審議中です」ブロックの演出を強化する。
 
-理想的には `buildCaseResponse` を共通関数として両ハンドラで再利用すること（既に `cases/[id]/route.ts` に `buildCaseResponse` があればそれを使う）。
+現状: ⚖️ 絵文字に `animate-pulse` のみ
+改善: 絵文字のパルスに加え、審議の進行感を表すローディングバー or
+      3点ドットのアニメーションを追加する
 
 ## スコープ外
 
 - 上記以外の変更
-- UI デザインの変更
 - 新機能追加
+- WebSocket や DB 変更を伴うリアルタイム「相手が入力中」表示（別タスク）
