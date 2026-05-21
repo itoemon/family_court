@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createAdminClient } from "@/lib/supabase/server";
-import { AddArgumentRequest } from "@/lib/types";
+import { createAdminClient, createSessionClient } from "@/lib/supabase/server";
+import { verifyGuestToken } from "@/lib/guest-token";
+import { AddArgumentRequest, Role } from "@/lib/types";
+import { buildCaseResponse } from "@/lib/case-response";
 
 export async function POST(
   req: NextRequest,
@@ -15,17 +17,49 @@ export async function POST(
     return NextResponse.json({ error: "現在は発言できないフェーズです" }, { status: 409 });
   }
 
+  // 呼び出し者の身元確認とロール導出
+  let callerRole: Role | null = null;
+  try {
+    const supabase = await createSessionClient();
+    const { data: { user } } = await supabase.auth.getUser();
+
+    if (user) {
+      if (user.id === c.plaintiff_id) {
+        callerRole = "plaintiff";
+      } else if (c.defendant_id && user.id === c.defendant_id) {
+        callerRole = "defendant";
+      }
+    }
+
+    if (!callerRole && c.defendant_guest_name) {
+      const cookieToken = req.cookies.get(`guest_defendant_${id}`)?.value;
+      if (cookieToken && verifyGuestToken(id, cookieToken)) {
+        callerRole = "defendant";
+      }
+    }
+  } catch (err) {
+    console.error("callerRole determination failed:", err);
+    return NextResponse.json({ error: "サーバー設定エラーが発生しました。管理者に連絡してください。" }, { status: 500 });
+  }
+
+  if (!callerRole) {
+    return NextResponse.json({ error: "このケースへの発言権限がありません" }, { status: 403 });
+  }
+
   const body: AddArgumentRequest = await req.json();
-  if (body.role !== c.current_turn) {
+  if (callerRole !== c.current_turn) {
     return NextResponse.json({ error: "あなたのターンではありません" }, { status: 409 });
   }
   if (!body.content?.trim()) {
     return NextResponse.json({ error: "発言内容は必須です" }, { status: 400 });
   }
+  if (body.content.trim().length > 500) {
+    return NextResponse.json({ error: "発言は500文字以内で入力してください" }, { status: 400 });
+  }
 
   await admin.from("arguments").insert({
     case_id: id,
-    role: body.role,
+    role: callerRole,
     phase: c.phase,
     round: c.round,
     content: body.content.trim(),
@@ -60,24 +94,6 @@ export async function POST(
     updated_at: new Date().toISOString(),
   }).eq("id", id);
 
-  // 更新後のデータを返す
-  const { data: updatedCase } = await admin.from("cases").select("*").eq("id", id).single();
-  const { data: args } = await admin.from("arguments").select("*").eq("case_id", id).order("created_at");
-  const { data: plaintiff } = await admin.from("profiles").select("display_name").eq("id", c.plaintiff_id).single();
-
-  let defendant = null;
-  if (updatedCase?.defendant_id) {
-    const { data: d } = await admin.from("profiles").select("display_name").eq("id", updatedCase.defendant_id).single();
-    defendant = { name: d?.display_name ?? "反対者", joinedAt: updatedCase.updated_at };
-  } else if (updatedCase?.defendant_guest_name) {
-    defendant = { name: updatedCase.defendant_guest_name, joinedAt: updatedCase.updated_at };
-  }
-
-  return NextResponse.json({
-    ...updatedCase,
-    plaintiff: { name: plaintiff?.display_name ?? "提案者", joinedAt: updatedCase?.created_at },
-    defendant,
-    arguments: args ?? [],
-    verdict: null,
-  });
+  const caseData = await buildCaseResponse(admin, id);
+  return NextResponse.json(caseData);
 }

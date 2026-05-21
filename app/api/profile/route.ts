@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createSessionClient, createAdminClient } from "@/lib/supabase/server";
 import { encryptApiKey } from "@/lib/crypto";
+import { validateApiKey } from "@/lib/claude";
 
 export async function PATCH(req: NextRequest) {
   const supabase = await createSessionClient();
@@ -15,12 +16,24 @@ export async function PATCH(req: NextRequest) {
   };
 
   if (apiKey) {
+    const isValid = await validateApiKey(apiKey);
+    if (!isValid) {
+      return NextResponse.json(
+        { error: "APIキーが無効です。Anthropic コンソールで確認してください。" },
+        { status: 400 }
+      );
+    }
     updates.api_key_encrypted = encryptApiKey(apiKey);
   }
 
   const admin = createAdminClient();
-  const { error } = await admin.from("profiles").update(updates).eq("id", user.id);
+  const { data: updatedProfile, error } = await admin
+    .from("profiles")
+    .update(updates)
+    .eq("id", user.id)
+    .select("api_key_encrypted")
+    .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ hasApiKey: !!updatedProfile?.api_key_encrypted });
 }

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import LogoutButton from "@/app/components/LogoutButton";
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -14,6 +15,7 @@ export default function ProfilePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [isError, setIsError] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -35,10 +37,11 @@ export default function ProfilePage() {
     load();
   }, [supabase, router]);
 
-  async function handleSave(e: React.FormEvent<HTMLFormElement>) {
+  async function handleSave(e: React.SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();
     setSaving(true);
     setMessage("");
+    setIsError(false);
     try {
       const res = await fetch("/api/profile", {
         method: "PATCH",
@@ -48,21 +51,20 @@ export default function ProfilePage() {
           ...(apiKey ? { apiKey } : {}),
         }),
       });
-      if (!res.ok) throw new Error();
-      setHasApiKey(true);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error ?? "保存に失敗しました");
+      }
+      const data = await res.json();
+      setHasApiKey(data.hasApiKey);
       setApiKey("");
       setMessage("保存しました");
-    } catch {
-      setMessage("保存に失敗しました");
+    } catch (err: unknown) {
+      setIsError(true);
+      setMessage(err instanceof Error ? err.message : "保存中にエラーが発生しました");
     } finally {
       setSaving(false);
     }
-  }
-
-  async function handleLogout() {
-    await supabase.auth.signOut();
-    router.push("/auth/login");
-    router.refresh();
   }
 
   if (loading) {
@@ -111,11 +113,12 @@ export default function ProfilePage() {
               />
               <p className="text-xs text-stone-400 mt-1.5">
                 話し合いのAI裁判官に使用されます。キーはサーバーで暗号化して保存します。
+                登録時はキーの有効性確認のため、軽微なテストリクエストを送信します。
               </p>
             </div>
 
             {message && (
-              <p className={`text-sm rounded-xl px-4 py-2 ${message.includes("失敗") ? "text-rose-500 bg-rose-50 border border-rose-100" : "text-emerald-600 bg-emerald-50 border border-emerald-100"}`}>
+              <p className={`text-sm rounded-xl px-4 py-2 ${isError ? "text-rose-500 bg-rose-50 border border-rose-100" : "text-emerald-600 bg-emerald-50 border border-emerald-100"}`}>
                 {message}
               </p>
             )}
@@ -130,12 +133,7 @@ export default function ProfilePage() {
           </form>
 
           <div className="pt-2 border-t border-stone-100">
-            <button
-              onClick={handleLogout}
-              className="w-full text-stone-400 hover:text-stone-600 text-sm py-2 transition-colors"
-            >
-              ログアウト
-            </button>
+            <LogoutButton className="w-full text-stone-400 hover:text-stone-600 text-sm py-2 transition-colors" />
           </div>
         </div>
 

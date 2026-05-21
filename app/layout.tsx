@@ -34,7 +34,7 @@ export default function RootLayout({
         <Suspense fallback={<div className="h-14 bg-stone-50 border-b border-stone-200" />}>
           <Header />
         </Suspense>
-        <main className="flex-1">{children}</main>
+        <div className="flex-1">{children}</div>
         <Footer />
       </body>
     </html>

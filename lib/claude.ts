@@ -1,6 +1,20 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { Case, Verdict } from "./types";
 
+export async function validateApiKey(apiKey: string): Promise<boolean> {
+  try {
+    const client = new Anthropic({ apiKey });
+    await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 1,
+      messages: [{ role: "user", content: "ok" }],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function requestVerdict(c: Case, apiKey: string): Promise<Verdict> {
   const client = new Anthropic({ apiKey });
   const transcript = c.arguments
