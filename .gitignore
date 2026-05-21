@@ -44,3 +44,4 @@ next-env.d.ts
 # generated / runtime artifacts
 dev_server.log
 /test-results/
+/tests/e2e/e2e_*.spec.ts
