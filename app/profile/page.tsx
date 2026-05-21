@@ -37,7 +37,7 @@ export default function ProfilePage() {
     load();
   }, [supabase, router]);
 
-  async function handleSave(e: React.FormEvent<HTMLFormElement>) {
+  async function handleSave(e: React.SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();
     setSaving(true);
     setMessage("");
@@ -51,8 +51,11 @@ export default function ProfilePage() {
           ...(apiKey ? { apiKey } : {}),
         }),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error ?? "保存に失敗しました");
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "保存に失敗しました");
       setHasApiKey(data.hasApiKey);
       setApiKey("");
       setMessage("保存しました");
