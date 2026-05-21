@@ -4,31 +4,27 @@
 
 ## 今回のタスク
 
-コパ（PR #4）の指摘対応。以下 3 件を修正する。
+コパ（PR #4）指摘の camelCase/snake_case 不整合を修正する。
 
 ## 修正対象
 
-### 1. argument/route.ts — verifyGuestToken の try-catch 欠落（MEDIUM）
+### 1. cases/[id]/route.ts — buildCaseResponse の snake_case → camelCase マッピング（HIGH）
 
-`app/api/cases/[id]/argument/route.ts` の POST ハンドラで `verifyGuestToken()` を try-catch なしで呼んでいる。
-`GUEST_TOKEN_SECRET` 未設定時などに例外がスローされると非 JSON の 500 が返り、エラー内容が漏れる可能性がある。
-`app/api/cases/[id]/route.ts` の GET/PATCH ハンドラと同様に try-catch で囲み、JSON 500 + 隠蔽メッセージを返すこと。
+`app/api/cases/[id]/route.ts` の `buildCaseResponse` 関数が DB 行（`current_turn`, `max_rounds`, `created_at`, `updated_at`）を `...c` でそのままスプレッドして返している。
+クライアント側の `Case` 型は camelCase（`currentTurn`, `maxRounds`, `createdAt`, `updatedAt`）を期待しているため、`caseData.currentTurn` が `undefined` となりターン判定・発言フォーム表示が壊れている。
 
-### 2. Header.tsx — LogoutButton（'use client'）の使用を廃止（LOW）
+レスポンスオブジェクトを明示的に組み立て、snake_case → camelCase にマッピングすること。
+また `plaintiff_id` / `defendant_id` などクライアントが不要な内部カラムはレスポンスから除外すること（`callerRole`, `defendantId` は除く）。
 
-`app/components/Header.tsx` が `LogoutButton`（`'use client'`）を使っており、Server Component のヘッダーにクライアント JS が引き込まれている。
-ヘッダーのログアウトは `<form action={logout}><button type="submit">ログアウト</button></form>` のサーバーフォームに戻すこと。
-スタイルは既存の Header のデザインを維持すること。
+### 2. cases/[id]/argument/route.ts — POST レスポンスの同様修正（HIGH）
 
-### 3. LogoutButton.tsx — 'use client' のスコープを絞る（LOW）
+`app/api/cases/[id]/argument/route.ts` の POST ハンドラも `...updatedCase` でスプレッドして返しており、同じ snake_case 問題がある。
+こちらも `buildCaseResponse` と同様に明示的な camelCase マッピングに統一すること。
 
-`app/components/LogoutButton.tsx` が `'use client'` + `useActionState` を使っており、全利用箇所にクライアント JS が影響する。
-プロフィールページ（`app/profile/page.tsx`）では引き続き LogoutButton を使ってよいが、
-Header ではサーバーフォームを使う（修正 2 と対になる）。
-LogoutButton 自体を削除する必要はない。ただし、クライアント状態（エラー表示）が実際に必要な場所でのみ使用されるよう整理すること。
+理想的には `buildCaseResponse` を共通関数として両ハンドラで再利用すること（既に `cases/[id]/route.ts` に `buildCaseResponse` があればそれを使う）。
 
 ## スコープ外
 
-- 上記 3 件以外の変更
+- 上記以外の変更
 - UI デザインの変更
 - 新機能追加
