@@ -2,46 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient, createSessionClient } from "@/lib/supabase/server";
 import { generateGuestToken, verifyGuestToken } from "@/lib/guest-token";
 import { JoinCaseRequest } from "@/lib/types";
-
-async function buildCaseResponse(admin: ReturnType<typeof createAdminClient>, caseId: string) {
-  const { data: c } = await admin.from("cases").select("*").eq("id", caseId).single();
-  if (!c) return null;
-
-  const { data: args } = await admin
-    .from("arguments")
-    .select("*")
-    .eq("case_id", caseId)
-    .order("created_at");
-
-  const { data: verdict } = await admin
-    .from("verdicts")
-    .select("*")
-    .eq("case_id", caseId)
-    .single();
-
-  const { data: plaintiff } = await admin
-    .from("profiles")
-    .select("display_name")
-    .eq("id", c.plaintiff_id)
-    .single();
-
-  let defendant = null;
-  if (c.defendant_id) {
-    const { data: d } = await admin.from("profiles").select("display_name").eq("id", c.defendant_id).single();
-    defendant = { name: d?.display_name ?? "反対者", joinedAt: c.updated_at };
-  } else if (c.defendant_guest_name) {
-    defendant = { name: c.defendant_guest_name, joinedAt: c.updated_at };
-  }
-
-  return {
-    ...c,
-    defendantId: c.defendant_id ?? null,
-    plaintiff: { name: plaintiff?.display_name ?? "提案者", joinedAt: c.created_at },
-    defendant,
-    arguments: args ?? [],
-    verdict: verdict ?? null,
-  };
-}
+import { buildCaseResponse } from "@/lib/case-response";
 
 export async function GET(
   req: NextRequest,
@@ -49,8 +10,13 @@ export async function GET(
 ) {
   const { id } = await params;
   const admin = createAdminClient();
-  const caseData = await buildCaseResponse(admin, id);
-  if (!caseData) return NextResponse.json({ error: "ケースが見つかりません" }, { status: 404 });
+
+  const { data: rawCase } = await admin
+    .from("cases")
+    .select("plaintiff_id, defendant_id, defendant_guest_name")
+    .eq("id", id)
+    .single();
+  if (!rawCase) return NextResponse.json({ error: "ケースが見つかりません" }, { status: 404 });
 
   let callerRole: "plaintiff" | "defendant" | "observer" = "observer";
   try {
@@ -58,12 +24,12 @@ export async function GET(
     const { data: { user } } = await supabase.auth.getUser();
 
     if (user) {
-      if (user.id === caseData.plaintiff_id) {
+      if (user.id === rawCase.plaintiff_id) {
         callerRole = "plaintiff";
-      } else if (caseData.defendant_id && user.id === caseData.defendant_id) {
+      } else if (rawCase.defendant_id && user.id === rawCase.defendant_id) {
         callerRole = "defendant";
       }
-    } else if (caseData.defendant_guest_name) {
+    } else if (rawCase.defendant_guest_name) {
       const cookieToken = req.cookies.get(`guest_defendant_${id}`)?.value;
       if (cookieToken && verifyGuestToken(id, cookieToken)) {
         callerRole = "defendant";
@@ -71,9 +37,14 @@ export async function GET(
     }
   } catch (err) {
     console.error("callerRole determination failed:", err);
-    return NextResponse.json({ error: "サーバー設定エラーが発生しました。管理者に連絡してください。" }, { status: 500 });
+    return NextResponse.json(
+      { error: "サーバー設定エラーが発生しました。管理者に連絡してください。" },
+      { status: 500 }
+    );
   }
 
+  const caseData = await buildCaseResponse(admin, id);
+  if (!caseData) return NextResponse.json({ error: "ケースが見つかりません" }, { status: 404 });
   return NextResponse.json({ ...caseData, callerRole });
 }
 
@@ -116,7 +87,10 @@ export async function PATCH(
     token = generateGuestToken(id);
   } catch (err) {
     console.error("generateGuestToken failed:", err);
-    return NextResponse.json({ error: "サーバー設定エラーが発生しました。管理者に連絡してください。" }, { status: 500 });
+    return NextResponse.json(
+      { error: "サーバー設定エラーが発生しました。管理者に連絡してください。" },
+      { status: 500 }
+    );
   }
   const guestResponse = NextResponse.json(await buildCaseResponse(admin, id));
   guestResponse.cookies.set(`guest_defendant_${id}`, token, {

@@ -2,30 +2,47 @@
 
 > **注意**: このメモは task.md を補足するものです。task.md と矛盾する場合は task.md を優先してください。
 
-**タスク**: PR #4 コパ指摘 3 件の修正
-**コミット**: e843f53
+**タスク**: PR #4 コパ指摘 — camelCase/snake_case 不整合修正
+**コミット**: 3cfa9ad
 **日時**: 2026-05-21
 
 ---
 
 ## 実装上の判断・変更点
 
-### 設計書通りに実装した点
+### 設計書から逸脱した点（アーキ設計書は PR #3 対応を対象としているため今回は参照外）
 
-- `app/api/cases/[id]/argument/route.ts`: `callerRole` 導出ブロック（`createSessionClient()` → `getUser()` → UUID照合 → `verifyGuestToken`）全体を try-catch で囲み、例外発生時に JSON 500 + 隠蔽メッセージを返すよう修正。
-- `app/components/Header.tsx`: `LogoutButton`（`'use client'`）の import を廃止し、インライン Server Action `handleLogout` を定義して `<form action={handleLogout}>` に置き換え。
+**1. `buildCaseResponse` を `lib/case-response.ts` に切り出した**
 
-### 設計書から逸脱した点
+task.md は「`buildCaseResponse` を共通関数として両ハンドラで再利用すること」と記載しており、
+`app/api/cases/[id]/route.ts` の既存関数をそのまま流用するのではなく、
+`lib/case-response.ts` を新設してそこに移動した。
 
-**1. `<form action={logout}>` の代わりにインライン Server Action を使用**
+Route ファイル間でのクロスインポートはモジュール境界が不明瞭になるためライブラリ層に置くのが適切であり、
+かつ `lib/` は書き込み許可ディレクトリのため問題なし。
 
-task.md の記述例は `<form action={logout}>` だが、`logout` の戻り型（`Promise<void | { error: string }>`）が React 19 の form action 型（`(formData: FormData) => void | Promise<void>`）と不一致であり、TypeScript コンパイルエラーになる。
+**2. GET ハンドラで raw case を先フェッチ（DB クエリ 1 往復増加）**
 
-そのため、Header.tsx 内にインライン Server Action `handleLogout` を定義し、内部で `await logout()` を呼び出す形にした。`handleLogout` の戻り型は `Promise<void>` であり form action 型に適合する。また、Header ではログアウトエラー表示が不要なため、`logout()` の戻り値（`{ error: string }`）は破棄して問題ない。
+`buildCaseResponse` が内部フィールド（`plaintiff_id`, `defendant_id`, `defendant_guest_name`）を
+レスポンスに含まなくなったため、GET ハンドラの `callerRole` 判定がこれらに直接アクセスできなくなった。
 
-**2. `LogoutButton.tsx` 自体は変更なし**
+対策として、GET ハンドラの冒頭で以下の最小限フィールドだけを取得するクエリを追加した：
 
-task.md の Fix 3（「'use client' のスコープを絞る」）は、Header.tsx での使用廃止（Fix 2）により達成されるため、`LogoutButton.tsx` 本体への変更は不要と判断した。profile ページでは引き続き `LogoutButton` を使用しており、エラー表示（`useActionState`）が意味を持つ。
+```typescript
+const { data: rawCase } = await admin
+  .from("cases")
+  .select("plaintiff_id, defendant_id, defendant_guest_name")
+  .eq("id", id)
+  .single();
+```
+
+この追加クエリにより `cases` テーブルへの往復が 1 回増えるが、
+アプリのスケールを考慮すると許容範囲。
+
+**3. `argument/route.ts` の重複コードを削除**
+
+`buildCaseResponse` に移行したことで、`updatedCase`, `args`, `plaintiff`, `defendant` の
+個別フェッチコードが不要になり削除した。コード行数が削減され保守性が向上している。
 
 ---
 
@@ -33,33 +50,37 @@ task.md の Fix 3（「'use client' のスコープを絞る」）は、Header.t
 
 ### 重点テストケース
 
-1. **ヘッダーのログアウト（Server Action 化）**
-   - ヘッダーの「ログアウト」ボタンを押下 → ルートへリダイレクトされること
-   - ヘッダーが Server Component のまま動作しており、クライアント JS が不要なこと（`LogoutButton` の `useActionState` が引き込まれていない）
+1. **GET /api/cases/[id] のレスポンス形状**
+   - `currentTurn`, `maxRounds`, `createdAt`, `updatedAt` が camelCase で返ること（snake_case でないこと）
+   - `plaintiff_id`, `defendant_id`, `current_turn`, `max_rounds`, `created_at`, `updated_at`（snake_case 版）が **含まれない** こと
+   - `defendantId` と `callerRole` が引き続き含まれること
 
-2. **プロフィールページの LogoutButton（変更なし）**
-   - プロフィールページのログアウトボタンが引き続き動作すること
-   - ログアウト失敗時に `state.error` が表示される動線は維持されている（ただしテスト困難な経路）
+2. **POST /api/cases/[id]/argument のレスポンス形状**
+   - 同上の camelCase 形状チェック
+   - 発言後にターン交代・フェーズ進行が正しく反映されていること（`currentTurn`, `phase`, `round`）
+   - `arguments` 配列に今回の発言が追加されていること
 
-3. **`verifyGuestToken` の try-catch（argument/route.ts）**
-   - `GUEST_TOKEN_SECRET` が未設定の状態で POST `/api/cases/[id]/argument` を呼び出した場合、500 + `{ error: "サーバー設定エラーが発生しました。管理者に連絡してください。" }` が返ること
-   - エラーメッセージに "GUEST_TOKEN_SECRET" という文字列が含まれないこと（情報隠蔽）
-   - `GUEST_TOKEN_SECRET` が正常設定されている場合、従来通りにゲスト被告が発言できること
+3. **PATCH /api/cases/[id]（既存動作の回帰確認）**
+   - アカウント参加・ゲスト参加後のレスポンスも camelCase になっていること
+   - ゲスト参加時の httpOnly Cookie が引き続き設定されること
+
+4. **クライアント側の動作**
+   - `caseData.currentTurn` が `undefined` にならないこと（ターン判定・発言フォーム表示が壊れていないこと）
+   - ページリロード後も `callerRole` が正しく復元されること
 
 ### セキュリティ確認ポイント
 
-- Header の `handleLogout` は Server Action であり、クライアントへの `logout` 関数の露出はない。
-- `argument/route.ts` の catch ブロックで、スタックトレースや環境変数名をクライアントに渡さないことを確認すること。
+- `plaintiff_id` / `defendant_id` / `defendant_guest_name` がレスポンス JSON に **含まれていない** ことを確認すること（内部カラムの隠蔽）
+- `callerRole` の判定はサーバー側のみで実施されており、クライアントに UUID が渡っていないこと
 
 ---
 
 ## 未実装・スコープ外にしたこと
 
-（PR #3 から継続のバックログ。今回のスコープ外）
-
 | バックログ | 内容 |
 |-----------|------|
-| MEDIUM-001 | GET レスポンスから `plaintiff_id` / `defendant_id` UUID を除外 |
+| `Argument` 型の `timestamp` vs DB `created_at` の不整合 | `lib/types.ts` の `Argument.timestamp` と DB の `created_at` が一致していない。今回のスコープ外だが `arguments` 配列の `timestamp` フィールドがクライアントで `undefined` になる可能性あり。要確認 |
+| MEDIUM-001 | GET レスポンスから `plaintiff_id` / `defendant_id` UUID を除外（今回で実質対応済みだが、設計書上の MEDIUM-001 としては別タスク扱い） |
 | MEDIUM-002 | HMAC トークンの決定論的問題（取り消し・個別セッション無効化） |
 | LOW-001 (route.ts) | ゲスト名の最大長バリデーションなし |
 | LOW-001 (claude.ts) | `validateApiKey` のエラー種別区別 |

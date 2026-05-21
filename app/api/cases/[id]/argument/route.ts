@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient, createSessionClient } from "@/lib/supabase/server";
 import { verifyGuestToken } from "@/lib/guest-token";
 import { AddArgumentRequest, Role } from "@/lib/types";
+import { buildCaseResponse } from "@/lib/case-response";
 
 export async function POST(
   req: NextRequest,
@@ -93,25 +94,6 @@ export async function POST(
     updated_at: new Date().toISOString(),
   }).eq("id", id);
 
-  // 更新後のデータを返す
-  const { data: updatedCase } = await admin.from("cases").select("*").eq("id", id).single();
-  const { data: args } = await admin.from("arguments").select("*").eq("case_id", id).order("created_at");
-  const { data: plaintiff } = await admin.from("profiles").select("display_name").eq("id", c.plaintiff_id).single();
-
-  let defendant = null;
-  if (updatedCase?.defendant_id) {
-    const { data: d } = await admin.from("profiles").select("display_name").eq("id", updatedCase.defendant_id).single();
-    defendant = { name: d?.display_name ?? "反対者", joinedAt: updatedCase.updated_at };
-  } else if (updatedCase?.defendant_guest_name) {
-    defendant = { name: updatedCase.defendant_guest_name, joinedAt: updatedCase.updated_at };
-  }
-
-  return NextResponse.json({
-    ...updatedCase,
-    defendantId: updatedCase?.defendant_id ?? null,
-    plaintiff: { name: plaintiff?.display_name ?? "提案者", joinedAt: updatedCase?.created_at },
-    defendant,
-    arguments: args ?? [],
-    verdict: null,
-  });
+  const caseData = await buildCaseResponse(admin, id);
+  return NextResponse.json(caseData);
 }
