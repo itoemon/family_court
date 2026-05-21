@@ -14,5 +14,8 @@ export default defineConfig({
     },
   ],
   workers: 1,
-  reporter: [['json', { outputFile: '/tmp/test_result.json' }]],
+  reporter: [
+    ['list'],
+    ['json', { outputFile: process.env.PLAYWRIGHT_JSON_OUTPUT ?? 'test-results/test_result.json' }],
+  ],
 });

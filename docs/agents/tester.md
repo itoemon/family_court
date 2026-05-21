@@ -103,14 +103,16 @@ async function loginAs(page: any, email: string, password: string) {
 }
 
 // ケース作成ヘルパー
-// 原告がログイン済みの状態で呼び出す。作成されたケースの URL を返す。
+// 原告がログイン済みの状態で呼び出す。作成されたケースの URL（クエリなし）を返す。
+// UI メモ: ホーム画面の topic input は name 属性なし（input[type="text"]で特定）、
+//          作成ボタンは onClick ハンドラの button でテキストは「はじめる」。
 async function createCase(page: any, topic: string): Promise<string> {
   await page.goto('/');
-  await page.click('button:has-text("話し合いを始める")');
-  await page.fill('input[name="topic"]', topic);
-  await page.click('button[type="submit"]');
+  await page.fill('input[type="text"]', topic);  // name 属性なし・placeholder で特定してもよい
+  await page.click('button:has-text("はじめる")');  // onClick ボタン（type="submit" ではない）
   await page.waitForURL(/\/case\//, { timeout: 15_000 });
-  // URL から caseId のみ抽出（?role=plaintiff を除去）
+  // ケース作成後は /case/:id?role=plaintiff にリダイレクトされる。
+  // 被告が同じ URL を開くと role=plaintiff が復元されてしまうため、クエリを除去して返す。
   return page.url().split('?')[0];
 }
 
@@ -311,6 +313,7 @@ cd ${REPO_ROOT}
 # .env.local から E2E_TEST_* 変数を読み込んで実行
 set -a && source .env.local && set +a
 npx playwright test tests/e2e/ 2>&1 | tee /tmp/playwright_output.txt
+# JSON レポートは test-results/test_result.json に出力される（環境変数 PLAYWRIGHT_JSON_OUTPUT で上書き可能）
 ```
 
 ## 6. dev サーバーを停止する
