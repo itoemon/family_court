@@ -63,6 +63,8 @@ Playwright を使って localhost:3000 に対して E2E テストを実行し、
 cd ${REPO_ROOT}
 npm run dev > /tmp/dev_server.log 2>&1 &
 DEV_PID=$!
+# 正常終了・エラー終了・中断いずれでも必ずサーバーを停止する
+trap 'kill $DEV_PID 2>/dev/null || true' EXIT
 # 起動待ち（最大30秒）
 for i in $(seq 1 30); do
   curl -s http://localhost:3000 > /dev/null && break
