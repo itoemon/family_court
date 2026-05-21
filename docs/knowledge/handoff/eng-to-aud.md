@@ -12,7 +12,11 @@
 
 ### 変更ファイル
 
-`app/case/[id]/page.tsx` のみ。DBスキーマ・API・型定義の変更なし。
+- `app/case/[id]/page.tsx` — アニメーション追加
+- `app/api/cases/[id]/route.ts` — PATCH レスポンスに `callerRole: "defendant"` を追加（アカウント参加・ゲスト参加の両方）
+- `tests/e2e/critical.spec.ts` — 待機テキストのセレクタを実 UI に合わせて更新（`text=さんの返答を待っています`）
+
+DBスキーマ・型定義の変更なし。
 
 ### 相手のターン待ちアニメーション
 

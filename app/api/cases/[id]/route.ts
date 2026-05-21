@@ -74,6 +74,7 @@ export async function PATCH(
     await admin.from("cases").update({ defendant_id: user.id, phase: "opening" }).eq("id", id);
     const { data: profile } = await admin.from("profiles").select("display_name").eq("id", user.id).single();
     const caseData = await buildCaseResponse(admin, id);
+    if (!caseData) return NextResponse.json({ error: "ケースが見つかりません" }, { status: 404 });
     return NextResponse.json({ ...caseData, defendantName: profile?.display_name, callerRole: "defendant" });
   }
 
@@ -92,7 +93,9 @@ export async function PATCH(
       { status: 500 }
     );
   }
-  const guestResponse = NextResponse.json({ ...(await buildCaseResponse(admin, id)), callerRole: "defendant" });
+  const guestCaseData = await buildCaseResponse(admin, id);
+  if (!guestCaseData) return NextResponse.json({ error: "ケースが見つかりません" }, { status: 404 });
+  const guestResponse = NextResponse.json({ ...guestCaseData, callerRole: "defendant" });
   guestResponse.cookies.set(`guest_defendant_${id}`, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",

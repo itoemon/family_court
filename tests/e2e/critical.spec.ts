@@ -42,7 +42,7 @@ async function createCase(page: any, topic: string): Promise<string> {
 // 1. 「アカウントでログインして参加」→ joinMode が "login" に切り替わる
 // 2. 「ログインして参加する」→ PATCH /api/cases/:id が実行される
 // 参加完了後は opening フェーズ・原告のターンのため、被告側の textarea は出ない。
-// 代わりに「相手の返答を待っています」が表示されることを確認する。
+// 代わりに「{opponentName} さんの返答を待っています」が表示されることを確認する（部分一致: `text=さんの返答を待っています`）。
 async function joinAsAccount(page: any) {
   await page.click('button:has-text("アカウントでログインして参加")');
   await page.click('button:has-text("ログインして参加する")');
