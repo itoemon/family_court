@@ -272,6 +272,9 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
   const isMyTurn = myRole && caseData.currentTurn === myRole;
   const canSpeak = isMyTurn && !["waiting", "judging", "verdict"].includes(caseData.phase);
   const opponentName = myRole === "plaintiff" ? caseData.defendant?.name : caseData.plaintiff?.name;
+  const warningMap = new Map(
+    (caseData.contradictionWarnings ?? []).map((w) => [w.argumentId, w])
+  );
 
   return (
     <main className="min-h-screen bg-stone-50 flex flex-col">
@@ -331,10 +334,7 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
           const arg = item.data;
           const isPlaintiff = arg.role === "plaintiff";
           const name = isPlaintiff ? caseData.plaintiff?.name : caseData.defendant?.name;
-          const warning: ContradictionWarning | undefined =
-            myRole === arg.role
-              ? (caseData.contradictionWarnings ?? []).find((w) => w.argumentId === arg.id)
-              : undefined;
+          const warning = myRole === arg.role ? warningMap.get(arg.id) : undefined;
           return (
             <div key={arg.id}>
               <div className={`flex flex-col ${isPlaintiff ? "items-start" : "items-end"}`}>

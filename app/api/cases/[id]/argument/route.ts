@@ -62,7 +62,7 @@ export async function POST(
     return NextResponse.json({ error: "発言は500文字以内で入力してください" }, { status: 400 });
   }
 
-  const { data: insertedArg } = await admin
+  const { data: insertedArg, error: insertError } = await admin
     .from("arguments")
     .insert({
       case_id: id,
@@ -73,6 +73,10 @@ export async function POST(
     })
     .select("id")
     .single();
+  if (insertError) {
+    console.error("[argument] insert failed:", insertError);
+    return NextResponse.json({ error: "発言の保存に失敗しました" }, { status: 500 });
+  }
 
   // ターン交代・フェーズ進行
   let nextTurn = c.current_turn;
@@ -103,16 +107,20 @@ export async function POST(
     updated_at: new Date().toISOString(),
   }).eq("id", id);
 
+  // profiles は judge・矛盾チェック両方で使うため先に1回取得
+  const { data: plaintiffProfile } = await admin
+    .from("profiles")
+    .select("display_name, api_key_encrypted")
+    .eq("id", c.plaintiff_id)
+    .single();
+  const plaintiffApiKey = plaintiffProfile?.api_key_encrypted
+    ? decryptApiKey(plaintiffProfile.api_key_encrypted)
+    : null;
+
   try {
-    const { data: plaintiffProfile } = await admin
-      .from("profiles")
-      .select("display_name, api_key_encrypted")
-      .eq("id", c.plaintiff_id)
-      .single();
-    if (!plaintiffProfile?.api_key_encrypted) {
+    if (!plaintiffApiKey) {
       console.warn(`[judge] ${nextPhase === "judging" ? "closing" : "turn"}: plaintiff ${c.plaintiff_id} has no api_key_encrypted`);
     } else {
-      const apiKey = decryptApiKey(plaintiffProfile.api_key_encrypted);
       let defendantName = "反対者";
       if (c.defendant_id) {
         const { data: defProfile } = await admin
@@ -128,10 +136,10 @@ export async function POST(
       const content = await generateJudgeMessage({
         trigger: triggerType,
         topic: c.topic,
-        plaintiffName: plaintiffProfile.display_name ?? "提案者",
+        plaintiffName: plaintiffProfile?.display_name ?? "提案者",
         defendantName,
         lastSpeakerRole: callerRole,
-      }, apiKey);
+      }, plaintiffApiKey);
       await admin.from("judge_messages").insert({ case_id: id, content, trigger_type: triggerType });
     }
   } catch (err) {
@@ -141,13 +149,8 @@ export async function POST(
   // 矛盾チェック（認証済みユーザーのみ、失敗しても無視）
   if (authenticatedUserId && insertedArg?.id) {
     try {
-      const { data: plaintiffProfile } = await admin
-        .from("profiles")
-        .select("api_key_encrypted")
-        .eq("id", c.plaintiff_id)
-        .single();
-      if (plaintiffProfile?.api_key_encrypted) {
-        const apiKey = decryptApiKey(plaintiffProfile.api_key_encrypted);
+      if (plaintiffApiKey) {
+        const apiKey = plaintiffApiKey;
         const { data: pastCases } = await admin
           .from("cases")
           .select("id")

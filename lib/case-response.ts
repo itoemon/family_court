@@ -52,7 +52,8 @@ export async function buildCaseResponse(
       .select("id, argument_id, message, created_at")
       .eq("case_id", caseId)
       .eq("user_id", userId)
-      .order("created_at");
+      .order("created_at")
+      .limit(100);
     contradictionWarnings = (warnings ?? []).map((w) => ({
       id: w.id,
       argumentId: w.argument_id,
