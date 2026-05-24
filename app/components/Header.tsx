@@ -19,6 +19,9 @@ export default async function Header() {
         </Link>
         {user ? (
           <nav className="flex items-center gap-4">
+            <Link href="/history" className="text-stone-600 hover:text-stone-900 transition-colors">
+              過去のケース
+            </Link>
             <Link href="/profile" className="text-stone-600 hover:text-stone-900 transition-colors">
               プロフィール
             </Link>
