@@ -151,16 +151,15 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
     }
   }
 
-  async function handleSubmitArgument(e: { preventDefault(): void }) {
-    e.preventDefault();
-    if (!myRole || !argumentText.trim()) return;
+  async function submitArgument(content: string) {
+    if (!myRole || !content.trim()) return;
     setError("");
     setLoading(true);
     try {
       const res = await fetch(`/api/cases/${caseId}/argument`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: argumentText }),
+        body: JSON.stringify({ content }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -171,6 +170,11 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleSubmitArgument(e: { preventDefault(): void }) {
+    e.preventDefault();
+    await submitArgument(argumentText);
   }
 
   function copyShareLink() {
@@ -233,10 +237,10 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
     }
   }
 
-  function handleSubmitDraft(finalText: string) {
-    setArgumentText(finalText);
+  async function handleSubmitDraft(finalText: string) {
     setDraftText(null);
     setActiveView("dialog");
+    await submitArgument(finalText);
   }
 
   if (!caseData) {

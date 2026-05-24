@@ -36,10 +36,10 @@ export async function generateDefenseResponse(
 </rules>
 
 <case_context>
-<topic>${topic}</topic>
+<topic>${escapeXml(topic)}</topic>
 <dialog_history>
 ${dialogHistory.length > 0
-  ? dialogHistory.map((a, i) => `[${i + 1}] ${a.role === userRole ? "あなた" : "相手"}: ${a.content}`).join("\n")
+  ? dialogHistory.map((a, i) => `[${i + 1}] ${a.role === userRole ? "あなた" : "相手"}: ${escapeXml(a.content)}`).join("\n")
   : "（まだ発言はありません）"}
 </dialog_history>
 </case_context>`.trim();
