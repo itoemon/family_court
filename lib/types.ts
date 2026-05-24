@@ -1,5 +1,14 @@
 export type Role = "plaintiff" | "defendant";
 
+export type JudgeTrigger = "opening" | "turn" | "closing";
+
+export interface JudgeMessage {
+  id: string;
+  content: string;
+  triggerType: JudgeTrigger;
+  createdAt: string;
+}
+
 export type Phase =
   | "waiting"      // 被告の参加待ち
   | "opening"      // 冒頭陳述
@@ -14,7 +23,7 @@ export interface Argument {
   phase: Phase;
   round: number;
   content: string;
-  timestamp: string;
+  createdAt: string;
 }
 
 export interface Player {
@@ -30,6 +39,7 @@ export interface Case {
   plaintiff: Player | null;
   defendant: Player | null;
   arguments: Argument[];
+  judgeMessages: JudgeMessage[];
   phase: Phase;
   currentTurn: Role;
   round: number;

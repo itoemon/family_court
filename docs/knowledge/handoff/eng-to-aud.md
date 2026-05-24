@@ -2,38 +2,46 @@
 
 > **注意**: このメモは task.md を補足するものです。task.md と矛盾する場合は task.md を優先してください。
 
-**タスク**: ケースページのアニメーション演出追加
-**コミット**: d1af2b7
-**日時**: 2026-05-22
+**タスク**: 裁判官 AI による司会機能の実装  
+**日時**: 2026-05-24
 
 ---
 
 ## 実装上の判断・変更点
 
-### 変更ファイル
+### 変更・追加ファイル一覧
 
-- `app/case/[id]/page.tsx` — アニメーション追加
-- `app/api/cases/[id]/route.ts` — PATCH レスポンスに `callerRole: "defendant"` を追加（アカウント参加・ゲスト参加の両方）
-- `tests/e2e/critical.spec.ts` — 待機テキストのセレクタを実 UI に合わせて更新（`text=さんの返答を待っています`）
+| ファイル | 種別 | 内容 |
+|---|---|---|
+| `supabase/schema.sql` | 変更 | `judge_messages` テーブル DDL を追記。既存テーブルへの変更なし。 |
+| `lib/types.ts` | 変更 | `JudgeTrigger`・`JudgeMessage` 型を追加、`Case` に `judgeMessages: JudgeMessage[]` を追加。`Argument.timestamp` を `createdAt` にリネーム（後述）。 |
+| `lib/judge.ts` | 新設 | `generateJudgeMessage` 関数。`claude-haiku-4-5-20251001` で1〜3文の裁判官コメントを生成。 |
+| `lib/case-response.ts` | 変更 | `judge_messages` クエリ追加・`judgeMessages` を戻り値に追加。`arguments` の DB カラム名マッピングも修正（後述）。 |
+| `app/api/cases/[id]/route.ts` | 変更 | PATCH ハンドラのアカウント参加・ゲスト参加両パスに `opening` トリガー生成ブロックを追加。 |
+| `app/api/cases/[id]/argument/route.ts` | 変更 | POST ハンドラに `turn` / `closing` トリガー生成ブロックを追加。 |
+| `app/api/cases/[id]/verdict/route.ts` | 変更 | `Case` 型に `judgeMessages: []` を追加（型エラー修正のみ、ロジック変更なし）。`arguments` マッピングも修正。 |
+| `app/components/JudgeMessageBubble.tsx` | 新設 | 裁判官メッセージ表示コンポーネント。中央配置・stone 系カラー・⚖️ アイコン付き。 |
+| `app/case/[id]/page.tsx` | 変更 | `arguments` と `judgeMessages` を `createdAt` 昇順でマージしたタイムライン表示に変更。 |
 
-DBスキーマ・型定義の変更なし。
+---
 
-### 相手のターン待ちアニメーション
+### `Argument.timestamp` → `createdAt` のリネーム（設計書への逸脱）
 
-- 変更前: `{opponentName} さんの返答を待っています...` の静的テキスト
-- 変更後: テキスト末尾の `...` を除去し、`inline-flex` で3つの丸ドットを追加。各ドットに `animate-bounce` と `0ms / 150ms / 300ms` の `animationDelay` を設定して順番に跳ねる演出にした。
-- 設計書はアニメーション方式を「テキスト末尾の点滅ドット」または「スピナー/パルス」から選択可としており、`animate-bounce` + 遅延による3点ドットを採用した。
+設計書に明示はないが、タイムライン sort のために `Argument.createdAt` が必要だった。既存の `Argument.timestamp` フィールドが DB カラム名 `created_at` と不一致のまま未使用だったため、このタイミングで `createdAt` にリネームし `case-response.ts` でのマッピングを追加した。
 
-### AI 審議中アニメーションの強化
+既存コードで `timestamp` を参照している箇所はなかった（型チェック・grep で確認済み）。
 
-- 変更前: ⚖️ 絵文字の `animate-pulse` のみ
-- 変更後: 「しばらくお待ちください」テキストの末尾 `...` を除去し、その下に3点バウンスドット（amber-400 色）を追加。サイズは `w-2 h-2` で待機バーのドット（`w-1 h-1`）より大きく、審議中の重みを表現した。
-- 設計書が「ローディングバー or 3点ドット」としていたため、追加CSS不要な3点ドットを選択した。
+---
 
-### 設計書との差異
+### 裁判官コメント生成の同期実行（設計書通り）
 
-- 設計書（design.md）は PR #3 バグ修正対応が記載されており、今回の task.md（アニメーション追加）とは別タスクの内容。design.md は参照のみで今回の実装の根拠としていない。
-- 実装はすべて task.md の指示範囲内。
+`await` で同期実行している。`buildCaseResponse` の前に完了させることで、PATCH/POST のレスポンスに生成済みコメントが含まれる。Claude API（Haiku）のレイテンシは 1〜2 秒程度増加するが、設計書の判断通り許容している。
+
+---
+
+### `judge_messages` の DB 適用
+
+`supabase/schema.sql` への DDL 追記は完了済み。**Supabase ダッシュボードの SQL Editor での実行は未完了**（ビルドのスコープ外。運用担当が本番 DB に適用すること）。
 
 ---
 
@@ -41,26 +49,32 @@ DBスキーマ・型定義の変更なし。
 
 ### 重点確認ポイント
 
-1. **相手ターン待ちバー**: `canSpeak === false && myRole !== null && phase ∉ {waiting, judging, verdict}` の条件下で表示されること
-2. **3点ドットのアニメーション**: ブラウザで実際に bounce するかどうか（CSS アニメーションが効いているか）
-3. **judging フェーズ**: ⚖️ の `animate-pulse` と3点ドットの `animate-bounce` が同時に動作すること
-4. **回帰確認**: 発言フォーム（`canSpeak === true`）の表示・動作に影響がないこと
+1. **開廷宣言（opening）**: ゲスト参加・アカウント参加の両方で PATCH 後のレスポンスに `judgeMessages` が含まれること。原告の API キー未登録時は `judgeMessages: []` のままでケース進行に影響がないこと。
 
-### スコープ外にしたこと
+2. **ターン進行コメント（turn）**: 各発言投稿後（judging 移行以外）に `judgeMessages` が1件ずつ増えること。`callerRole`（発言したロール）が `lastSpeakerRole` として `generateJudgeMessage` に渡り、正しい「次の発言者」が示されること。
 
-- WebSocket や DB 変更を伴うリアルタイム「相手が入力中」表示（task.md 明記）
-- `judging` フェーズ時のローディングバー（3点ドットを選択したため実装なし）
-- 上記以外の演出変更・新機能
+3. **閉廷コメント（closing）**: 最終発言投稿後（`nextPhase === "judging"` のとき）に `trigger_type: "closing"` のメッセージが生成されること。
+
+4. **タイムライン表示**: `arguments` と `judgeMessages` が `createdAt` 昇順でマージされ、⚖️ バブルが適切な位置（発言の間）に挿入されること。
+
+5. **縮退動作**: 原告の `api_key_encrypted` が null のケースでは `judgeMessages` が空配列で返り、タイムラインに裁判官コメントが表示されないこと（エラー表示なし）。
+
+6. **セキュリティ**: 復号済み API キーがレスポンスに含まれないこと。`judge_messages` への書き込みが service_role 経由のみであること（anon/authenticated から INSERT が弾かれること）。
+
+### try-catch の境界確認
+
+PATCH・POST いずれも、裁判官メッセージ生成ブロック（try-catch）の外でメイン処理（cases update / arguments insert）が完了している。Claude API が例外を投げた場合、`console.error` のみ出力してレスポンスはメイン処理の結果をそのまま返す。
 
 ---
 
-## 未実装・引き継ぎバックログ（前サイクル由来）
+## 未実装・スコープ外
 
-| バックログ | 内容 |
-|-----------|------|
-| MEDIUM-001 | GET レスポンスから `plaintiff_id` / `defendant_id` UUID を除外 |
-| MEDIUM-002 | HMAC トークンの決定論的問題（取り消し・個別セッション無効化） |
-| LOW-001 (route.ts) | ゲスト名の最大長バリデーションなし |
-| LOW-001 (claude.ts) | `validateApiKey` のエラー種別区別 |
-| MEDIUM (auth.ts) | ログアウト失敗時のユーザー通知 |
-| LOW (layout.tsx) | `<main>` タグの二重ネスト |
+| 項目 | 内容 |
+|---|---|
+| **Supabase 本番 DB への DDL 適用** | `schema.sql` の DDL 追記は完了。SQL Editor での実行は運用担当が行うこと |
+| WebSocket リアルタイム配信 | task.md 明記でスコープ外 |
+| 弁護人 AI | task.md 明記でスコープ外・別タスク |
+| 過去ケース参照 | task.md 明記でスコープ外・別タスク |
+| MEDIUM-001（UUID 公開） | 既存バックログ |
+| MEDIUM-002（HMAC 決定論的） | 既存バックログ |
+| LOW-001 他 | 既存バックログ |
