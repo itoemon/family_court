@@ -4,63 +4,94 @@
 
 ## 今回のタスク
 
-矛盾チェック機能を実装する。
-同一ユーザーの過去ケース（判決済み）と現在進行中のケースを比較し、過去の自分の主張と矛盾する発言をしていないか AI が検出・警告する機能。
+弁護人AI機能を実装する。
+ユーザは、ユーザ同士の対話チャットとは別に、自分専用の弁護人AIとの個人チャットを利用できる。
+弁護人AIはヒアリングを通じてユーザの気持ちや主張を整理し、対話チャットへの回答案を生成する。
 
 ## 背景・目的
 
-ユーザーが過去に「Aが正しい」と主張していたのに、別のケースで「Aは間違いだ」と主張するような矛盾が発生しうる。
-これを検出することで話し合いの質を高め、アプリの差別化ポイントにもなる。
+感情的になりがちな家族間・夫婦間の対話において、ユーザが自分の主張を整理しやすくなることを目的とする。
+弁護人AIが共感的なヒアリングを行い、次のターンの回答案を作成することで、冷静かつ建設的な対話を促進する。
 
 ## 機能要件
 
-### 1. 矛盾チェックのトリガー
+### 1. UI：チャット切り替えナビゲーション
 
-- ユーザーが発言を投稿した直後（POST /api/cases/[id]/argument の後）に非同期で実行
-- 発言者本人の過去ケース（phase = "verdict"）の arguments を参照する
-- 過去のケースが存在しない場合はスキップ（静かに何もしない）
+- ケースページ（`/case/[id]`）をチャット切り替え型の 2 ビュー構成に変更する
+  - **対話チャット**: 既存のユーザ同士の対話（変更最小限）
+  - **弁護人AIチャット**: 自分専用の弁護人AIとの個人チャット
+- ナビゲーションは Teams / Slack / LINE のようなサイドバー or タブ切り替え形式
+- 弁護人AIチャットは**相手ユーザには非公開**（RLS で自分のみ参照可）
 
-### 2. AI による矛盾判定
+### 2. 弁護人AIチャット
 
-- 使用モデル: claude-haiku-4-5-20251001（コスト重視）
-- 入力:
-  - 今回の発言内容（content）
-  - 今回のケースのトピック（topic）
-  - 過去ケースから抽出した同一ユーザーの発言リスト（直近 3 ケース分、各ケース最大 5 発言）
-- 出力: 矛盾ありの場合のみ警告メッセージ（50 文字以内の日本語）、なければ null
-- プロンプトは XML タグでユーザー入力を区切ること（プロンプトインジェクション対策）
+- ユーザと AI が多ターンでやり取りできるチャット UI
+- AI は共感力が高く、感情に寄り添うキャラクター（詳細は § 5 プロンプト参照）
+- 会話はターンをまたいでリセットされない（ケース単位で永続）
+- チャット欄の末尾に「回答案を作成する」ボタンを常時表示
 
-### 3. 矛盾警告の表示
+### 3. 回答案生成フロー
 
-- 矛盾あり判定の場合、`contradiction_warnings` テーブルに保存
-- ケースページのタイムラインに、対象発言の直下に警告バブルとして表示
-- 警告バブルのデザイン: ⚠️ アイコン + amber 系の配色（judge バブルと区別する）
-- 発言者本人にのみ表示（相手・observer には見せない）
+1. ユーザが「回答案を作成する」ボタンを押す
+2. API が以下を入力として回答案を生成する:
+   - 対話チャットの発言履歴（`arguments` テーブル）
+   - 弁護人AIとの会話履歴（`defense_messages` テーブル）
+3. 生成された回答案をオーバーレイ（モーダルポップアップ）で表示
+4. ユーザが回答案を加筆修正（任意）
+5. 「送信」を押すと対話チャットへ自動投稿 → ビューが対話チャットに自動切り替わる
+6. 「キャンセル」を押すとモーダルを閉じる（会話は保持）
 
 ### 4. DB スキーマ
 
-新規テーブル `contradiction_warnings` を追加：
+新規テーブル `defense_messages` を追加：
 
 ```sql
-CREATE TABLE contradiction_warnings (
-  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  case_id     uuid NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-  argument_id uuid NOT NULL REFERENCES arguments(id) ON DELETE CASCADE,
-  user_id     uuid NOT NULL,
-  message     text NOT NULL,
-  created_at  timestamptz NOT NULL DEFAULT now()
+CREATE TABLE defense_messages (
+  id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  case_id    uuid NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+  user_id    uuid NOT NULL,
+  role       text NOT NULL CHECK (role IN ('user', 'assistant')),
+  content    text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
 );
 
--- RLS: 本人のみ参照可
-ALTER TABLE contradiction_warnings ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "users can read own warnings"
-  ON contradiction_warnings FOR SELECT
+-- RLS: 本人のみ参照・作成可
+ALTER TABLE defense_messages ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "users can read own defense messages"
+  ON defense_messages FOR SELECT
   USING (user_id = auth.uid());
+CREATE POLICY "users can insert own defense messages"
+  ON defense_messages FOR INSERT
+  WITH CHECK (user_id = auth.uid());
 ```
+
+### 5. AI プロンプト方針
+
+**弁護人AIチャット（ヒアリング）**
+
+- モデル: `claude-haiku-4-5-20251001`（レスポンス速度重視）
+- キャラクター: 共感力が高く、感情に寄り添う弁護人
+  - まずユーザの気持ちを受け止めてから質問する
+  - 詰問せず、ユーザが話しやすい雰囲気を作る
+  - 1 ターンで複数の質問を連打しない（1 つずつ丁寧に）
+- 入力: ケースのトピック（topic）・現在の対話チャット履歴・弁護人AI会話履歴
+- ユーザ入力は XML タグで区切る（プロンプトインジェクション対策）
+
+**回答案生成**
+
+- モデル: `claude-haiku-4-5-20251001`
+- 入力: 対話チャット履歴・弁護人AI会話履歴・ケーストピック
+- 出力: 次のターンで相手に伝える発言文（日本語・200 文字以内）
+- ユーザ入力は XML タグで区切る（プロンプトインジェクション対策）
+
+### 6. API ルート
+
+- `POST /api/cases/[id]/defense` — 弁護人AIへのメッセージ送信・AI 応答返却
+- `POST /api/cases/[id]/defense/draft` — 回答案生成
 
 ## スコープ外
 
-- 相手の発言との矛盾チェック（自分の過去発言との比較のみ）
-- 矛盾の深刻度分類
-- 警告の非表示・スヌーズ機能
-- ページネーション（過去ケース参照は直近 3 件で固定）
+- 相手ユーザの弁護人AI会話履歴への参照
+- 弁護人AIによる自動ヒアリング開始（ユーザが話しかけるまで AI は動かない）
+- 回答案の複数候補生成
+- 会話履歴のリセット機能
