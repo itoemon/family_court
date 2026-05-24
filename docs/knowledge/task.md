@@ -4,37 +4,63 @@
 
 ## 今回のタスク
 
-認証済みユーザーが自分の過去のケース一覧・詳細を参照できる機能を実装する。
+矛盾チェック機能を実装する。
+同一ユーザーの過去ケース（判決済み）と現在進行中のケースを比較し、過去の自分の主張と矛盾する発言をしていないか AI が検出・警告する機能。
 
 ## 背景・目的
 
-現在は進行中のケースページのみ存在し、過去の話し合いを振り返る手段がない。
-ログインユーザーが自分が関わったケースの履歴を閲覧できるようにする。
+ユーザーが過去に「Aが正しい」と主張していたのに、別のケースで「Aは間違いだ」と主張するような矛盾が発生しうる。
+これを検出することで話し合いの質を高め、アプリの差別化ポイントにもなる。
 
 ## 機能要件
 
-### 1. 過去ケース一覧ページ（/history）
+### 1. 矛盾チェックのトリガー
 
-- ログイン済みユーザーのみアクセス可（未ログインは /auth/login にリダイレクト）
-- 自分が原告または被告（defendant_id）として参加したケースを一覧表示
-- 表示項目: topic、相手の名前、フェーズ（verdict が完了済み）、作成日時
-- 新しい順に並べる
+- ユーザーが発言を投稿した直後（POST /api/cases/[id]/argument の後）に非同期で実行
+- 発言者本人の過去ケース（phase = "verdict"）の arguments を参照する
+- 過去のケースが存在しない場合はスキップ（静かに何もしない）
 
-### 2. 過去ケース詳細
+### 2. AI による矛盾判定
 
-- 既存の /case/:id ページをそのまま流用する（新規ページ不要）
-- observer ロールで閲覧（発言フォームは表示しない）
-- 一覧から該当ケースへリンクする
+- 使用モデル: claude-haiku-4-5-20251001（コスト重視）
+- 入力:
+  - 今回の発言内容（content）
+  - 今回のケースのトピック（topic）
+  - 過去ケースから抽出した同一ユーザーの発言リスト（直近 3 ケース分、各ケース最大 5 発言）
+- 出力: 矛盾ありの場合のみ警告メッセージ（50 文字以内の日本語）、なければ null
+- プロンプトは XML タグでユーザー入力を区切ること（プロンプトインジェクション対策）
 
-## DB・設計方針
+### 3. 矛盾警告の表示
 
-- **スキーマ変更なし**。既存の `cases.plaintiff_id` / `cases.defendant_id` でクエリが完結する
-- ゲストユーザー（defendant_guest_name）は永続 ID がないため参照対象外。この割り切りを設計書に明記すること
-- 新規テーブル・カラム追加は不要
+- 矛盾あり判定の場合、`contradiction_warnings` テーブルに保存
+- ケースページのタイムラインに、対象発言の直下に警告バブルとして表示
+- 警告バブルのデザイン: ⚠️ アイコン + amber 系の配色（judge バブルと区別する）
+- 発言者本人にのみ表示（相手・observer には見せない）
+
+### 4. DB スキーマ
+
+新規テーブル `contradiction_warnings` を追加：
+
+```sql
+CREATE TABLE contradiction_warnings (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  case_id     uuid NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+  argument_id uuid NOT NULL REFERENCES arguments(id) ON DELETE CASCADE,
+  user_id     uuid NOT NULL,
+  message     text NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+-- RLS: 本人のみ参照可
+ALTER TABLE contradiction_warnings ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "users can read own warnings"
+  ON contradiction_warnings FOR SELECT
+  USING (user_id = auth.uid());
+```
 
 ## スコープ外
 
-- ゲストユーザーの過去ケース参照
-- 二人のユーザー間のケース横断検索（矛盽チェックは別タスク）
-- ケースの削除・非表示機能
-- ページネーション（件数が少ない前提でスクロールで対応）
+- 相手の発言との矛盾チェック（自分の過去発言との比較のみ）
+- 矛盾の深刻度分類
+- 警告の非表示・スヌーズ機能
+- ページネーション（過去ケース参照は直近 3 件で固定）
