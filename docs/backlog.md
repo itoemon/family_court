@@ -91,6 +91,30 @@
 --- (由来: audit_20260524_183938.md)
  (由来: audit_20260524_183938.md)
 
+### [LOW-001] Supabase エラーオブジェクト素投げ（サーバーログなし）（app/history/page.tsx:40） (由来: audit_20260524_193621.md)
+- **内容**: `if (error) throw error;` により、Supabase クエリ失敗時に生のエラーオブジェクトをそのまま投げている。本番環境では Next.js のエラーバウンダリが処理するためエラー詳細はユーザーに露出しないが、DB 接続障害・権限エラー等が発生しても可観測性がゼロ。障害時に原因特定が困難になる。 (由来: audit_20260524_193621.md)
+- **修正案**: (由来: audit_20260524_193621.md)
+  ```typescript (由来: audit_20260524_193621.md)
+  if (error) { (由来: audit_20260524_193621.md)
+    console.error("[history] cases query failed:", error); (由来: audit_20260524_193621.md)
+    throw new Error("ケース一覧の取得に失敗しました"); (由来: audit_20260524_193621.md)
+-- (由来: audit_20260524_193621.md)
+### [LOW-002] middleware の保護パス判定が完全一致のみ（middleware.ts:32-34） (由来: audit_20260524_193621.md)
+- **内容**: `PROTECTED_PATHS.has(pathname)` による完全一致判定のため、将来 `/history/` （末尾スラッシュ）や `/history/[sub]` などのサブルートが追加された場合、middleware によるリダイレクト保護が適用されない。現時点ではサブルートが存在せず、Server Component 側の `if (!user) redirect(...)` が二重保護として機能しているため即時影響はない。ただし、将来の開発者が Server Component チェックを省いてサブルートを追加するリスクがある。 (由来: audit_20260524_193621.md)
+- **修正案**: (由来: audit_20260524_193621.md)
+  ```typescript (由来: audit_20260524_193621.md)
+  if (!user && (pathname === "/" || pathname.startsWith("/history"))) { (由来: audit_20260524_193621.md)
+  ``` (由来: audit_20260524_193621.md)
+  または、将来のサブルート追加に備えて Set → プレフィックスマッチに変更し、他の認証必須パス（`/profile`、`/case/new`）も同様に保護対象へ移行することを検討する。 (由来: audit_20260524_193621.md)
+-- (由来: audit_20260524_193621.md)
+### [LOW-003] プロフィール取得クエリのエラーが無言で握りつぶされる（app/history/page.tsx:55-63） (由来: audit_20260524_193621.md)
+- **内容**:  (由来: audit_20260524_193621.md)
+  ```typescript (由来: audit_20260524_193621.md)
+  const { data: profiles } = await admin (由来: audit_20260524_193621.md)
+    .from("profiles") (由来: audit_20260524_193621.md)
+    .select("id, display_name") (由来: audit_20260524_193621.md)
+    .in("id", Array.from(opponentIds)); (由来: audit_20260524_193621.md)
+
 ---
 
 ## 対応済み

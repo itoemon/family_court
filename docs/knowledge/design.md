@@ -2,291 +2,138 @@
 
 ## 概要（変更の目的・背景）
 
-現在の話し合いフローは原告・被告が交互に発言するだけで裁判の体裁を欠く。
-本タスクは裁判官 AI を司会として追加し、以下 3 種類のメッセージをサーバー側で自動生成・DB 保存し、クライアントで表示する。
+認証済みユーザーが自分の過去のケース（判決完了済み）を一覧・詳細閲覧できる機能を追加する。現状は進行中のケースページのみ存在し、過去の話し合いを振り返る手段がない。`/history` ページを新設し、既存の `/case/[id]` ページを判決閲覧用としてそのまま流用する。
 
-| trigger_type | 発生タイミング |
-|---|---|
-| `opening` | 被告参加 → `opening` フェーズ移行直後（PATCH `/api/cases/[id]`） |
-| `turn` | 各発言投稿 → ターン更新直後（POST `/api/cases/[id]/argument`、judging 移行以外） |
-| `closing` | 最終発言投稿 → `judging` フェーズ移行直後（POST `/api/cases/[id]/argument`） |
-
-裁判官メッセージは `arguments` テーブルとは独立した専用テーブル `judge_messages` で管理する。クライアントは `arguments` と `judgeMessages` を `created_at` 昇順でマージしてタイムライン表示する。
+スキーマ変更なし。新設ファイルは `app/history/page.tsx` の 1 ファイルのみ。
 
 ---
 
 ## API 仕様（変更・追加するエンドポイントのリクエスト/レスポンス定義）
 
-### GET /api/cases/[id]（変更）
-
-レスポンスに `judgeMessages` 配列を追加する。リクエスト仕様に変更はない。
-
-**レスポンス（変更後、抜粋）**:
-
-```json
-{
-  "id": "uuid",
-  "topic": "...",
-  "phase": "opening",
-  "arguments": [...],
-  "judgeMessages": [
-    {
-      "id": "uuid",
-      "content": "本日の話し合いを開廷します。",
-      "triggerType": "opening",
-      "createdAt": "2026-05-23T00:00:00Z"
-    }
-  ],
-  "callerRole": "plaintiff"
-}
-```
-
-`judgeMessages` は `judge_messages` テーブルから `case_id` で絞り、`created_at` 昇順で取得する。クライアントには `case_id` は含めない。
-
----
-
-### PATCH /api/cases/[id]（変更）
-
-リクエスト仕様に変更はない。レスポンスは `buildCaseResponse` の変更により `judgeMessages` が追加される。
-
-**追加処理（既存の `phase: "opening"` 更新後に実行）**:
-
-1. `cases.plaintiff_id` で `profiles.api_key_encrypted` を取得する
-2. `api_key_encrypted` が null または空の場合はスキップ（`console.warn` のみ）
-3. `decryptApiKey` で復号し、`generateJudgeMessage` を呼び出す（trigger: `"opening"`）
-4. 生成テキストを `judge_messages` に挿入する（`trigger_type: "opening"`）
-5. ステップ 1〜4 は全体を try-catch で囲み、例外は `console.error` のみ。メイン処理のレスポンスには影響させない
-
-プロンプト用の名前は以下から取得する:
-- 原告名: `profiles.display_name`（`plaintiff_id` で取得）
-- 被告名（アカウント参加）: `profiles.display_name`（`defendant_id` で取得）
-- 被告名（ゲスト参加）: `body.defendantName.trim()`
-
----
-
-### POST /api/cases/[id]/argument（変更）
-
-リクエスト仕様に変更はない。レスポンスは `buildCaseResponse` の変更により `judgeMessages` が追加される。
-
-**追加処理（既存の `cases` 更新後に実行）**:
-
-| 条件 | trigger_type | プロンプト追加情報 |
-|---|---|---|
-| `nextPhase === "judging"` | `"closing"` | `topic` のみ |
-| 上記以外 | `"turn"` | `topic`・前発言者名（`callerRole` から）・次発言者名（逆ロール） |
-
-処理の try-catch・スキップ判定は PATCH と同一。
+今回 API Route の追加・変更はない。`/history` ページは Server Component として直接 Supabase クエリを発行する。既存の `/api/cases/[id]` は詳細表示に流用される（変更なし）。
 
 ---
 
 ## データモデル（DB スキーマ・型定義の変更）
 
-### 新設テーブル `judge_messages`
+### スキーマ変更
+
+なし。既存の `cases.plaintiff_id` / `cases.defendant_id` でクエリが完結する。
+
+### クエリ設計
+
+`/history` ページで発行するクエリ（Server Component 内、`createSessionClient()` 使用）：
 
 ```sql
-create table public.judge_messages (
-  id           uuid default gen_random_uuid() primary key,
-  case_id      uuid references public.cases(id) on delete cascade not null,
-  content      text not null,
-  trigger_type text not null check (trigger_type in ('opening', 'turn', 'closing')),
-  created_at   timestamptz default now() not null
-);
-
-alter table public.judge_messages enable row level security;
-
-create policy "誰でも裁判官メッセージを参照可"
-  on public.judge_messages for select
-  using (true);
-
-grant select on public.judge_messages to anon;
-grant select on public.judge_messages to authenticated;
-grant all    on public.judge_messages to service_role;
+SELECT
+  c.id, c.topic, c.phase, c.created_at,
+  c.plaintiff_id, c.defendant_id, c.defendant_guest_name,
+  pp.display_name AS plaintiff_name,
+  dp.display_name AS defendant_name
+FROM cases c
+LEFT JOIN profiles pp ON pp.id = c.plaintiff_id
+LEFT JOIN profiles dp ON dp.id = c.defendant_id
+WHERE (c.plaintiff_id = :userId OR c.defendant_id = :userId)
+  AND c.phase = 'verdict'
+ORDER BY c.created_at DESC
 ```
 
-`arguments` テーブルのスキーマ・CHECK 制約（`role in ('plaintiff','defendant')`）は変更しない。
+Supabase JS SDK では FK エイリアス指定で双方に JOIN する（制約・前提条件参照）。
 
----
+### TypeScript 型定義（lib/types.ts への追加）
 
-### 型定義（lib/types.ts）
-
-以下を追加する:
-
-```typescript
-export type JudgeTrigger = "opening" | "turn" | "closing";
-
-export interface JudgeMessage {
-  id: string;
-  content: string;
-  triggerType: JudgeTrigger;
-  createdAt: string;
-}
+```ts
+export type HistoryCase = {
+  id: string;           // ケース ID（/case/[id] へのリンクに使用）
+  topic: string;        // 議題
+  phase: string;        // フェーズ（常に 'verdict'）
+  createdAt: string;    // 作成日時（ISO 8601）
+  opponentName: string; // 相手の表示名（ゲスト名 or display_name）
+};
 ```
 
-`Case` インターフェースに追加:
-
-```typescript
-judgeMessages: JudgeMessage[];
-```
+`plaintiff_id` / `defendant_id` の UUID はサーバー側のみで使用し、`HistoryCase` 型には含めない。
 
 ---
 
 ## コンポーネント設計（新設・変更するファイルの責務と仕様）
 
-### lib/judge.ts（新設）
+### `app/history/page.tsx`（新設）
 
-裁判官 AI メッセージ生成の専用モジュール。`lib/claude.ts` のパターンに倣い、Anthropic SDK を直接使用する。
+**種別**: Server Component（`async` 関数）
 
-**関数シグネチャ**:
+**責務**:
+1. `createSessionClient()` で `getUser()` を呼び出し、ログインユーザーの UUID を確定する
+2. Supabase クエリで当該ユーザーが原告または被告（`defendant_id`）として参加した `phase = 'verdict'` のケースを取得する
+3. 取得結果を `HistoryCase[]` に変換し、一覧として HTML レンダリングする
 
-```typescript
-import Anthropic from "@anthropic-ai/sdk";
-import { Role, JudgeTrigger } from "./types";
+**UI 仕様**:
+- ページタイトル: 「過去のケース」
+- 一覧表示項目（各ケース行）:
+  - `topic`（議題）
+  - `opponentName`（相手の名前）
+  - フェーズバッジ（「判決完了」と表示）
+  - `createdAt`（作成日時、ロケール表示）
+- 各行は `/case/[id]` へのリンク
+- ケースが 0 件の場合は「まだ過去のケースはありません」などの空状態メッセージを表示する
+- スタイルは既存 stone 系トーンに準拠、モバイルファースト
 
-interface JudgeParams {
-  trigger: JudgeTrigger;
-  topic: string;
-  plaintiffName: string;
-  defendantName: string;
-  lastSpeakerRole?: Role; // trigger === "turn" のときのみ参照
-}
+**opponent 名の決定ロジック（サーバー側）**:
 
-export async function generateJudgeMessage(
-  params: JudgeParams,
-  apiKey: string
-): Promise<string>
+```
+if (user.id === case.plaintiff_id)
+  → opponentName = defendant_guest_name ?? defendant_profile.display_name ?? "（不明）"
+else
+  → opponentName = plaintiff_profile.display_name ?? "（不明）"
 ```
 
-使用モデル: `claude-haiku-4-5-20251001`（1〜3 文の短い出力にはコスト・速度の観点でHaikuが適切）  
-`max_tokens`: 256
+### `/case/[id]`（変更なし）
 
-**プロンプト仕様**:
-
-| trigger | プロンプト概要 |
-|---------|----------------|
-| `"opening"` | 開廷宣言を求める。`topic`・`plaintiffName`・`defendantName` を提示。1〜2文。威厳ある中立的言葉のみ出力させる。 |
-| `"turn"` | 次ターンへの促しコメントを求める。`topic`・前発言者名と役割・次発言者名と役割を提示。1〜2文。発言内容への評価・介入禁止。 |
-| `"closing"` | 閉廷と審議入りを告げる言葉を求める。`topic` を提示。1〜2文。威厳ある中立的言葉のみ出力させる。 |
-
-各プロンプト末尾に「前置きや余分な説明なしで、裁判官の言葉のみを出力してください」を付記する。レスポンスは `message.content[0].type === "text"` で取得し、テキストをそのまま返す。
-
----
-
-### lib/case-response.ts（変更）
-
-`buildCaseResponse` に `judge_messages` クエリを追加し、戻り値に `judgeMessages` を含める。
-
-```typescript
-const { data: judgeMsgs } = await admin
-  .from("judge_messages")
-  .select("id, content, trigger_type, created_at")
-  .eq("case_id", caseId)
-  .order("created_at");
-```
-
-戻り値に追加:
-```typescript
-judgeMessages: (judgeMsgs ?? []).map((jm) => ({
-  id: jm.id,
-  content: jm.content,
-  triggerType: jm.trigger_type as JudgeTrigger,
-  createdAt: jm.created_at,
-})),
-```
-
-`JudgeTrigger` は `lib/types.ts` からインポートする。
-
----
-
-### app/api/cases/[id]/route.ts（変更: PATCH ハンドラ）
-
-`phase: "opening"` への `cases` 更新が完了した後に、裁判官メッセージ生成ブロックを追加する。try-catch で全体を囲み、失敗はレスポンスに影響させない。
-
-追加するインポート: `generateJudgeMessage` from `@/lib/judge`、`decryptApiKey` from `@/lib/crypto`。
-
----
-
-### app/api/cases/[id]/argument/route.ts（変更: POST ハンドラ）
-
-`cases` 更新完了後に裁判官メッセージ生成ブロックを追加する。`nextPhase` の値で trigger_type を切り替える。try-catch で全体を囲み、失敗はレスポンスに影響させない。
-
-追加するインポート: `generateJudgeMessage` from `@/lib/judge`、`decryptApiKey` from `@/lib/crypto`。
-
----
-
-### app/components/JudgeMessageBubble.tsx（新設）
-
-裁判官メッセージ専用の表示コンポーネント。
-
-```typescript
-interface Props {
-  message: JudgeMessage;
-}
-```
-
-| 属性 | 値 |
-|---|---|
-| 外側ラッパー | `flex justify-center my-2` |
-| バブル | `max-w-[70%] rounded-lg border border-stone-200 bg-stone-100 px-4 py-2` |
-| ヘッダー（アイコン＋ラベル） | `flex items-center gap-1 text-stone-400 text-xs mb-1` に ⚖️ と「裁判官」テキスト |
-| 本文テキスト | `text-stone-600 text-sm italic text-center` |
-
-デザイン原則（要件定義書§デザイン原則）: stone 系ベーストーン、温かみのある柔らかい雰囲気を維持。
-
----
-
-### app/case/[id]/page.tsx（変更: タイムライン表示）
-
-`Case.arguments` と `Case.judgeMessages` を `created_at` 昇順でマージした統合タイムライン配列を生成し、`type` で分岐してレンダリングする。
-
-```typescript
-type TimelineItem =
-  | { type: "argument"; data: Argument }
-  | { type: "judge"; data: JudgeMessage };
-
-const timeline: TimelineItem[] = [
-  ...(caseData.arguments.map((a) => ({ type: "argument" as const, data: a }))),
-  ...(caseData.judgeMessages.map((j) => ({ type: "judge" as const, data: j }))),
-].sort((a, b) =>
-  new Date(a.data.createdAt).getTime() - new Date(b.data.createdAt).getTime()
-);
-```
-
-`type === "argument"` は既存バブルコンポーネント、`type === "judge"` は `JudgeMessageBubble` を使用。
+既存ページをそのまま流用する。`verdict` フェーズのケースは発言フォームが自然に非表示になる前提（制約・前提条件参照）。
 
 ---
 
 ## セキュリティ設計（認証・認可・入力検証の方針）
 
-### APIキーの取得と使用
+### 認証ガード
 
-裁判官メッセージ生成には原告の `profiles.api_key_encrypted` を使用する。ADR-004（BYOK）および既存の判決生成と同一方針。
+- `middleware.ts` の保護対象パスリストに `/history` が含まれていることを確認する。含まれていない場合は追加する
+- Server Component 内でも `getUser()` を呼び出し、ユーザー ID を確定してからクエリを発行する（middleware の保護と合わせて二重確認）
 
-- `createAdminClient()` で取得（RLS バイパス）
-- `decryptApiKey` による復号はサーバー側のみ
-- 復号済みキーはリクエストスコープ内で消費し、レスポンスに含めない
+### データ漏洩防止
 
-### プロンプトへのユーザー入力埋め込み
+- クエリの WHERE 句を必ずサーバー側で適用する（RLS に委ねない方針、environment.md 規則に準拠）
+- `plaintiff_id` / `defendant_id` の UUID はサーバー側でのみ使用し、クライアントに渡す `HistoryCase` 型には含めない。backlog MEDIUM-001（UUID 露出問題）の影響範囲を拡大しない
+- `cases` テーブルは誰でも読めるが（ADR-003）、「自分のケースのみ」はアプリ層のフィルタ（WHERE 句）で保証する
 
-`topic`・`plaintiffName`・`defendantName` はユーザー入力由来のため、プロンプトへの埋め込みに注意が必要。DB への直接影響はないが、プロンプトインジェクションにより裁判官の発言内容が意図しないものになりうる。これは既存の判決生成でも同様の構造であり、本タスクで新たなリスクが増えるわけではない。
+### 入力検証
 
-### フェーズ遷移後の生成順序
-
-裁判官メッセージ生成は `cases` テーブルの更新が `await` で完了した後に開始する。DB の不整合（フェーズ未移行のまま裁判官が開廷宣言する等）を防ぐ。
-
-### judge_messages への書き込み権限
-
-`judge_messages` テーブルは `service_role`（`createAdminClient`）のみが書き込める。ユーザー（anon/authenticated）は読み取り専用。裁判官コメントの改ざん・注入はAPIレイヤーで防がれる。
+新規ユーザー入力なし（読み取り専用ページ）。
 
 ---
 
 ## 制約・前提条件
 
-1. **APIキー未登録時の縮退動作**: 原告が API キーを登録していない場合、裁判官メッセージは生成されない。`judgeMessages` は空配列として返り、ケースの進行・判決生成には影響しない。クライアントは空配列を「裁判官コメントなし」として正常に扱うこと。
+### ゲストユーザーの除外
 
-2. **リアルタイム配信はスコープ外**: 裁判官メッセージは既存のポーリング（GET /api/cases/[id]）で取得される。開廷宣言は PATCH 完了後の `buildCaseResponse` レスポンスに含まれるため、被告側は参加直後に受け取る。原告側は次回ポーリングで受け取る。
+`defendant_guest_name` を使って参加したゲストユーザーは永続的なアカウント ID を持たない。そのため `/history` への参照対象から除外する。`defendant_id IS NULL`（ゲスト参加）のケースは `OR defendant_id = userId` の条件にマッチしないため自動的に除外される。追加フィルタは不要。これは ADR-002 および task.md の明示的な割り切りである。
 
-3. **弁護人 AI・過去ケース参照はスコープ外**: task.md 明記。
+### 表示対象フェーズ
 
-4. **`arguments` テーブルのスキーマ変更なし**: `role = 'judge'` を `arguments` テーブルに追加する案は採用しない。理由は「データモデル」セクション参照。
+`phase = 'verdict'` の完了済みケースのみを表示対象とする。進行中のケース（waiting / opening / argument / closing / judging）は除外する。
 
-5. **バックログ未解消の既存問題はスコープ外**: MEDIUM-001（UUID公開）・MEDIUM-002（HMAC決定論的）・各LOW問題は本タスクに影響しない。`judge_messages` テーブル追加によりこれらの問題が悪化しないことを確認済み。
+### `/case/[id]` の observer モード
+
+既存の `/case/[id]` ページが `verdict` フェーズのケースを表示する際に発言フォームが自然に非表示になる動作が確実であることを前提とする。
+
+> **注意事項（確認要）**: 実装コードで `verdict` フェーズ時のフォーム非表示が保証されているかを確認すること。保証されていない場合は、既存ページの phase 判定ロジックで対応する（新規ページの作成は行わない。task.md 明示）。
+
+### Supabase JS SDK の二重 FK JOIN
+
+`plaintiff_id` と `defendant_id` はどちらも `profiles` テーブルへの FK が 2 つある。Supabase JS SDK でこれを書く場合は FK 制約名によるエイリアスが必要（例: `profiles!cases_plaintiff_id_fkey`）。
+
+> **注意事項（確認要）**: `supabase/schema.sql` に FK 制約が定義されているかを実装前に確認すること。FK 制約がない場合は二段クエリ（ケース取得 → プロフィール取得）で対応すること。
+
+### ページネーション
+
+スコープ外（task.md 明示）。件数が少ない前提でスクロール対応とする。
