@@ -1,0 +1,187 @@
+import { NextRequest, NextResponse } from "next/server";
+import { createAdminClient, createSessionClient } from "@/lib/supabase/server";
+import { decryptApiKey } from "@/lib/crypto";
+import { generateDefenseResponse } from "@/lib/defense";
+import { DefenseMessage } from "@/lib/types";
+
+type RouteContext = { params: Promise<{ id: string }> };
+
+async function resolveAuth(id: string) {
+  const session = await createSessionClient();
+  const {
+    data: { user },
+  } = await session.auth.getUser();
+  if (!user) return { error: "認証が必要です", status: 401 } as const;
+
+  const admin = createAdminClient();
+  const { data: c } = await admin
+    .from("cases")
+    .select("*")
+    .eq("id", id)
+    .single();
+  if (!c) return { error: "ケースが見つかりません", status: 404 } as const;
+
+  if (user.id !== c.plaintiff_id && user.id !== c.defendant_id) {
+    return { error: "このケースへの参加権限がありません", status: 403 } as const;
+  }
+
+  const userRole: "plaintiff" | "defendant" =
+    user.id === c.plaintiff_id ? "plaintiff" : "defendant";
+
+  const { data: plaintiffProfile } = await admin
+    .from("profiles")
+    .select("api_key_encrypted")
+    .eq("id", c.plaintiff_id)
+    .single();
+
+  if (!plaintiffProfile?.api_key_encrypted) {
+    console.error(`[defense] plaintiff ${c.plaintiff_id} has no api_key_encrypted`);
+    return { error: "APIキーが設定されていません", status: 500 } as const;
+  }
+
+  let apiKey: string;
+  try {
+    apiKey = decryptApiKey(plaintiffProfile.api_key_encrypted);
+  } catch (err) {
+    console.error("[defense] api key decryption failed:", err);
+    return { error: "APIキーの復号に失敗しました", status: 500 } as const;
+  }
+  return { user, c, userRole, apiKey, admin } as const;
+}
+
+function toDefenseMessage(row: {
+  id: string;
+  role: string;
+  content: string;
+  created_at: string;
+}): DefenseMessage {
+  return {
+    id: row.id,
+    role: row.role as "user" | "assistant",
+    content: row.content,
+    createdAt: row.created_at,
+  };
+}
+
+export async function GET(
+  _req: NextRequest,
+  { params }: RouteContext
+) {
+  const { id } = await params;
+  const auth = await resolveAuth(id);
+  if ("error" in auth) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
+  }
+
+  const { user, admin } = auth;
+
+  const { data: rows } = await admin
+    .from("defense_messages")
+    .select("id, role, content, created_at")
+    .eq("case_id", id)
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: true });
+
+  const messages: DefenseMessage[] = (rows ?? []).map(toDefenseMessage);
+  return NextResponse.json({ messages });
+}
+
+export async function POST(
+  req: NextRequest,
+  { params }: RouteContext
+) {
+  const { id } = await params;
+  const auth = await resolveAuth(id);
+  if ("error" in auth) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
+  }
+
+  const { user, c, userRole, apiKey, admin } = auth;
+
+  const body = await req.json();
+  const content: string = body.content ?? "";
+  if (!content.trim()) {
+    return NextResponse.json({ error: "内容を入力してください" }, { status: 400 });
+  }
+  if (content.trim().length > 1000) {
+    return NextResponse.json({ error: "1000文字以内で入力してください" }, { status: 400 });
+  }
+
+  // 既存の会話履歴を取得
+  const { data: existingRows } = await admin
+    .from("defense_messages")
+    .select("id, role, content, created_at")
+    .eq("case_id", id)
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: true });
+
+  // 対話チャット履歴を取得
+  const { data: argumentRows } = await admin
+    .from("arguments")
+    .select("role, content")
+    .eq("case_id", id)
+    .order("created_at", { ascending: true });
+
+  const dialogHistory = (argumentRows ?? []).map((a) => ({
+    role: a.role as "plaintiff" | "defendant",
+    content: a.content as string,
+  }));
+
+  // ユーザーメッセージを INSERT
+  const { data: insertedUser, error: insertUserError } = await admin
+    .from("defense_messages")
+    .insert({ case_id: id, user_id: user.id, role: "user", content: content.trim() })
+    .select("id, role, content, created_at")
+    .single();
+  if (insertUserError || !insertedUser) {
+    console.error("[defense] user message insert failed:", insertUserError);
+    return NextResponse.json({ error: "メッセージの保存に失敗しました" }, { status: 500 });
+  }
+
+  // AI応答を生成
+  const defenseHistoryForAI = [
+    ...(existingRows ?? []).map((r) => ({
+      role: r.role as "user" | "assistant",
+      content: r.content as string,
+    })),
+    { role: "user" as const, content: content.trim() },
+  ];
+
+  let aiText: string;
+  try {
+    aiText = await generateDefenseResponse(
+      {
+        topic: c.topic,
+        dialogHistory,
+        defenseHistory: defenseHistoryForAI,
+        userRole,
+      },
+      apiKey
+    );
+  } catch (err) {
+    console.error("[defense] AI generation failed:", err);
+    return NextResponse.json({ error: "AI応答の生成に失敗しました" }, { status: 500 });
+  }
+
+  // AI応答を INSERT
+  const { data: insertedAI, error: insertAIError } = await admin
+    .from("defense_messages")
+    .insert({ case_id: id, user_id: user.id, role: "assistant", content: aiText })
+    .select("id, role, content, created_at")
+    .single();
+  if (insertAIError || !insertedAI) {
+    console.error("[defense] AI message insert failed:", insertAIError);
+    return NextResponse.json({ error: "AI応答の保存に失敗しました" }, { status: 500 });
+  }
+
+  // 最新の全会話履歴を返却
+  const { data: latestRows } = await admin
+    .from("defense_messages")
+    .select("id, role, content, created_at")
+    .eq("case_id", id)
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: true });
+
+  const messages: DefenseMessage[] = (latestRows ?? []).map(toDefenseMessage);
+  return NextResponse.json({ messages });
+}
