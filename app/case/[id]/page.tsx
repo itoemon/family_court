@@ -4,9 +4,11 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
-import { Case, Role, Argument, JudgeMessage, ContradictionWarning } from "@/lib/types";
+import { Case, Role, Argument, JudgeMessage, ContradictionWarning, DefenseMessage } from "@/lib/types";
 import JudgeMessageBubble from "@/app/components/JudgeMessageBubble";
 import ContradictionWarningBubble from "@/app/components/ContradictionWarningBubble";
+import DefenseChat from "@/app/components/DefenseChat";
+import DraftModal from "@/app/components/DraftModal";
 
 const PHASE_LABELS: Record<string, string> = {
   waiting: "相手の参加を待っています",
@@ -38,6 +40,15 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
   const [copied, setCopied] = useState(false);
   const [requestingVerdict, setRequestingVerdict] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // 弁護人AI state
+  const [activeView, setActiveView] = useState<"dialog" | "defense">("dialog");
+  const [defenseMessages, setDefenseMessages] = useState<DefenseMessage[]>([]);
+  const [defenseInput, setDefenseInput] = useState("");
+  const [defenseLoading, setDefenseLoading] = useState(false);
+  const [draftText, setDraftText] = useState<string | null>(null);
+  const [draftLoading, setDraftLoading] = useState(false);
+  const [showDefenseTab, setShowDefenseTab] = useState(false);
 
   useEffect(() => {
     params.then(({ id }) => setCaseId(id));
@@ -140,16 +151,15 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
     }
   }
 
-  async function handleSubmitArgument(e: { preventDefault(): void }) {
-    e.preventDefault();
-    if (!myRole || !argumentText.trim()) return;
+  async function submitArgument(content: string) {
+    if (!myRole || !content.trim()) return;
     setError("");
     setLoading(true);
     try {
       const res = await fetch(`/api/cases/${caseId}/argument`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: argumentText }),
+        body: JSON.stringify({ content }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -162,11 +172,75 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
     }
   }
 
+  async function handleSubmitArgument(e: { preventDefault(): void }) {
+    e.preventDefault();
+    await submitArgument(argumentText);
+  }
+
   function copyShareLink() {
     const url = `${window.location.origin}/case/${caseId}`;
     navigator.clipboard.writeText(url);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  }
+
+  const fetchDefenseMessages = useCallback(async () => {
+    if (!caseId) return;
+    const res = await fetch(`/api/cases/${caseId}/defense`);
+    if (res.status === 401 || res.status === 403) {
+      setShowDefenseTab(false);
+      return;
+    }
+    if (!res.ok) return;
+    const data = await res.json();
+    setDefenseMessages(data.messages ?? []);
+    setShowDefenseTab(true);
+  }, [caseId]);
+
+  useEffect(() => {
+    if (!caseId) return;
+    fetchDefenseMessages();
+  }, [caseId, fetchDefenseMessages]);
+
+  async function handleSendDefense(e: { preventDefault(): void }) {
+    e.preventDefault();
+    if (!defenseInput.trim()) return;
+    setDefenseLoading(true);
+    try {
+      const res = await fetch(`/api/cases/${caseId}/defense`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: defenseInput }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setDefenseMessages(data.messages ?? []);
+      setDefenseInput("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "エラーが発生しました");
+    } finally {
+      setDefenseLoading(false);
+    }
+  }
+
+  async function handleGenerateDraft() {
+    setDraftLoading(true);
+    try {
+      const res = await fetch(`/api/cases/${caseId}/defense/draft`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setDraftText(data.draft);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "エラーが発生しました");
+    } finally {
+      setDraftLoading(false);
+    }
+  }
+
+  async function handleSubmitDraft(finalText: string) {
+    setDraftText(null);
+    setActiveView("dialog");
+    await submitArgument(finalText);
   }
 
   if (!caseData) {
@@ -312,106 +386,153 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
         />
       </div>
 
-      {caseData.phase === "waiting" && (
-        <div className="max-w-2xl mx-auto w-full px-4 py-6">
-          <div className="bg-white rounded-2xl border border-stone-100 shadow-sm p-8 text-center">
-            <p className="text-stone-500 text-sm mb-4">相手の参加を待っています...</p>
-            <button
-              onClick={copyShareLink}
-              className="bg-rose-400 hover:bg-rose-300 text-white font-semibold px-6 py-2.5 rounded-xl text-sm transition-colors"
-            >
-              {copied ? "✓ コピー済み" : "招待リンクをコピー"}
-            </button>
-          </div>
+      {showDefenseTab && myRole && (
+        <div className="max-w-2xl mx-auto w-full px-4 pt-3 flex gap-2">
+          <button
+            onClick={() => setActiveView("dialog")}
+            className={`flex-1 py-2 rounded-xl text-sm font-medium transition-colors ${
+              activeView === "dialog"
+                ? "bg-indigo-100 text-indigo-700"
+                : "bg-white text-stone-400 border border-stone-200"
+            }`}
+          >
+            対話チャット
+          </button>
+          <button
+            onClick={() => setActiveView("defense")}
+            className={`flex-1 py-2 rounded-xl text-sm font-medium transition-colors ${
+              activeView === "defense"
+                ? "bg-teal-100 text-teal-700"
+                : "bg-white text-stone-400 border border-stone-200"
+            }`}
+          >
+            弁護人AI
+          </button>
         </div>
       )}
 
-      <div className="flex-1 max-w-2xl mx-auto w-full px-4 py-3 space-y-3 overflow-y-auto">
-        {timeline.map((item) => {
-          if (item.type === "judge") {
-            return <JudgeMessageBubble key={`judge-${item.data.id}`} message={item.data} />;
-          }
-          const arg = item.data;
-          const isPlaintiff = arg.role === "plaintiff";
-          const name = isPlaintiff ? caseData.plaintiff?.name : caseData.defendant?.name;
-          const warning = myRole === arg.role ? warningMap.get(arg.id) : undefined;
-          return (
-            <div key={arg.id}>
-              <div className={`flex flex-col ${isPlaintiff ? "items-start" : "items-end"}`}>
-                <p className={`text-xs mb-1 px-1 ${isPlaintiff ? "text-indigo-400" : "text-rose-400"}`}>
-                  {name}
-                  <span className="text-stone-300 ml-1.5">
-                    {PHASE_LABELS[arg.phase]}{arg.phase === "argument" && ` ${arg.round}回目`}
-                  </span>
-                </p>
-                <div className={`max-w-sm rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap shadow-sm ${isPlaintiff ? "bg-indigo-50 text-indigo-900 rounded-tl-sm" : "bg-rose-50 text-rose-900 rounded-tr-sm"}`}>
-                  {arg.content}
+      {activeView === "defense" && showDefenseTab && myRole ? (
+        <DefenseChat
+          messages={defenseMessages}
+          input={defenseInput}
+          loading={defenseLoading}
+          draftLoading={draftLoading}
+          onInputChange={setDefenseInput}
+          onSend={handleSendDefense}
+          onGenerateDraft={handleGenerateDraft}
+        />
+      ) : (
+        <>
+          {caseData.phase === "waiting" && (
+            <div className="max-w-2xl mx-auto w-full px-4 py-6">
+              <div className="bg-white rounded-2xl border border-stone-100 shadow-sm p-8 text-center">
+                <p className="text-stone-500 text-sm mb-4">相手の参加を待っています...</p>
+                <button
+                  onClick={copyShareLink}
+                  className="bg-rose-400 hover:bg-rose-300 text-white font-semibold px-6 py-2.5 rounded-xl text-sm transition-colors"
+                >
+                  {copied ? "✓ コピー済み" : "招待リンクをコピー"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="flex-1 max-w-2xl mx-auto w-full px-4 py-3 space-y-3 overflow-y-auto">
+            {timeline.map((item) => {
+              if (item.type === "judge") {
+                return <JudgeMessageBubble key={`judge-${item.data.id}`} message={item.data} />;
+              }
+              const arg = item.data;
+              const isPlaintiff = arg.role === "plaintiff";
+              const name = isPlaintiff ? caseData.plaintiff?.name : caseData.defendant?.name;
+              const warning = myRole === arg.role ? warningMap.get(arg.id) : undefined;
+              return (
+                <div key={arg.id}>
+                  <div className={`flex flex-col ${isPlaintiff ? "items-start" : "items-end"}`}>
+                    <p className={`text-xs mb-1 px-1 ${isPlaintiff ? "text-indigo-400" : "text-rose-400"}`}>
+                      {name}
+                      <span className="text-stone-300 ml-1.5">
+                        {PHASE_LABELS[arg.phase]}{arg.phase === "argument" && ` ${arg.round}回目`}
+                      </span>
+                    </p>
+                    <div className={`max-w-sm rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap shadow-sm ${isPlaintiff ? "bg-indigo-50 text-indigo-900 rounded-tl-sm" : "bg-rose-50 text-rose-900 rounded-tr-sm"}`}>
+                      {arg.content}
+                    </div>
+                  </div>
+                  {warning && <ContradictionWarningBubble warning={warning} />}
+                </div>
+              );
+            })}
+
+            {caseData.phase === "judging" && (
+              <div className="flex flex-col items-center py-6">
+                <div className="bg-amber-50 border border-amber-100 rounded-2xl px-6 py-5 text-center max-w-xs">
+                  <p className="text-2xl mb-2 animate-pulse">⚖️</p>
+                  <p className="text-amber-700 font-medium text-sm">AI が審議中です</p>
+                  <p className="text-amber-500 text-xs mt-1">しばらくお待ちください</p>
+                  <div className="flex justify-center gap-1.5 mt-3">
+                    <span className="w-2 h-2 rounded-full bg-amber-400 animate-bounce" style={{ animationDelay: "0ms" }} />
+                    <span className="w-2 h-2 rounded-full bg-amber-400 animate-bounce" style={{ animationDelay: "150ms" }} />
+                    <span className="w-2 h-2 rounded-full bg-amber-400 animate-bounce" style={{ animationDelay: "300ms" }} />
+                  </div>
                 </div>
               </div>
-              {warning && <ContradictionWarningBubble warning={warning} />}
-            </div>
-          );
-        })}
+            )}
+            <div ref={bottomRef} />
+          </div>
 
-        {caseData.phase === "judging" && (
-          <div className="flex flex-col items-center py-6">
-            <div className="bg-amber-50 border border-amber-100 rounded-2xl px-6 py-5 text-center max-w-xs">
-              <p className="text-2xl mb-2 animate-pulse">⚖️</p>
-              <p className="text-amber-700 font-medium text-sm">AI が審議中です</p>
-              <p className="text-amber-500 text-xs mt-1">しばらくお待ちください</p>
-              <div className="flex justify-center gap-1.5 mt-3">
-                <span className="w-2 h-2 rounded-full bg-amber-400 animate-bounce" style={{ animationDelay: "0ms" }} />
-                <span className="w-2 h-2 rounded-full bg-amber-400 animate-bounce" style={{ animationDelay: "150ms" }} />
-                <span className="w-2 h-2 rounded-full bg-amber-400 animate-bounce" style={{ animationDelay: "300ms" }} />
+          {canSpeak && myRole && (
+            <div className="bg-white border-t border-stone-100 sticky bottom-0">
+              <form onSubmit={handleSubmitArgument} className="max-w-2xl mx-auto px-4 py-4 space-y-2">
+                <p className="text-xs text-stone-400">
+                  あなたの番です
+                  <span className={`ml-1.5 font-semibold ${myRole === "plaintiff" ? "text-indigo-400" : "text-rose-400"}`}>
+                    （{PHASE_LABELS[caseData.phase]}）
+                  </span>
+                </p>
+                <textarea
+                  value={argumentText}
+                  onChange={(e) => setArgumentText(e.target.value)}
+                  placeholder="気持ちや考えを伝えましょう..."
+                  rows={3}
+                  required
+                  maxLength={500}
+                  className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-rose-300 focus:border-transparent transition resize-none text-sm"
+                />
+                <p className="text-right text-xs text-stone-400 mt-0.5">{argumentText.length}/500</p>
+                {error && <p className="text-rose-500 text-xs">{error}</p>}
+                <button
+                  type="submit"
+                  disabled={loading || !argumentText.trim()}
+                  className={`w-full font-semibold py-2.5 rounded-xl transition-colors text-sm text-white disabled:bg-stone-200 disabled:text-stone-400 ${myRole === "plaintiff" ? "bg-indigo-400 hover:bg-indigo-300" : "bg-rose-400 hover:bg-rose-300"}`}
+                >
+                  {loading ? "送信中..." : "送る"}
+                </button>
+              </form>
+            </div>
+          )}
+
+          {!canSpeak && myRole && !["waiting", "judging", "verdict"].includes(caseData.phase) && (
+            <div className="bg-white border-t border-stone-100 sticky bottom-0">
+              <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-center gap-2">
+                <p className="text-stone-400 text-sm">{opponentName ?? "相手"} さんの返答を待っています</p>
+                <span className="inline-flex items-center gap-0.5">
+                  <span className="w-1 h-1 rounded-full bg-stone-400 animate-bounce" style={{ animationDelay: "0ms" }} />
+                  <span className="w-1 h-1 rounded-full bg-stone-400 animate-bounce" style={{ animationDelay: "150ms" }} />
+                  <span className="w-1 h-1 rounded-full bg-stone-400 animate-bounce" style={{ animationDelay: "300ms" }} />
+                </span>
               </div>
             </div>
-          </div>
-        )}
-        <div ref={bottomRef} />
-      </div>
-
-      {canSpeak && myRole && (
-        <div className="bg-white border-t border-stone-100 sticky bottom-0">
-          <form onSubmit={handleSubmitArgument} className="max-w-2xl mx-auto px-4 py-4 space-y-2">
-            <p className="text-xs text-stone-400">
-              あなたの番です
-              <span className={`ml-1.5 font-semibold ${myRole === "plaintiff" ? "text-indigo-400" : "text-rose-400"}`}>
-                （{PHASE_LABELS[caseData.phase]}）
-              </span>
-            </p>
-            <textarea
-              value={argumentText}
-              onChange={(e) => setArgumentText(e.target.value)}
-              placeholder="気持ちや考えを伝えましょう..."
-              rows={3}
-              required
-              maxLength={500}
-              className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-rose-300 focus:border-transparent transition resize-none text-sm"
-            />
-            <p className="text-right text-xs text-stone-400 mt-0.5">{argumentText.length}/500</p>
-            {error && <p className="text-rose-500 text-xs">{error}</p>}
-            <button
-              type="submit"
-              disabled={loading || !argumentText.trim()}
-              className={`w-full font-semibold py-2.5 rounded-xl transition-colors text-sm text-white disabled:bg-stone-200 disabled:text-stone-400 ${myRole === "plaintiff" ? "bg-indigo-400 hover:bg-indigo-300" : "bg-rose-400 hover:bg-rose-300"}`}
-            >
-              {loading ? "送信中..." : "送る"}
-            </button>
-          </form>
-        </div>
+          )}
+        </>
       )}
 
-      {!canSpeak && myRole && !["waiting", "judging", "verdict"].includes(caseData.phase) && (
-        <div className="bg-white border-t border-stone-100 sticky bottom-0">
-          <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-center gap-2">
-            <p className="text-stone-400 text-sm">{opponentName ?? "相手"} さんの返答を待っています</p>
-            <span className="inline-flex items-center gap-0.5">
-              <span className="w-1 h-1 rounded-full bg-stone-400 animate-bounce" style={{ animationDelay: "0ms" }} />
-              <span className="w-1 h-1 rounded-full bg-stone-400 animate-bounce" style={{ animationDelay: "150ms" }} />
-              <span className="w-1 h-1 rounded-full bg-stone-400 animate-bounce" style={{ animationDelay: "300ms" }} />
-            </span>
-          </div>
-        </div>
+      {draftText !== null && (
+        <DraftModal
+          draft={draftText}
+          onSubmit={handleSubmitDraft}
+          onCancel={() => setDraftText(null)}
+        />
       )}
     </main>
   );

@@ -87,3 +87,10 @@ export type HistoryCase = {
   createdAt: string;
   opponentName: string;
 };
+
+export interface DefenseMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+}
