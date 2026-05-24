@@ -2,16 +2,16 @@
 
 ## 概要（変更の目的・背景）
 
-PR #3（GitHub Copilot レビュー）の指摘対応として、以下 4 件のバグを修正する。
+現在の話し合いフローは原告・被告が交互に発言するだけで裁判の体裁を欠く。
+本タスクは裁判官 AI を司会として追加し、以下 3 種類のメッセージをサーバー側で自動生成・DB 保存し、クライアントで表示する。
 
-| # | 重要度 | 内容 |
-|---|--------|------|
-| 1 | CRITICAL | ゲスト被告の `myRole` がページリロード後に null になり、発言フォームが表示されない |
-| 2 | MEDIUM | `setHasApiKey` が表示名のみ更新の場合でも `true` になる |
-| 3 | MEDIUM | `GUEST_TOKEN_SECRET` 未設定時に non-null アサーション（`!`）が TypeError を引き起こす |
-| 4 | LOW | プロフィール保存の catch 節で `err.message` が表示に反映されない |
+| trigger_type | 発生タイミング |
+|---|---|
+| `opening` | 被告参加 → `opening` フェーズ移行直後（PATCH `/api/cases/[id]`） |
+| `turn` | 各発言投稿 → ターン更新直後（POST `/api/cases/[id]/argument`、judging 移行以外） |
+| `closing` | 最終発言投稿 → `judging` フェーズ移行直後（POST `/api/cases/[id]/argument`） |
 
-新機能追加・DBスキーマ変更・UIデザイン変更はいずれも含まない。
+裁判官メッセージは `arguments` テーブルとは独立した専用テーブル `judge_messages` で管理する。クライアントは `arguments` と `judgeMessages` を `created_at` 昇順でマージしてタイムライン表示する。
 
 ---
 
@@ -19,176 +19,274 @@ PR #3（GitHub Copilot レビュー）の指摘対応として、以下 4 件の
 
 ### GET /api/cases/[id]（変更）
 
-レスポンスに `callerRole` フィールドを追加する。
+レスポンスに `judgeMessages` 配列を追加する。リクエスト仕様に変更はない。
 
-**レスポンス（変更後）**:
+**レスポンス（変更後、抜粋）**:
 
 ```json
 {
-  "case": { ... },
-  "callerRole": "plaintiff" | "defendant" | "observer"
+  "id": "uuid",
+  "topic": "...",
+  "phase": "opening",
+  "arguments": [...],
+  "judgeMessages": [
+    {
+      "id": "uuid",
+      "content": "本日の話し合いを開廷します。",
+      "triggerType": "opening",
+      "createdAt": "2026-05-23T00:00:00Z"
+    }
+  ],
+  "callerRole": "plaintiff"
 }
 ```
 
-**`callerRole` の決定ロジック（サーバー側で完結）**:
-
-```
-1. createSessionClient().auth.getUser() を呼ぶ
-2. 認証済みユーザーが存在する場合:
-   a. user.id === case.plaintiff_id              → "plaintiff"
-   b. user.id === case.defendant_id（非 null）  → "defendant"
-   c. 上記以外                                  → "observer"
-3. 未認証の場合:
-   a. req.cookies.get(`guest_defendant_${id}`)?.value を取得
-   b. verifyGuestToken(id, cookieToken) === true → "defendant"
-   c. Cookie なし / 検証失敗                    → "observer"
-```
-
-Cookie 名 `guest_defendant_{caseId}` は HIGH-001（コミット a83e17b）で確立した規則に従う。
-
-**ステータスコード**: 変更なし（200 / 404）
+`judgeMessages` は `judge_messages` テーブルから `case_id` で絞り、`created_at` 昇順で取得する。クライアントには `case_id` は含めない。
 
 ---
 
-### PUT /api/profile（変更）
+### PATCH /api/cases/[id]（変更）
 
-保存後の API キー登録状態をレスポンスに追加する。
+リクエスト仕様に変更はない。レスポンスは `buildCaseResponse` の変更により `judgeMessages` が追加される。
 
-**レスポンス（変更後）**:
+**追加処理（既存の `phase: "opening"` 更新後に実行）**:
 
-```json
-{
-  "hasApiKey": true | false
-}
-```
+1. `cases.plaintiff_id` で `profiles.api_key_encrypted` を取得する
+2. `api_key_encrypted` が null または空の場合はスキップ（`console.warn` のみ）
+3. `decryptApiKey` で復号し、`generateJudgeMessage` を呼び出す（trigger: `"opening"`）
+4. 生成テキストを `judge_messages` に挿入する（`trigger_type: "opening"`）
+5. ステップ 1〜4 は全体を try-catch で囲み、例外は `console.error` のみ。メイン処理のレスポンスには影響させない
 
-`hasApiKey` の算出: 更新処理完了後に `profiles.api_key_encrypted` の現在値をサーバー側で確認し、非 null・非空文字列であれば `true` とする。リクエストに API キーが含まれていたかどうかとは独立した算出であり、サーバーが唯一の事実源となる。
+プロンプト用の名前は以下から取得する:
+- 原告名: `profiles.display_name`（`plaintiff_id` で取得）
+- 被告名（アカウント参加）: `profiles.display_name`（`defendant_id` で取得）
+- 被告名（ゲスト参加）: `body.defendantName.trim()`
+
+---
+
+### POST /api/cases/[id]/argument（変更）
+
+リクエスト仕様に変更はない。レスポンスは `buildCaseResponse` の変更により `judgeMessages` が追加される。
+
+**追加処理（既存の `cases` 更新後に実行）**:
+
+| 条件 | trigger_type | プロンプト追加情報 |
+|---|---|---|
+| `nextPhase === "judging"` | `"closing"` | `topic` のみ |
+| 上記以外 | `"turn"` | `topic`・前発言者名（`callerRole` から）・次発言者名（逆ロール） |
+
+処理の try-catch・スキップ判定は PATCH と同一。
 
 ---
 
 ## データモデル（DB スキーマ・型定義の変更）
 
-変更なし。
+### 新設テーブル `judge_messages`
+
+```sql
+create table public.judge_messages (
+  id           uuid default gen_random_uuid() primary key,
+  case_id      uuid references public.cases(id) on delete cascade not null,
+  content      text not null,
+  trigger_type text not null check (trigger_type in ('opening', 'turn', 'closing')),
+  created_at   timestamptz default now() not null
+);
+
+alter table public.judge_messages enable row level security;
+
+create policy "誰でも裁判官メッセージを参照可"
+  on public.judge_messages for select
+  using (true);
+
+grant select on public.judge_messages to anon;
+grant select on public.judge_messages to authenticated;
+grant all    on public.judge_messages to service_role;
+```
+
+`arguments` テーブルのスキーマ・CHECK 制約（`role in ('plaintiff','defendant')`）は変更しない。
+
+---
+
+### 型定義（lib/types.ts）
+
+以下を追加する:
+
+```typescript
+export type JudgeTrigger = "opening" | "turn" | "closing";
+
+export interface JudgeMessage {
+  id: string;
+  content: string;
+  triggerType: JudgeTrigger;
+  createdAt: string;
+}
+```
+
+`Case` インターフェースに追加:
+
+```typescript
+judgeMessages: JudgeMessage[];
+```
 
 ---
 
 ## コンポーネント設計（新設・変更するファイルの責務と仕様）
 
-### lib/guest-token.ts（変更）
+### lib/judge.ts（新設）
 
-**変更内容**: `generateGuestToken` および `verifyGuestToken` の両関数の先頭に環境変数ガードを追加し、`!` アサーションを除去する。
+裁判官 AI メッセージ生成の専用モジュール。`lib/claude.ts` のパターンに倣い、Anthropic SDK を直接使用する。
+
+**関数シグネチャ**:
 
 ```typescript
-// 両関数共通のガード（関数内先頭に配置）
-if (!process.env.GUEST_TOKEN_SECRET) {
-  throw new Error("GUEST_TOKEN_SECRET is not set");
+import Anthropic from "@anthropic-ai/sdk";
+import { Role, JudgeTrigger } from "./types";
+
+interface JudgeParams {
+  trigger: JudgeTrigger;
+  topic: string;
+  plaintiffName: string;
+  defendantName: string;
+  lastSpeakerRole?: Role; // trigger === "turn" のときのみ参照
+}
+
+export async function generateJudgeMessage(
+  params: JudgeParams,
+  apiKey: string
+): Promise<string>
+```
+
+使用モデル: `claude-haiku-4-5-20251001`（1〜3 文の短い出力にはコスト・速度の観点でHaikuが適切）  
+`max_tokens`: 256
+
+**プロンプト仕様**:
+
+| trigger | プロンプト概要 |
+|---------|----------------|
+| `"opening"` | 開廷宣言を求める。`topic`・`plaintiffName`・`defendantName` を提示。1〜2文。威厳ある中立的言葉のみ出力させる。 |
+| `"turn"` | 次ターンへの促しコメントを求める。`topic`・前発言者名と役割・次発言者名と役割を提示。1〜2文。発言内容への評価・介入禁止。 |
+| `"closing"` | 閉廷と審議入りを告げる言葉を求める。`topic` を提示。1〜2文。威厳ある中立的言葉のみ出力させる。 |
+
+各プロンプト末尾に「前置きや余分な説明なしで、裁判官の言葉のみを出力してください」を付記する。レスポンスは `message.content[0].type === "text"` で取得し、テキストをそのまま返す。
+
+---
+
+### lib/case-response.ts（変更）
+
+`buildCaseResponse` に `judge_messages` クエリを追加し、戻り値に `judgeMessages` を含める。
+
+```typescript
+const { data: judgeMsgs } = await admin
+  .from("judge_messages")
+  .select("id, content, trigger_type, created_at")
+  .eq("case_id", caseId)
+  .order("created_at");
+```
+
+戻り値に追加:
+```typescript
+judgeMessages: (judgeMsgs ?? []).map((jm) => ({
+  id: jm.id,
+  content: jm.content,
+  triggerType: jm.trigger_type as JudgeTrigger,
+  createdAt: jm.created_at,
+})),
+```
+
+`JudgeTrigger` は `lib/types.ts` からインポートする。
+
+---
+
+### app/api/cases/[id]/route.ts（変更: PATCH ハンドラ）
+
+`phase: "opening"` への `cases` 更新が完了した後に、裁判官メッセージ生成ブロックを追加する。try-catch で全体を囲み、失敗はレスポンスに影響させない。
+
+追加するインポート: `generateJudgeMessage` from `@/lib/judge`、`decryptApiKey` from `@/lib/crypto`。
+
+---
+
+### app/api/cases/[id]/argument/route.ts（変更: POST ハンドラ）
+
+`cases` 更新完了後に裁判官メッセージ生成ブロックを追加する。`nextPhase` の値で trigger_type を切り替える。try-catch で全体を囲み、失敗はレスポンスに影響させない。
+
+追加するインポート: `generateJudgeMessage` from `@/lib/judge`、`decryptApiKey` from `@/lib/crypto`。
+
+---
+
+### app/components/JudgeMessageBubble.tsx（新設）
+
+裁判官メッセージ専用の表示コンポーネント。
+
+```typescript
+interface Props {
+  message: JudgeMessage;
 }
 ```
 
-設計判断:
+| 属性 | 値 |
+|---|---|
+| 外側ラッパー | `flex justify-center my-2` |
+| バブル | `max-w-[70%] rounded-lg border border-stone-200 bg-stone-100 px-4 py-2` |
+| ヘッダー（アイコン＋ラベル） | `flex items-center gap-1 text-stone-400 text-xs mb-1` に ⚖️ と「裁判官」テキスト |
+| 本文テキスト | `text-stone-600 text-sm italic text-center` |
 
-- **関数内ガードを採用する理由**: task.md が「関数内で明示的にガードし、未設定時は原因が追えるエラーを返すこと（500 + 説明文）」と明記しているため。バックログが提案するモジュールトップレベルでの throw は今回のスコープ外。
-- **API Route 側の責務**: この関数を呼び出す各 API Route の catch ブロックで当該 Error を捕捉し、`{ error: "サーバー設定エラーが発生しました。管理者に連絡してください。" }` を 500 で返す。スタックトレース・環境変数名はクライアントに渡さない。
-
----
-
-### app/api/cases/[id]/route.ts（変更: GET ハンドラ）
-
-ケース取得処理に続いて `callerRole` を算出し、既存レスポンスに付与して返す。
-
-```typescript
-// callerRole 算出
-let callerRole: "plaintiff" | "defendant" | "observer" = "observer";
-
-const supabase = await createSessionClient();
-const { data: { user } } = await supabase.auth.getUser();
-
-if (user) {
-  if (user.id === caseData.plaintiff_id) {
-    callerRole = "plaintiff";
-  } else if (caseData.defendant_id && user.id === caseData.defendant_id) {
-    callerRole = "defendant";
-  }
-} else if (caseData.defendant_guest_name) {
-  const cookieToken = req.cookies.get(`guest_defendant_${id}`)?.value;
-  if (cookieToken && verifyGuestToken(id, cookieToken)) {
-    callerRole = "defendant";
-  }
-}
-
-return NextResponse.json({ ...existingResponse, callerRole });
-```
-
-インポート追加: `createSessionClient` from `@/lib/supabase/server`、`verifyGuestToken` from `@/lib/guest-token`。
+デザイン原則（要件定義書§デザイン原則）: stone 系ベーストーン、温かみのある柔らかい雰囲気を維持。
 
 ---
 
-### app/api/profile/route.ts（変更: PUT ハンドラ）
+### app/case/[id]/page.tsx（変更: タイムライン表示）
 
-保存処理完了後、更新後の `profiles.api_key_encrypted` を確認して `hasApiKey` を算出し、レスポンスに含める。
-
-```typescript
-return NextResponse.json({ hasApiKey: !!updatedProfile.api_key_encrypted });
-```
-
----
-
-### app/case/[id]/page.tsx（変更）
-
-`GET /api/cases/[id]` のレスポンスから `callerRole` を取得し、`setMyRole(data.callerRole)` で `myRole` 状態を設定する。
-
-`defendantId` との UUID 比較によるロール判定コードは削除する。サーバー側で判定が完結するためクライアントが UUID を必要とする理由がなくなる。
-
----
-
-### app/profile/page.tsx（変更: 2 箇所）
-
-**箇所 1 — `setHasApiKey` の状態同期**
+`Case.arguments` と `Case.judgeMessages` を `created_at` 昇順でマージした統合タイムライン配列を生成し、`type` で分岐してレンダリングする。
 
 ```typescript
-// 変更前
-setHasApiKey(true);
+type TimelineItem =
+  | { type: "argument"; data: Argument }
+  | { type: "judge"; data: JudgeMessage };
 
-// 変更後
-setHasApiKey(data.hasApiKey);
+const timeline: TimelineItem[] = [
+  ...(caseData.arguments.map((a) => ({ type: "argument" as const, data: a }))),
+  ...(caseData.judgeMessages.map((j) => ({ type: "judge" as const, data: j }))),
+].sort((a, b) =>
+  new Date(a.data.createdAt).getTime() - new Date(b.data.createdAt).getTime()
+);
 ```
 
-**箇所 2 — catch でのエラーメッセージ表示**
-
-```typescript
-// 変更後
-catch (err: unknown) {
-  const message = err instanceof Error ? err.message : "保存中にエラーが発生しました";
-  setError(message);
-}
-```
+`type === "argument"` は既存バブルコンポーネント、`type === "judge"` は `JudgeMessageBubble` を使用。
 
 ---
 
 ## セキュリティ設計（認証・認可・入力検証の方針）
 
-### callerRole 決定はサーバー側で完結させる
+### APIキーの取得と使用
 
-クライアントはロール文字列（`"plaintiff"` / `"defendant"` / `"observer"`）のみを受け取る。UUID（`defendant_id` / `plaintiff_id`）との照合はサーバー側でのみ行い、クライアントに UUID を渡してロール判定させる設計を廃止する。
+裁判官メッセージ生成には原告の `profiles.api_key_encrypted` を使用する。ADR-004（BYOK）および既存の判決生成と同一方針。
 
-`verifyGuestToken` による HMAC 検証もサーバー側のみで実行する。
+- `createAdminClient()` で取得（RLS バイパス）
+- `decryptApiKey` による復号はサーバー側のみ
+- 復号済みキーはリクエストスコープ内で消費し、レスポンスに含めない
 
-### GUEST_TOKEN_SECRET エラーのクライアント隠蔽
+### プロンプトへのユーザー入力埋め込み
 
-`guest-token.ts` が throw したエラーを API Route が catch する際、スタックトレースや環境変数名を含む raw エラーメッセージはクライアントに渡さない。サーバーログには詳細を残す。
+`topic`・`plaintiffName`・`defendantName` はユーザー入力由来のため、プロンプトへの埋め込みに注意が必要。DB への直接影響はないが、プロンプトインジェクションにより裁判官の発言内容が意図しないものになりうる。これは既存の判決生成でも同様の構造であり、本タスクで新たなリスクが増えるわけではない。
 
-### getUser() の遵守
+### フェーズ遷移後の生成順序
 
-`createSessionClient().auth.getUser()` を使用する（`getSession()` 禁止: 要件定義書§セキュリティの規則）。`getUser()` はサーバー側で Supabase Auth へ検証リクエストを送るため、改ざんされた JWT を拒否できる。
+裁判官メッセージ生成は `cases` テーブルの更新が `await` で完了した後に開始する。DB の不整合（フェーズ未移行のまま裁判官が開廷宣言する等）を防ぐ。
+
+### judge_messages への書き込み権限
+
+`judge_messages` テーブルは `service_role`（`createAdminClient`）のみが書き込める。ユーザー（anon/authenticated）は読み取り専用。裁判官コメントの改ざん・注入はAPIレイヤーで防がれる。
 
 ---
 
 ## 制約・前提条件
 
-1. **HIGH-001 実装済みが前提**: Cookie 名 `guest_defendant_{caseId}` および `generateGuestToken` / `verifyGuestToken` は HIGH-001（コミット a83e17b）で実装済みであること。
+1. **APIキー未登録時の縮退動作**: 原告が API キーを登録していない場合、裁判官メッセージは生成されない。`judgeMessages` は空配列として返り、ケースの進行・判決生成には影響しない。クライアントは空配列を「裁判官コメントなし」として正常に扱うこと。
 
-2. **バックログ MEDIUM-001（UUID のクライアント公開）はスコープ外**: `callerRole` の追加でクライアントが UUID に依存する必要はなくなるが、GET レスポンスから `plaintiff_id` / `defendant_id` フィールドを除外する作業は別タスクとする。
+2. **リアルタイム配信はスコープ外**: 裁判官メッセージは既存のポーリング（GET /api/cases/[id]）で取得される。開廷宣言は PATCH 完了後の `buildCaseResponse` レスポンスに含まれるため、被告側は参加直後に受け取る。原告側は次回ポーリングで受け取る。
 
-3. **バックログ MEDIUM-002**（HMAC の決定論的問題）・**LOW-001**（ゲスト名最大長）・**LOW-001 claude.ts**（validateApiKey のエラー区別）はスコープ外。
+3. **弁護人 AI・過去ケース参照はスコープ外**: task.md 明記。
 
-4. **モジュールトップレベルでの GUEST_TOKEN_SECRET チェック（バックログ提案）はスコープ外**: task.md が「関数内ガード」を指示しているため今回はそちらを優先する。
+4. **`arguments` テーブルのスキーマ変更なし**: `role = 'judge'` を `arguments` テーブルに追加する案は採用しない。理由は「データモデル」セクション参照。
+
+5. **バックログ未解消の既存問題はスコープ外**: MEDIUM-001（UUID公開）・MEDIUM-002（HMAC決定論的）・各LOW問題は本タスクに影響しない。`judge_messages` テーブル追加によりこれらの問題が悪化しないことを確認済み。

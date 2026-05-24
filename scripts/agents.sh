@@ -16,6 +16,60 @@ require_claude() {
   command -v envsubst &>/dev/null || die "'envsubst' が見つかりません。macOS: brew install gettext && brew link gettext --force"
 }
 
+# Supabase Management API 経由で SQL を実行する
+# Usage: supabase_execute <sql>
+# 環境変数 SUPABASE_ACCESS_TOKEN と SUPABASE_PROJECT_REF が必要
+supabase_execute() {
+  local sql="$1"
+  local token="${SUPABASE_ACCESS_TOKEN:-}"
+  local project_ref="${SUPABASE_PROJECT_REF:-}"
+
+  [[ -n "$token" ]]       || die "SUPABASE_ACCESS_TOKEN が未設定です"
+  [[ -n "$project_ref" ]] || die "SUPABASE_PROJECT_REF が未設定です"
+
+  local payload
+  payload="$(jq -n --arg q "$sql" '{query: $q}')"
+
+  local response
+  response="$(curl -sf -X POST \
+    "https://api.supabase.com/v1/projects/${project_ref}/database/query" \
+    -H "Authorization: Bearer ${token}" \
+    -H "Content-Type: application/json" \
+    -d "$payload")"
+
+  echo "$response"
+}
+
+# supabase/migrations/ 配下の未適用マイグレーションを実行する
+# ファイル名: YYYYMMDDHHMMSS_<name>.sql（タイムスタンプ昇順で実行）
+# 適用済み管理: supabase/migrations/applied.txt に記録
+run_migrations() {
+  local migrations_dir="$REPO_ROOT/supabase/migrations"
+  local applied_file="$migrations_dir/applied.txt"
+
+  [[ -d "$migrations_dir" ]] || return 0
+
+  touch "$applied_file"
+
+  local applied_count=0
+  for sql_file in "$migrations_dir"/*.sql; do
+    [[ -f "$sql_file" ]] || continue
+    local fname
+    fname="$(basename "$sql_file")"
+    if grep -qxF "$fname" "$applied_file" 2>/dev/null; then
+      continue
+    fi
+    log "マイグレーションを適用します: $fname"
+    local sql_content
+    sql_content="$(cat "$sql_file")"
+    supabase_execute "$sql_content" > /dev/null
+    echo "$fname" >> "$applied_file"
+    ((applied_count++)) || true
+  done
+
+  [[ "$applied_count" -gt 0 ]] && log "マイグレーション完了（${applied_count}件）" || true
+}
+
 # プロンプトファイルを読み込み、環境変数を展開して返す
 # Usage: load_prompt <agent_name> [VAR=value ...]
 load_prompt() {
@@ -100,6 +154,9 @@ run_engineer() {
 
   claude -p "$(load_prompt engineer)" \
     --allowedTools "Edit,Write,Bash,Read,Glob,Grep"
+
+  # supabase/migrations/ に新規 SQL があれば自動適用
+  run_migrations
 
   log "実装完了（ブランチ: $branch）"
   echo "$branch"

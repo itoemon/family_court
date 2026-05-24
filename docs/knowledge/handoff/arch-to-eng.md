@@ -1,73 +1,96 @@
 # アーキ → ビルド 引き継ぎメモ
 
-**タスク**: PR #3 コパ指摘 4 件の修正
+**タスク**: 裁判官 AI による司会機能の実装  
 **設計書**: `docs/knowledge/design.md`
 
 ---
 
 ## 実装の順序と依存関係
 
-| 順番 | ファイル | 内容 |
-|------|----------|------|
-| 1 | `lib/guest-token.ts` | 環境変数ガードを追加（Fix 3） |
-| 2 | `app/api/cases/[id]/route.ts` | GET ハンドラに `callerRole` を追加（Fix 1） |
-| 3 | `app/api/profile/route.ts` | PUT ハンドラのレスポンスに `hasApiKey` を追加（Fix 2） |
-| 4 | `app/case/[id]/page.tsx` | `callerRole` を使った `myRole` 復元（Fix 1 クライアント側） |
-| 5 | `app/profile/page.tsx` | `hasApiKey` 同期 + catch のエラーメッセージ（Fix 2・4） |
-
-Fix 1（callerRole 算出）は `verifyGuestToken` を呼ぶため Fix 3 に依存する。Fix 3 を先に実装すること。それ以外の 4 件は互いに独立している。
+| 順番 | ファイル | 内容 | 依存 |
+|------|----------|------|------|
+| 1 | `supabase/schema.sql` | `judge_messages` テーブルを追加（DDL は設計書§データモデル参照） | なし |
+| 2 | Supabase ダッシュボード | DDL を SQL Editor で実行して本番 DB に適用 | 順番 1 |
+| 3 | `lib/types.ts` | `JudgeTrigger`・`JudgeMessage` 型の追加、`Case` への `judgeMessages` 追加 | なし |
+| 4 | `lib/judge.ts` | 新設。`generateJudgeMessage` 実装 | 順番 3 |
+| 5 | `lib/case-response.ts` | `judge_messages` クエリ追加・戻り値に `judgeMessages` 追加 | 順番 3 |
+| 6 | `app/api/cases/[id]/route.ts` | PATCH ハンドラに開廷宣言生成を追加 | 順番 4・5 |
+| 7 | `app/api/cases/[id]/argument/route.ts` | POST ハンドラにターン進行・閉廷コメント生成を追加 | 順番 4・5 |
+| 8 | `app/components/JudgeMessageBubble.tsx` | 新設。表示コンポーネント | 順番 3 |
+| 9 | `app/case/[id]/page.tsx` | タイムライン統合表示 | 順番 8 |
 
 ---
 
 ## 設計上の判断
 
-### Fix 1: callerRole の追加先を GET /api/cases/[id] とした理由
+### 別テーブル `judge_messages` を採用した理由
 
-バックログ MEDIUM-001 は `/api/cases/[id]/my-role` という専用エンドポイントを提案している。しかし task.md は「GET /api/cases/[id] のレスポンスにサーバー側で `callerRole` を含めて返す」と明示しており、task.md が最優先のため既存エンドポイントへの追加を採用した。クライアントの余分な API コールを防げる利点もある。
+`arguments.role` に `'judge'` を追加する案は却下した。
 
-### Fix 1: ロール判定のロジックを argument route と統一した
+却下理由:
+- `arguments` テーブルの `role` CHECK 制約（`'plaintiff'|'defendant'`）を変更すると、ターン判定・権限確認の既存ロジックに影響が広がる
+- `round` カラムが裁判官メッセージに無意味（NOT NULL 制約のためダミー値か制約変更が必要になる）
+- `trigger_type`（opening/turn/closing）という裁判官固有のカラムを持たせる先として `judge_messages` が自然
 
-`callerRole` の決定ロジックは HIGH-001 で実装済みの `app/api/cases/[id]/argument/route.ts` と同一の方式（`getUser()` + UUID 照合、ゲストは Cookie 検証）を採用している。同一ケースで 2 つのエンドポイントが異なるロール判定をする事態を防ぐため、コードが冗長でも 2 か所に書く。将来的にロジックが複雑化した場合は共通ヘルパーへの抽出を検討すること（今回はスコープ外）。
+別テーブルの欠点（タイムライン統合のためクライアント側マージが必要）は `created_at` ソートで解決できるため許容範囲内。
 
-### Fix 2: サーバーレスポンスで `hasApiKey` を同期する理由
+### `lib/judge.ts` を `lib/claude.ts` と分離した理由
 
-API キーの有無はサーバー（DB）が唯一の事実源である。クライアント側で「API キーフィールドが空かどうか」を見る方法では、既存のキーを保持したまま表示名だけを更新した場合に誤った `false` になる。サーバーレスポンスを事実源とする設計を採用した。
+`lib/claude.ts` は「APIキーを受け取りClaudeを呼ぶ低レベルラッパー」として責務が明確。裁判官固有のプロンプト構築ロジックを同ファイルに混入させると保守性が下がる。新機能追加で既存の `validateApiKey`・`requestVerdict` の責務が変わらないよう分離した。
 
-### Fix 3: 関数内ガード（モジュールトップレベルでの throw は採用しない）
+### 裁判官コメント生成のモデルに Haiku を選んだ理由
 
-バックログの修正案ではモジュールトップレベルで throw することを提案しているが、task.md の指示（「関数内で明示的にガードし、未設定時は原因が追えるエラーを返すこと（500 + 説明文）」）を優先した。実装上の差は小さいが、task.md が最優先のルールであるため従う。
+`claude-haiku-4-5-20251001` を使用する。判決生成（`claude-sonnet-4-6`）と異なりコメントは 1〜3 文の短い出力であり、Haiku で品質上十分。BYOK のため原告の API コストを無闇に増やさないことを優先した。
+
+### 同期実行（`await`）を採用した理由
+
+非同期（fire-and-forget）にするとポーリングとの競合が発生しうる（POST レスポンスが返った直後に GET が来たとき judge message がまだ DB にない）。ポーリング方式では `await` で同期実行した方が整合性を保ちやすい。Claude API のレイテンシ増加は許容する（Haiku 使用で最小化）。
 
 ---
 
 ## 注意事項・落とし穴
 
-### GUEST_TOKEN_SECRET エラーのクライアント隠蔽
+### APIキー未登録時の縮退
 
-`verifyGuestToken` / `generateGuestToken` が throw した Error の raw メッセージ（環境変数名を含む）はクライアントに渡さないこと。これらを呼び出す API Route の catch ブロックで捕捉し、`{ error: "サーバー設定エラーが発生しました。管理者に連絡してください。" }` を 500 で返すこと。
+`profiles.api_key_encrypted` が null の場合は `generateJudgeMessage` を呼ばず、`console.warn` のみ残す。ケース進行への影響ゼロを守ること。エラーレスポンスを返してはいけない。
 
-### `err instanceof Error` チェック
+### try-catch の境界
 
-Fix 4 の catch 節で `err.message` を参照する場合、TypeScript が `err: unknown` とした際に直接アクセスするとコンパイルエラーになる。`err instanceof Error ? err.message : "保存中にエラーが発生しました"` の形でガードすること。
+裁判官メッセージ生成ブロック（APIキー取得→復号→生成→insert）は 1 つの try-catch で囲む。catch 内では `console.error` のみ実行し、`return NextResponse.json(...)` で失敗レスポンスを返してはいけない。メイン処理（argument の insert・case の update）は catch ブロックの外で完了させること。
 
-### `createSessionClient` のインポート確認
+### 名前取得の順序（PATCH ハンドラ）
 
-GET /api/cases/[id] の route.ts に `createSessionClient` のインポートが既にあるか確認すること。存在しない場合は `@/lib/supabase/server` から追加する。
+PATCH ハンドラ内でのプロンプト用名前取得:
 
-### req.cookies.get() を使う理由
+- **原告名**: `admin.from("profiles").select("display_name").eq("id", c.plaintiff_id)` で取得（`c` は冒頭の cases クエリ結果）
+- **被告名（アカウント）**: ハンドラ内の `profile?.display_name`（既存コードで既に取得済み）
+- **被告名（ゲスト）**: `body.defendantName.trim()`
 
-GET ハンドラ内での Cookie 読み取りには `req.cookies.get(...)` を直接使うこと。`cookies()` はバージョンによって非同期（`await` 必要）になる場合がある（AGENTS.md の警告参照）。`req.cookies` はリクエストオブジェクト直属のため `await` 不要でシンプル。ただし実装前に `node_modules/next/dist/docs/` で本プロジェクトの Next.js バージョンの挙動を確認すること。
+既存コードをよく読んでから追加位置を決めること。`buildCaseResponse` はここでも呼ばれるが、そちらからは名前を取り出さない（buildCaseResponse のシグネチャを変えない）。
+
+### `buildCaseResponse` 戻り値の型
+
+`buildCaseResponse` の戻り値は現状型推論（`null` or オブジェクトリテラル）で、明示的な型が付いていない。`judgeMessages` を追加しても同様に型推論で問題ない。ただし `JudgeTrigger` への as キャストを忘れると TypeScript エラーになる（設計書コード例参照）。
+
+### AGENTS.md の警告
+
+AGENTS.md に「このバージョンには破壊的変更がある」とある。Next.js のバージョンは 16.2.6 で、`params` が `Promise<{ id: string }>` になっている（既存コードで確認済み）。新しいルートハンドラを書く場合は既存コードのパターンを踏襲すること。`cookies()` の非同期化についても既存コードの `req.cookies.get(...)` パターンを参考にすること。
+
+### `supabase/schema.sql` への追記位置
+
+`judge_messages` の DDL は `verdicts` テーブル定義の後ろに追記する。コメント行（`-- judge_messages: 裁判官 AI によるコメント`）を付けてテーブル間の区切りを明確にすること。Supabase SQL Editor での実行も忘れずに行うこと（スキーマファイルを更新しただけでは本番に反映されない）。
 
 ---
 
 ## スコープ外（バックログに残す）
 
-以下は task.md のスコープ外。次のパイプラインサイクルでリードが task.md を更新してから対応すること。
+以下は本タスクに含めないこと。
 
 | バックログ | 内容 |
 |-----------|------|
-| MEDIUM-001 | GET /api/cases/[id] が `plaintiff_id` / `defendant_id` UUID をクライアントに公開 |
-| MEDIUM-002 | HMAC トークンが決定論的（取り消し・個別セッション無効化が不可） |
-| LOW-001 (route.ts) | ゲスト名の最大長バリデーションなし |
-| LOW-001 (claude.ts) | `validateApiKey` がエラー種別（無効キー / API 障害）を区別しない |
-| MEDIUM (auth.ts) | ログアウト失敗時にユーザーへの通知がない |
-| LOW (layout.tsx) | `<main>` タグの二重ネスト問題 |
+| WebSocket/リアルタイム配信 | ポーリングで十分（task.md 明記） |
+| 弁護人 AI | 別タスク（task.md 明記） |
+| 過去ケース参照 | 別タスク（task.md 明記） |
+| MEDIUM-001（UUID公開） | 既存バックログ |
+| MEDIUM-002（HMAC決定論的） | 既存バックログ |
+| LOW-001（ゲスト名最大長）他 | 既存バックログ |
