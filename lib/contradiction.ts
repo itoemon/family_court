@@ -35,5 +35,5 @@ ${pastArguments.map((a, i) => `[${i + 1}] ${a}`).join("\n")}
 
   const text =
     message.content[0].type === "text" ? message.content[0].text.trim() : "なし";
-  return text === "なし" ? null : text;
+  return text === "なし" ? null : text.slice(0, 50);
 }
