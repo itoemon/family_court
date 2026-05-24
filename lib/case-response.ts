@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/server";
+import { JudgeTrigger } from "@/lib/types";
 
 export async function buildCaseResponse(
   admin: ReturnType<typeof createAdminClient>,
@@ -18,6 +19,12 @@ export async function buildCaseResponse(
     .select("*")
     .eq("case_id", caseId)
     .single();
+
+  const { data: judgeMsgs } = await admin
+    .from("judge_messages")
+    .select("id, content, trigger_type, created_at")
+    .eq("case_id", caseId)
+    .order("created_at");
 
   const { data: plaintiff } = await admin
     .from("profiles")
@@ -49,7 +56,20 @@ export async function buildCaseResponse(
     defendantId: c.defendant_id ?? null,
     plaintiff: { name: plaintiff?.display_name ?? "提案者", joinedAt: c.created_at },
     defendant,
-    arguments: args ?? [],
+    arguments: (args ?? []).map((a) => ({
+      id: a.id,
+      role: a.role,
+      phase: a.phase,
+      round: a.round,
+      content: a.content,
+      createdAt: a.created_at,
+    })),
+    judgeMessages: (judgeMsgs ?? []).map((jm) => ({
+      id: jm.id,
+      content: jm.content,
+      triggerType: jm.trigger_type as JudgeTrigger,
+      createdAt: jm.created_at,
+    })),
     verdict: verdict ?? null,
   };
 }

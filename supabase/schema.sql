@@ -117,6 +117,21 @@ create policy "誰でも判決を参照可"
   on public.verdicts for select
   using (true);
 
+-- judge_messages: 裁判官 AI によるコメント
+create table public.judge_messages (
+  id           uuid default gen_random_uuid() primary key,
+  case_id      uuid references public.cases(id) on delete cascade not null,
+  content      text not null,
+  trigger_type text not null check (trigger_type in ('opening', 'turn', 'closing')),
+  created_at   timestamptz default now() not null
+);
+
+alter table public.judge_messages enable row level security;
+
+create policy "誰でも裁判官メッセージを参照可"
+  on public.judge_messages for select
+  using (true);
+
 -- PostgREST ロールへの明示的な権限付与（Supabase SQL Editor 経由では自動付与されないため必須）
 -- anon: 閲覧のみ（RLS でさらに絞る）
 grant select on public.profiles  to anon;
@@ -133,3 +148,6 @@ grant all on public.profiles  to service_role;
 grant all on public.cases     to service_role;
 grant all on public.arguments to service_role;
 grant all on public.verdicts  to service_role;
+grant select on public.judge_messages to anon;
+grant select on public.judge_messages to authenticated;
+grant all    on public.judge_messages to service_role;

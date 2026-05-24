@@ -3,6 +3,8 @@ import { createAdminClient, createSessionClient } from "@/lib/supabase/server";
 import { generateGuestToken, verifyGuestToken } from "@/lib/guest-token";
 import { JoinCaseRequest } from "@/lib/types";
 import { buildCaseResponse } from "@/lib/case-response";
+import { generateJudgeMessage } from "@/lib/judge";
+import { decryptApiKey } from "@/lib/crypto";
 
 export async function GET(
   req: NextRequest,
@@ -73,6 +75,27 @@ export async function PATCH(
     }
     await admin.from("cases").update({ defendant_id: user.id, phase: "opening" }).eq("id", id);
     const { data: profile } = await admin.from("profiles").select("display_name").eq("id", user.id).single();
+    try {
+      const { data: plaintiffProfile } = await admin
+        .from("profiles")
+        .select("display_name, api_key_encrypted")
+        .eq("id", c.plaintiff_id)
+        .single();
+      if (!plaintiffProfile?.api_key_encrypted) {
+        console.warn(`[judge] opening: plaintiff ${c.plaintiff_id} has no api_key_encrypted`);
+      } else {
+        const apiKey = decryptApiKey(plaintiffProfile.api_key_encrypted);
+        const content = await generateJudgeMessage({
+          trigger: "opening",
+          topic: c.topic,
+          plaintiffName: plaintiffProfile.display_name ?? "提案者",
+          defendantName: profile?.display_name ?? "反対者",
+        }, apiKey);
+        await admin.from("judge_messages").insert({ case_id: id, content, trigger_type: "opening" });
+      }
+    } catch (err) {
+      console.error("[judge] opening generation failed:", err);
+    }
     const caseData = await buildCaseResponse(admin, id);
     if (!caseData) return NextResponse.json({ error: "ケースが見つかりません" }, { status: 404 });
     return NextResponse.json({ ...caseData, defendantName: profile?.display_name, callerRole: "defendant" });
@@ -83,6 +106,27 @@ export async function PATCH(
     return NextResponse.json({ error: "名前は必須です" }, { status: 400 });
   }
   await admin.from("cases").update({ defendant_guest_name: body.defendantName.trim(), phase: "opening" }).eq("id", id);
+  try {
+    const { data: plaintiffProfile } = await admin
+      .from("profiles")
+      .select("display_name, api_key_encrypted")
+      .eq("id", c.plaintiff_id)
+      .single();
+    if (!plaintiffProfile?.api_key_encrypted) {
+      console.warn(`[judge] opening: plaintiff ${c.plaintiff_id} has no api_key_encrypted`);
+    } else {
+      const apiKey = decryptApiKey(plaintiffProfile.api_key_encrypted);
+      const content = await generateJudgeMessage({
+        trigger: "opening",
+        topic: c.topic,
+        plaintiffName: plaintiffProfile.display_name ?? "提案者",
+        defendantName: body.defendantName.trim(),
+      }, apiKey);
+      await admin.from("judge_messages").insert({ case_id: id, content, trigger_type: "opening" });
+    }
+  } catch (err) {
+    console.error("[judge] opening generation failed:", err);
+  }
   let token: string;
   try {
     token = generateGuestToken(id);

@@ -4,7 +4,8 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
-import { Case, Role } from "@/lib/types";
+import { Case, Role, Argument, JudgeMessage } from "@/lib/types";
+import JudgeMessageBubble from "@/app/components/JudgeMessageBubble";
 
 const PHASE_LABELS: Record<string, string> = {
   waiting: "相手の参加を待っています",
@@ -93,7 +94,7 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [caseData?.arguments?.length]);
+  }, [caseData?.arguments?.length, caseData?.judgeMessages?.length]);
 
   async function handleJoinAsAccount() {
     setError("");
@@ -258,6 +259,15 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
   }
 
   // ── メイン裁判室 ──────────────────────────────────────────
+  type TimelineItem =
+    | { type: "argument"; data: Argument }
+    | { type: "judge"; data: JudgeMessage };
+
+  const timeline: TimelineItem[] = [
+    ...caseData.arguments.map((a) => ({ type: "argument" as const, data: a })),
+    ...caseData.judgeMessages.map((j) => ({ type: "judge" as const, data: j })),
+  ].sort((a, b) => new Date(a.data.createdAt).getTime() - new Date(b.data.createdAt).getTime());
+
   const isMyTurn = myRole && caseData.currentTurn === myRole;
   const canSpeak = isMyTurn && !["waiting", "judging", "verdict"].includes(caseData.phase);
   const opponentName = myRole === "plaintiff" ? caseData.defendant?.name : caseData.plaintiff?.name;
@@ -313,7 +323,11 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
       )}
 
       <div className="flex-1 max-w-2xl mx-auto w-full px-4 py-3 space-y-3 overflow-y-auto">
-        {caseData.arguments.map((arg) => {
+        {timeline.map((item) => {
+          if (item.type === "judge") {
+            return <JudgeMessageBubble key={`judge-${item.data.id}`} message={item.data} />;
+          }
+          const arg = item.data;
           const isPlaintiff = arg.role === "plaintiff";
           const name = isPlaintiff ? caseData.plaintiff?.name : caseData.defendant?.name;
           return (

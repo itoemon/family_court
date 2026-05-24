@@ -3,6 +3,8 @@ import { createAdminClient, createSessionClient } from "@/lib/supabase/server";
 import { verifyGuestToken } from "@/lib/guest-token";
 import { AddArgumentRequest, Role } from "@/lib/types";
 import { buildCaseResponse } from "@/lib/case-response";
+import { generateJudgeMessage } from "@/lib/judge";
+import { decryptApiKey } from "@/lib/crypto";
 
 export async function POST(
   req: NextRequest,
@@ -93,6 +95,41 @@ export async function POST(
     round: nextRound,
     updated_at: new Date().toISOString(),
   }).eq("id", id);
+
+  try {
+    const { data: plaintiffProfile } = await admin
+      .from("profiles")
+      .select("display_name, api_key_encrypted")
+      .eq("id", c.plaintiff_id)
+      .single();
+    if (!plaintiffProfile?.api_key_encrypted) {
+      console.warn(`[judge] ${nextPhase === "judging" ? "closing" : "turn"}: plaintiff ${c.plaintiff_id} has no api_key_encrypted`);
+    } else {
+      const apiKey = decryptApiKey(plaintiffProfile.api_key_encrypted);
+      let defendantName = "反対者";
+      if (c.defendant_id) {
+        const { data: defProfile } = await admin
+          .from("profiles")
+          .select("display_name")
+          .eq("id", c.defendant_id)
+          .single();
+        defendantName = defProfile?.display_name ?? "反対者";
+      } else if (c.defendant_guest_name) {
+        defendantName = c.defendant_guest_name;
+      }
+      const triggerType = nextPhase === "judging" ? "closing" : "turn";
+      const content = await generateJudgeMessage({
+        trigger: triggerType,
+        topic: c.topic,
+        plaintiffName: plaintiffProfile.display_name ?? "提案者",
+        defendantName,
+        lastSpeakerRole: callerRole,
+      }, apiKey);
+      await admin.from("judge_messages").insert({ case_id: id, content, trigger_type: triggerType });
+    }
+  } catch (err) {
+    console.error("[judge] turn/closing generation failed:", err);
+  }
 
   const caseData = await buildCaseResponse(admin, id);
   return NextResponse.json(caseData);

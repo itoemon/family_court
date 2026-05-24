@@ -44,4 +44,8 @@ next-env.d.ts
 # generated / runtime artifacts
 dev_server.log
 /test-results/
+/playwright-report/
 /tests/e2e/e2e_*.spec.ts
+
+# supabase local dev
+/supabase/.temp/
