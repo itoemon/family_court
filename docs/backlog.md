@@ -123,6 +123,18 @@
     .in("id", Array.from(opponentIds));
   ```
 
+### [MEDIUM-001] profiles クエリが発言投稿時に2回発行される（app/api/cases/[id]/argument/route.ts）
+
+- **内容**: judge 生成と矛盾チェックで同一リクエスト内に `profiles` クエリが2回発行される。発言投稿のレイテンシに直接影響する。
+- **修正案**: 最初のクエリで `api_key_encrypted` と `display_name` を同時に取得し、両ブロックで使い回す。
+- **由来**: audit_20260524_205000.md / MEDIUM-001
+
+### [MEDIUM-002] contradiction_warnings クエリに件数上限なし（lib/case-response.ts）
+
+- **内容**: `.limit()` がないため、将来的にレスポンスペイロードが無制限に膨張しうる。
+- **修正案**: `.limit(100)` 程度の上限を設ける。
+- **由来**: audit_20260524_205000.md / MEDIUM-002
+
 ---
 
 ## 対応済み
