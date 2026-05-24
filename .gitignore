@@ -49,3 +49,6 @@ dev_server.log
 
 # supabase local dev
 /supabase/.temp/
+
+# claude code runtime
+/.claude/
