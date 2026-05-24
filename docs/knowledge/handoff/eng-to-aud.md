@@ -2,7 +2,7 @@
 
 > **注意**: このメモは task.md を補足するものです。task.md と矛盾する場合は task.md を優先してください。
 
-**タスク**: 裁判官 AI による司会機能の実装  
+**タスク**: 過去ケース一覧・詳細閲覧機能の実装  
 **日時**: 2026-05-24
 
 ---
@@ -13,35 +13,40 @@
 
 | ファイル | 種別 | 内容 |
 |---|---|---|
-| `supabase/schema.sql` | 変更 | `judge_messages` テーブル DDL を追記。既存テーブルへの変更なし。 |
-| `lib/types.ts` | 変更 | `JudgeTrigger`・`JudgeMessage` 型を追加、`Case` に `judgeMessages: JudgeMessage[]` を追加。`Argument.timestamp` を `createdAt` にリネーム（後述）。 |
-| `lib/judge.ts` | 新設 | `generateJudgeMessage` 関数。`claude-haiku-4-5-20251001` で1〜3文の裁判官コメントを生成。 |
-| `lib/case-response.ts` | 変更 | `judge_messages` クエリ追加・`judgeMessages` を戻り値に追加。`arguments` の DB カラム名マッピングも修正（後述）。 |
-| `app/api/cases/[id]/route.ts` | 変更 | PATCH ハンドラのアカウント参加・ゲスト参加両パスに `opening` トリガー生成ブロックを追加。 |
-| `app/api/cases/[id]/argument/route.ts` | 変更 | POST ハンドラに `turn` / `closing` トリガー生成ブロックを追加。 |
-| `app/api/cases/[id]/verdict/route.ts` | 変更 | `Case` 型に `judgeMessages: []` を追加（型エラー修正のみ、ロジック変更なし）。`arguments` マッピングも修正。 |
-| `app/components/JudgeMessageBubble.tsx` | 新設 | 裁判官メッセージ表示コンポーネント。中央配置・stone 系カラー・⚖️ アイコン付き。 |
-| `app/case/[id]/page.tsx` | 変更 | `arguments` と `judgeMessages` を `createdAt` 昇順でマージしたタイムライン表示に変更。 |
+| `middleware.ts` | 変更 | `/history` を保護対象パスに追加 |
+| `lib/types.ts` | 変更 | `HistoryCase` 型を追加 |
+| `app/history/page.tsx` | 新設 | 過去ケース一覧 Server Component |
 
 ---
 
-### `Argument.timestamp` → `createdAt` のリネーム（設計書への逸脱）
+### `createAdminClient()` をデータクエリに使用（設計書からの逸脱）
 
-設計書に明示はないが、タイムライン sort のために `Argument.createdAt` が必要だった。既存の `Argument.timestamp` フィールドが DB カラム名 `created_at` と不一致のまま未使用だったため、このタイミングで `createdAt` にリネームし `case-response.ts` でのマッピングを追加した。
+設計書は `createSessionClient()` でクエリを発行するよう記述しているが、以下の理由で `createAdminClient()` を採用した。
 
-既存コードで `timestamp` を参照している箇所はなかった（型チェック・grep で確認済み）。
+`profiles` テーブルの RLS ポリシーが `auth.uid() = id` であり、session client では**自分のプロフィールしか読めない**。相手の `display_name` を取得するには RLS バイパスが必要。
 
----
-
-### 裁判官コメント生成の同期実行（設計書通り）
-
-`await` で同期実行している。`buildCaseResponse` の前に完了させることで、PATCH/POST のレスポンスに生成済みコメントが含まれる。Claude API（Haiku）のレイテンシは 1〜2 秒程度増加するが、設計書の判断通り許容している。
+対応：`createSessionClient()` → `getUser()` でユーザー認証（二重確認）、実データクエリは `createAdminClient()` で実行し、WHERE 句（`plaintiff_id = userId OR defendant_id = userId`）をアプリ層で適用。environment.md の「RLS に認可を委ねない・WHERE 句で保証」方針と一致している。
 
 ---
 
-### `judge_messages` の DB 適用
+### FK エイリアス JOIN を使わず二段クエリを採用
 
-`supabase/schema.sql` への DDL 追記は完了済み。**Supabase ダッシュボードの SQL Editor での実行は未完了**（ビルドのスコープ外。運用担当が本番 DB に適用すること）。
+`arch-to-eng.md` は FK エイリアス JOIN と二段クエリの両方を提示していた。
+
+今回は二段クエリを採用した理由：
+- `schema.sql` の FK 制約がインライン定義であり、PostgreSQL 自動生成の制約名（`cases_plaintiff_id_fkey`）が Supabase PostgREST で確実に解決されるかを実行時に確認できなかった
+- 二段クエリは FK 名依存がなく確実に動作する
+
+実装フロー：
+1. `cases` を取得（plaintiff_id / defendant_id 込み）
+2. 相手の UUID を収集し、`profiles.in(ids)` でバッチ取得
+3. Map で結合して `HistoryCase` に変換
+
+---
+
+### ヘッダーへの `/history` ナビリンク追加は未実施
+
+設計書・handoff メモのスコープに含まれていないため実施しなかった。現状、ユーザーが `/history` に辿り着くにはURL直打ちのみ。オーディが UX ギャップとして次タスクへのフィードバックを検討されたい。
 
 ---
 
@@ -49,32 +54,36 @@
 
 ### 重点確認ポイント
 
-1. **開廷宣言（opening）**: ゲスト参加・アカウント参加の両方で PATCH 後のレスポンスに `judgeMessages` が含まれること。原告の API キー未登録時は `judgeMessages: []` のままでケース進行に影響がないこと。
+1. **認証ガード**: 未ログインで `/history` にアクセスすると `/auth/login` へリダイレクトされること（middleware + Server Component 両方で確認）。
 
-2. **ターン進行コメント（turn）**: 各発言投稿後（judging 移行以外）に `judgeMessages` が1件ずつ増えること。`callerRole`（発言したロール）が `lastSpeakerRole` として `generateJudgeMessage` に渡り、正しい「次の発言者」が示されること。
+2. **一覧表示**: ログイン済みで `phase = 'verdict'` かつ自分が原告または被告（`defendant_id`）のケースのみ表示されること。進行中のケース（waiting〜judging）が混入しないこと。
 
-3. **閉廷コメント（closing）**: 最終発言投稿後（`nextPhase === "judging"` のとき）に `trigger_type: "closing"` のメッセージが生成されること。
+3. **相手の名前**: 
+   - 自分が原告のとき → 被告のゲスト名（`defendant_guest_name`）、または被告の `display_name` が表示されること
+   - 自分が被告のとき → 原告の `display_name` が表示されること
+   - 名前が取得できない場合は「（不明）」と表示されること
 
-4. **タイムライン表示**: `arguments` と `judgeMessages` が `createdAt` 昇順でマージされ、⚖️ バブルが適切な位置（発言の間）に挿入されること。
+4. **ゲストケースの除外**: `defendant_id IS NULL`（ゲスト参加）のケースは `defendant_id.eq.${userId}` にマッチしないため自覧に出ないこと。
 
-5. **縮退動作**: 原告の `api_key_encrypted` が null のケースでは `judgeMessages` が空配列で返り、タイムラインに裁判官コメントが表示されないこと（エラー表示なし）。
+5. **空状態**: 自分が参加した verdict ケースが 0 件のとき「まだ過去のケースはありません」が表示されること。
 
-6. **セキュリティ**: 復号済み API キーがレスポンスに含まれないこと。`judge_messages` への書き込みが service_role 経由のみであること（anon/authenticated から INSERT が弾かれること）。
+6. **詳細リンク**: 各行クリックで `/case/${id}` に遷移し、case ページ内のリダイレクトロジック（`phase === "verdict"` → `/case/${id}/verdict`）により verdict ページが表示されること。発言フォームが表示されないこと（verdict ページは読み取り専用）。
 
-### try-catch の境界確認
+7. **セキュリティ**: `plaintiff_id` / `defendant_id` の UUID がクライアントに渡る `HistoryCase` 型に含まれていないこと。
 
-PATCH・POST いずれも、裁判官メッセージ生成ブロック（try-catch）の外でメイン処理（cases update / arguments insert）が完了している。Claude API が例外を投げた場合、`console.error` のみ出力してレスポンスはメイン処理の結果をそのまま返す。
+### 既存ページへの影響
+
+`/case/[id]/page.tsx` および `/case/[id]/verdict/page.tsx` への変更はなし。既存動作が壊れていないことを確認すること。
 
 ---
 
 ## 未実装・スコープ外
 
-| 項目 | 内容 |
+| 項目 | 理由 |
 |---|---|
-| **Supabase 本番 DB への DDL 適用** | `schema.sql` の DDL 追記は完了。SQL Editor での実行は運用担当が行うこと |
-| WebSocket リアルタイム配信 | task.md 明記でスコープ外 |
-| 弁護人 AI | task.md 明記でスコープ外・別タスク |
-| 過去ケース参照 | task.md 明記でスコープ外・別タスク |
-| MEDIUM-001（UUID 公開） | 既存バックログ |
-| MEDIUM-002（HMAC 決定論的） | 既存バックログ |
-| LOW-001 他 | 既存バックログ |
+| ゲストユーザーの過去ケース参照 | 永続 ID なし。task.md 明示 |
+| ページネーション | task.md 明示でスコープ外 |
+| ヘッダーへの `/history` ナビリンク追加 | 設計書・handoff 未記載。次タスクで検討 |
+| 二人のユーザー間のケース横断検索 | 別タスク |
+| ケースの削除・非表示機能 | 別タスク |
+| MEDIUM-001（UUID 公開）他バックログ | 既存バックログ |

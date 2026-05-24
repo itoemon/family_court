@@ -28,8 +28,9 @@ export async function middleware(request: NextRequest) {
   // セッションを常に最新に保つ（これを省くとログアウトが正常に動かない）
   const { data: { user } } = await supabase.auth.getUser();
 
-  // 未ログインユーザーがホームにアクセスしたら /auth/login へ
-  if (!user && request.nextUrl.pathname === "/") {
+  const { pathname } = request.nextUrl;
+  const PROTECTED_PATHS = new Set(["/", "/history"]);
+  if (!user && PROTECTED_PATHS.has(pathname)) {
     return NextResponse.redirect(new URL("/auth/login", request.url));
   }
 

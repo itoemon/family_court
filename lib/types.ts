@@ -71,3 +71,11 @@ export interface JoinCaseRequest {
 export interface AddArgumentRequest {
   content: string;
 }
+
+export type HistoryCase = {
+  id: string;
+  topic: string;
+  phase: string;
+  createdAt: string;
+  opponentName: string;
+};
