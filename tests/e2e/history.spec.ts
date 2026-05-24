@@ -43,13 +43,8 @@ async function joinAsAccount(page: any) {
   await page.waitForSelector('text=さんの返答を待っています', { timeout: 10_000 });
 }
 
-// API を介して verdict フェーズに進める（テスト効率化用）
-// オーディは実装の詳細確認には立ち入らない、ただし必要に応じて裁量で API 直呼を許容
-async function advanceToVerdictViaApi(page: any, caseId: string) {
-  // 簡便化: ケースページを v イフレームして phase を確認、必要なら reload
-  // 本来は /api/test/advance-case のようなテストヘルパーエンドポイントが必要
-  // 今回は同期的に opening → argument→...→verdict へ遷移させるため、
-  // テスト上では複数ラウンドのターン交代を実装する（実装機能の検証と並行）
+async function waitForVerdict(page: any) {
+  await page.waitForURL(/\/case\/.*\/verdict/, { timeout: 60_000 });
 }
 
 // ────────────────────────────────────────────────────────────
@@ -132,33 +127,15 @@ test('CRITICAL-H02: /history には verdict フェーズのケースのみ表示
     await pageB.click('button:has-text("送る")');
     await pageB.waitForSelector('text=B closing statement', { timeout: 10_000 });
 
-    // judging フェーズに進み、verdict が生成されるのを待つ（最大 30 秒）
-    await pageA.reload();
-    let phase = 'closing';
-    let attempts = 0;
-    while (phase !== 'verdict' && attempts < 30) {
-      await pageA.waitForTimeout(1_000);
-      // ページ内の phase 表示を確認
-      const pageContent = await pageA.content();
-      if (pageContent.includes('verdict')) {
-        phase = 'verdict';
-        break;
-      }
-      attempts++;
-    }
-
-    expect(phase).toBe('verdict');
+    // verdict フェーズに移行するまで待つ
+    await waitForVerdict(pageA);
 
     // A が /history にアクセス
     await pageA.goto('/history');
     await expect(pageA.locator('text=過去のケース')).toBeVisible({ timeout: 10_000 });
 
-    // /history に表示されるケース
-    const caseTexts = await pageA.locator('[role="listitem"]').allTextContents();
-    console.log('Cases in /history:', caseTexts);
-
     // ケース2（completed）は表示されるはず
-    const completedCaseId = completedCaseUrl.split('/').pop();
+    const completedCaseId = completedCaseUrl.split('/').pop()!;
     const historyLinks = await pageA.locator('a').all();
     let foundCompleted = false;
     for (const link of historyLinks) {
@@ -171,7 +148,7 @@ test('CRITICAL-H02: /history には verdict フェーズのケースのみ表示
     expect(foundCompleted).toBe(true);
 
     // ケース1（ongoing）は表示されないはず
-    const ongoingCaseId = ongoingCaseUrl.split('/').pop();
+    const ongoingCaseId = ongoingCaseUrl.split('/').pop()!;
     let foundOngoing = false;
     for (const link of historyLinks) {
       const href = await link.getAttribute('href');
@@ -249,30 +226,18 @@ test('CRITICAL-H03: /history では相手の表示名が正しく表示される
     await pageB.click('button:has-text("送る")');
     await pageB.waitForSelector('text=B closing', { timeout: 10_000 });
 
-    // verdict まで待つ
-    await pageA.reload();
-    let attempts = 0;
-    while (attempts < 30) {
-      const pageContent = await pageA.content();
-      if (pageContent.includes('verdict')) break;
-      await pageA.waitForTimeout(1_000);
-      attempts++;
-    }
+    // verdict フェーズに移行するまで待つ
+    await waitForVerdict(pageA);
 
-    // A が /history で B の名前を確認
+    // A が /history で「相手:」行が表示されることを確認
     await pageA.goto('/history');
     await expect(pageA.locator('text=過去のケース')).toBeVisible({ timeout: 10_000 });
-    // B のメールアドレスは e2e_user_b@example.com で、プロフィール内の display_name として登録されているはず
-    // （テスト環境での display_name 登録状況に依存）
-    // ここでは「B の何らかの名前が表示される」ことを確認
-    const historyContent = await pageA.content();
-    expect(historyContent).toBeTruthy(); // リスト自体が描画されていることを確認
+    await expect(pageA.locator('text=相手:').first()).toBeVisible({ timeout: 10_000 });
 
-    // B が /history で A の名前を確認
+    // B が /history で「相手:」行が表示されることを確認
     await pageB.goto('/history');
     await expect(pageB.locator('text=過去のケース')).toBeVisible({ timeout: 10_000 });
-    const historyContentB = await pageB.content();
-    expect(historyContentB).toBeTruthy();
+    await expect(pageB.locator('text=相手:').first()).toBeVisible({ timeout: 10_000 });
   } finally {
     await ctxA.close();
     await ctxB.close();
@@ -342,22 +307,15 @@ test('CRITICAL-H04: /history ではゲスト被告のケースが表示されな
     await pageGuest.click('button:has-text("送る")');
     await pageGuest.waitForSelector('text=Guest closing response', { timeout: 10_000 });
 
-    // verdict まで待つ
-    await pageA.reload();
-    let attempts = 0;
-    while (attempts < 30) {
-      const pageContent = await pageA.content();
-      if (pageContent.includes('verdict')) break;
-      await pageA.waitForTimeout(1_000);
-      attempts++;
-    }
+    // verdict フェーズに移行するまで待つ
+    await waitForVerdict(pageA);
 
     // A が /history にアクセス
     await pageA.goto('/history');
     await expect(pageA.locator('text=過去のケース')).toBeVisible({ timeout: 10_000 });
 
     // ゲスト被告のケース（defendant_id IS NULL）は表示されないはず
-    const caseId = caseUrl.split('/').pop();
+    const caseId = caseUrl.split('/').pop()!;
     const historyLinks = await pageA.locator('a').all();
     let foundGuestCase = false;
     for (const link of historyLinks) {
@@ -436,39 +394,21 @@ test('CRITICAL-H05: /history からケース詳細へ遷移すると verdict ペ
     await pageB.click('button:has-text("送る")');
     await pageB.waitForSelector('text=B closing', { timeout: 10_000 });
 
-    // verdict まで待つ
-    await pageA.reload();
-    let attempts = 0;
-    while (attempts < 30) {
-      const pageContent = await pageA.content();
-      if (pageContent.includes('verdict')) break;
-      await pageA.waitForTimeout(1_000);
-      attempts++;
-    }
+    // verdict フェーズに移行するまで待つ
+    await waitForVerdict(pageA);
 
     // A が /history にアクセスしてリンクをクリック
     await pageA.goto('/history');
     await expect(pageA.locator('text=過去のケース')).toBeVisible({ timeout: 10_000 });
 
-    // リンクをクリック（最初のケースリンク）
-    const caseLinks = await pageA.locator('a[href*="/case/"]').first().getAttribute('href');
-    expect(caseLinks).toBeTruthy();
+    await pageA.click('a[href*="/case/"]');
+    await pageA.waitForURL(/\/case\/.*\/verdict/, { timeout: 10_000 });
 
-    if (caseLinks) {
-      await pageA.click('a[href*="/case/"]');
-      // /case/[id] にリダイレクトされ、その後 /case/[id]/verdict にリダイレクト
-      // または直接 /case/[id]/verdict に遷移
-      await pageA.waitForURL(/\/case\/.*\/verdict/, { timeout: 10_000 });
+    // verdict ページの固定テキストが表示されること
+    await expect(pageA.locator('text=AI の所見')).toBeVisible({ timeout: 10_000 });
 
-      // verdict ページの marker を確認（勝者、スコアなど）
-      const verdictContent = await pageA.content();
-      expect(verdictContent).toContain('verdict'); // phase が verdict であることを示す表示
-
-      // 発言フォームが表示されないことを確認（observer モード）
-      const textarea = pageA.locator('textarea');
-      const isVisible = await textarea.isVisible().catch(() => false);
-      expect(isVisible).toBe(false);
-    }
+    // 発言フォームが表示されないことを確認（observer モード）
+    await expect(pageA.locator('textarea')).not.toBeVisible();
   } finally {
     await ctxA.close();
     await ctxB.close();

@@ -37,7 +37,10 @@ export default async function HistoryPage() {
     .eq("phase", "verdict")
     .order("created_at", { ascending: false });
 
-  if (error) throw error;
+  if (error) {
+    console.error("[history] cases query failed:", error);
+    throw new Error("ケース一覧の取得に失敗しました");
+  }
 
   const cases: CaseRow[] = rawCases ?? [];
 
@@ -52,10 +55,13 @@ export default async function HistoryPage() {
 
   const profileMap = new Map<string, string>();
   if (opponentIds.size > 0) {
-    const { data: profiles } = await admin
+    const { data: profiles, error: profileError } = await admin
       .from("profiles")
       .select("id, display_name")
       .in("id", Array.from(opponentIds));
+    if (profileError) {
+      console.error("[history] profiles query failed:", profileError);
+    }
     if (profiles) {
       for (const p of profiles as ProfileRow[]) {
         profileMap.set(p.id, p.display_name);
@@ -75,7 +81,7 @@ export default async function HistoryPage() {
     return {
       id: c.id,
       topic: c.topic,
-      phase: c.phase,
+      phase: "verdict" as const,
       createdAt: c.created_at,
       opponentName,
     };

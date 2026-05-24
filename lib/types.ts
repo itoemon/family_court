@@ -75,7 +75,7 @@ export interface AddArgumentRequest {
 export type HistoryCase = {
   id: string;
   topic: string;
-  phase: string;
+  phase: "verdict";
   createdAt: string;
   opponentName: string;
 };
