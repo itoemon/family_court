@@ -5,6 +5,7 @@ import { AddArgumentRequest, Role } from "@/lib/types";
 import { buildCaseResponse } from "@/lib/case-response";
 import { generateJudgeMessage } from "@/lib/judge";
 import { decryptApiKey } from "@/lib/crypto";
+import { checkContradiction } from "@/lib/contradiction";
 
 export async function POST(
   req: NextRequest,
@@ -21,11 +22,13 @@ export async function POST(
 
   // 呼び出し者の身元確認とロール導出
   let callerRole: Role | null = null;
+  let authenticatedUserId: string | null = null;
   try {
     const supabase = await createSessionClient();
     const { data: { user } } = await supabase.auth.getUser();
 
     if (user) {
+      authenticatedUserId = user.id;
       if (user.id === c.plaintiff_id) {
         callerRole = "plaintiff";
       } else if (c.defendant_id && user.id === c.defendant_id) {
@@ -59,13 +62,17 @@ export async function POST(
     return NextResponse.json({ error: "発言は500文字以内で入力してください" }, { status: 400 });
   }
 
-  await admin.from("arguments").insert({
-    case_id: id,
-    role: callerRole,
-    phase: c.phase,
-    round: c.round,
-    content: body.content.trim(),
-  });
+  const { data: insertedArg } = await admin
+    .from("arguments")
+    .insert({
+      case_id: id,
+      role: callerRole,
+      phase: c.phase,
+      round: c.round,
+      content: body.content.trim(),
+    })
+    .select("id")
+    .single();
 
   // ターン交代・フェーズ進行
   let nextTurn = c.current_turn;
@@ -131,6 +138,57 @@ export async function POST(
     console.error("[judge] turn/closing generation failed:", err);
   }
 
-  const caseData = await buildCaseResponse(admin, id);
+  // 矛盾チェック（認証済みユーザーのみ、失敗しても無視）
+  if (authenticatedUserId && insertedArg?.id) {
+    try {
+      const { data: plaintiffProfile } = await admin
+        .from("profiles")
+        .select("api_key_encrypted")
+        .eq("id", c.plaintiff_id)
+        .single();
+      if (plaintiffProfile?.api_key_encrypted) {
+        const apiKey = decryptApiKey(plaintiffProfile.api_key_encrypted);
+        const { data: pastCases } = await admin
+          .from("cases")
+          .select("id")
+          .or(`plaintiff_id.eq.${authenticatedUserId},defendant_id.eq.${authenticatedUserId}`)
+          .eq("phase", "verdict")
+          .neq("id", id)
+          .order("created_at", { ascending: false })
+          .limit(3);
+        if (pastCases && pastCases.length > 0) {
+          const { data: pastArgs } = await admin
+            .from("arguments")
+            .select("content")
+            .in("case_id", pastCases.map((pc) => pc.id))
+            .eq("role", callerRole)
+            .order("created_at", { ascending: false })
+            .limit(15);
+          if (pastArgs && pastArgs.length > 0) {
+            const warning = await checkContradiction(
+              {
+                currentContent: body.content.trim(),
+                topic: c.topic,
+                pastArguments: pastArgs.map((a) => a.content),
+              },
+              apiKey
+            );
+            if (warning) {
+              await admin.from("contradiction_warnings").insert({
+                case_id: id,
+                argument_id: insertedArg.id,
+                user_id: authenticatedUserId,
+                message: warning,
+              });
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[contradiction] check failed:", err);
+    }
+  }
+
+  const caseData = await buildCaseResponse(admin, id, authenticatedUserId ?? undefined);
   return NextResponse.json(caseData);
 }

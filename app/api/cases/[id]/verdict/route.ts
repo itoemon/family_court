@@ -55,6 +55,7 @@ export async function POST(
       createdAt: a.created_at,
     })),
     judgeMessages: [],
+    contradictionWarnings: [],
     phase: c.phase,
     currentTurn: c.current_turn,
     round: c.round,

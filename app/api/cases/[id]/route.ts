@@ -21,11 +21,13 @@ export async function GET(
   if (!rawCase) return NextResponse.json({ error: "ケースが見つかりません" }, { status: 404 });
 
   let callerRole: "plaintiff" | "defendant" | "observer" = "observer";
+  let userId: string | undefined;
   try {
     const supabase = await createSessionClient();
     const { data: { user } } = await supabase.auth.getUser();
 
     if (user) {
+      userId = user.id;
       if (user.id === rawCase.plaintiff_id) {
         callerRole = "plaintiff";
       } else if (rawCase.defendant_id && user.id === rawCase.defendant_id) {
@@ -45,7 +47,7 @@ export async function GET(
     );
   }
 
-  const caseData = await buildCaseResponse(admin, id);
+  const caseData = await buildCaseResponse(admin, id, userId);
   if (!caseData) return NextResponse.json({ error: "ケースが見つかりません" }, { status: 404 });
   return NextResponse.json({ ...caseData, callerRole });
 }

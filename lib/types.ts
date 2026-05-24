@@ -31,6 +31,13 @@ export interface Player {
   joinedAt: string;
 }
 
+export interface ContradictionWarning {
+  id: string;
+  argumentId: string;
+  message: string;
+  createdAt: string;
+}
+
 export interface Case {
   id: string;
   topic: string;
@@ -40,6 +47,7 @@ export interface Case {
   defendant: Player | null;
   arguments: Argument[];
   judgeMessages: JudgeMessage[];
+  contradictionWarnings: ContradictionWarning[];
   phase: Phase;
   currentTurn: Role;
   round: number;

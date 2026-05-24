@@ -1,9 +1,10 @@
 import { createAdminClient } from "@/lib/supabase/server";
-import { JudgeTrigger } from "@/lib/types";
+import { ContradictionWarning, JudgeTrigger } from "@/lib/types";
 
 export async function buildCaseResponse(
   admin: ReturnType<typeof createAdminClient>,
-  caseId: string
+  caseId: string,
+  userId?: string
 ) {
   const { data: c } = await admin.from("cases").select("*").eq("id", caseId).single();
   if (!c) return null;
@@ -44,6 +45,22 @@ export async function buildCaseResponse(
     defendant = { name: c.defendant_guest_name, joinedAt: c.updated_at };
   }
 
+  let contradictionWarnings: ContradictionWarning[] = [];
+  if (userId) {
+    const { data: warnings } = await admin
+      .from("contradiction_warnings")
+      .select("id, argument_id, message, created_at")
+      .eq("case_id", caseId)
+      .eq("user_id", userId)
+      .order("created_at");
+    contradictionWarnings = (warnings ?? []).map((w) => ({
+      id: w.id,
+      argumentId: w.argument_id,
+      message: w.message,
+      createdAt: w.created_at,
+    }));
+  }
+
   return {
     id: c.id,
     topic: c.topic,
@@ -70,6 +87,7 @@ export async function buildCaseResponse(
       triggerType: jm.trigger_type as JudgeTrigger,
       createdAt: jm.created_at,
     })),
+    contradictionWarnings,
     verdict: verdict ?? null,
   };
 }

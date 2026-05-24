@@ -4,8 +4,9 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
-import { Case, Role, Argument, JudgeMessage } from "@/lib/types";
+import { Case, Role, Argument, JudgeMessage, ContradictionWarning } from "@/lib/types";
 import JudgeMessageBubble from "@/app/components/JudgeMessageBubble";
+import ContradictionWarningBubble from "@/app/components/ContradictionWarningBubble";
 
 const PHASE_LABELS: Record<string, string> = {
   waiting: "相手の参加を待っています",
@@ -330,17 +331,24 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
           const arg = item.data;
           const isPlaintiff = arg.role === "plaintiff";
           const name = isPlaintiff ? caseData.plaintiff?.name : caseData.defendant?.name;
+          const warning: ContradictionWarning | undefined =
+            myRole === arg.role
+              ? (caseData.contradictionWarnings ?? []).find((w) => w.argumentId === arg.id)
+              : undefined;
           return (
-            <div key={arg.id} className={`flex flex-col ${isPlaintiff ? "items-start" : "items-end"}`}>
-              <p className={`text-xs mb-1 px-1 ${isPlaintiff ? "text-indigo-400" : "text-rose-400"}`}>
-                {name}
-                <span className="text-stone-300 ml-1.5">
-                  {PHASE_LABELS[arg.phase]}{arg.phase === "argument" && ` ${arg.round}回目`}
-                </span>
-              </p>
-              <div className={`max-w-sm rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap shadow-sm ${isPlaintiff ? "bg-indigo-50 text-indigo-900 rounded-tl-sm" : "bg-rose-50 text-rose-900 rounded-tr-sm"}`}>
-                {arg.content}
+            <div key={arg.id}>
+              <div className={`flex flex-col ${isPlaintiff ? "items-start" : "items-end"}`}>
+                <p className={`text-xs mb-1 px-1 ${isPlaintiff ? "text-indigo-400" : "text-rose-400"}`}>
+                  {name}
+                  <span className="text-stone-300 ml-1.5">
+                    {PHASE_LABELS[arg.phase]}{arg.phase === "argument" && ` ${arg.round}回目`}
+                  </span>
+                </p>
+                <div className={`max-w-sm rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap shadow-sm ${isPlaintiff ? "bg-indigo-50 text-indigo-900 rounded-tl-sm" : "bg-rose-50 text-rose-900 rounded-tr-sm"}`}>
+                  {arg.content}
+                </div>
               </div>
+              {warning && <ContradictionWarningBubble warning={warning} />}
             </div>
           );
         })}
