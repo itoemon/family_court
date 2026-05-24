@@ -1,3 +1,6 @@
+"use client";
+
+import { useEffect, useRef } from "react";
 import { DefenseMessage } from "@/lib/types";
 
 interface DefenseChatProps {
@@ -19,6 +22,12 @@ export default function DefenseChat({
   onSend,
   onGenerateDraft,
 }: DefenseChatProps) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
   return (
     <div className="flex flex-col flex-1 min-h-0">
       <div className="flex-1 max-w-2xl mx-auto w-full px-4 py-3 space-y-3 overflow-y-auto">
@@ -48,6 +57,7 @@ export default function DefenseChat({
             </div>
           </div>
         ))}
+        <div ref={bottomRef} />
       </div>
 
       <div className="bg-white border-t border-stone-100 sticky bottom-0">

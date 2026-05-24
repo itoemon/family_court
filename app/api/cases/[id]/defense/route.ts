@@ -127,18 +127,7 @@ export async function POST(
     content: a.content as string,
   }));
 
-  // ユーザーメッセージを INSERT
-  const { data: insertedUser, error: insertUserError } = await admin
-    .from("defense_messages")
-    .insert({ case_id: id, user_id: user.id, role: "user", content: content.trim() })
-    .select("id, role, content, created_at")
-    .single();
-  if (insertUserError || !insertedUser) {
-    console.error("[defense] user message insert failed:", insertUserError);
-    return NextResponse.json({ error: "メッセージの保存に失敗しました" }, { status: 500 });
-  }
-
-  // AI応答を生成
+  // AI応答を先に生成（INSERT前に実行して孤立レコードを防ぐ）
   const defenseHistoryForAI = [
     ...(existingRows ?? []).map((r) => ({
       role: r.role as "user" | "assistant",
@@ -163,13 +152,24 @@ export async function POST(
     return NextResponse.json({ error: "AI応答の生成に失敗しました" }, { status: 500 });
   }
 
-  // AI応答を INSERT
-  const { data: insertedAI, error: insertAIError } = await admin
+  if (!aiText.trim()) {
+    console.error("[defense] AI returned empty response");
+    return NextResponse.json({ error: "AI応答の生成に失敗しました" }, { status: 500 });
+  }
+
+  // AI生成成功後にまとめてINSERT
+  const { error: insertUserError } = await admin
     .from("defense_messages")
-    .insert({ case_id: id, user_id: user.id, role: "assistant", content: aiText })
-    .select("id, role, content, created_at")
-    .single();
-  if (insertAIError || !insertedAI) {
+    .insert({ case_id: id, user_id: user.id, role: "user", content: content.trim() });
+  if (insertUserError) {
+    console.error("[defense] user message insert failed:", insertUserError);
+    return NextResponse.json({ error: "メッセージの保存に失敗しました" }, { status: 500 });
+  }
+
+  const { error: insertAIError } = await admin
+    .from("defense_messages")
+    .insert({ case_id: id, user_id: user.id, role: "assistant", content: aiText });
+  if (insertAIError) {
     console.error("[defense] AI message insert failed:", insertAIError);
     return NextResponse.json({ error: "AI応答の保存に失敗しました" }, { status: 500 });
   }
