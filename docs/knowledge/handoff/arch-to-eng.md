@@ -558,3 +558,196 @@ if (content) {
 - [ ] D-4: `security-fixes.spec.ts` の `required` 配列に `_B` 系変数が含まれている（実装確認）
 - [ ] D-5: `route.ts` 2 箇所・`argument/route.ts` 1 箇所の INSERT 前に空チェックが入っている
 - [ ] D-6: `route.ts` のゲスト参加パスで 50 文字バリデーションが存在する（実装確認）
+
+---
+
+## E タスク（LOW バックログ 6 件）
+
+### 現状確認結果（2026-05-25 時点）
+
+アーキが実装ファイルを調査した結果、E-3・E-5 は実装済み、E-1・E-2・E-4・E-6 は未対応であることを確認した。
+
+| 修正 ID | 状況 |
+|--------|------|
+| E-1 `defense.ts` generateDraft の defenseHistory に truncate 未適用 | **要実装** |
+| E-2 `cases/[id]/route.ts` PATCH 非 asGuest パスの try-catch 漏れ | **要実装** |
+| E-3 `layout.tsx` `<main>` → `<div>` 変更 | 実装済み（確認のみ） |
+| E-4 `claude.ts` validateApiKey のエラー種別未区別 | **要実装** |
+| E-5 `history/page.tsx` Supabase エラーのログ追加 | 実装済み（確認のみ） |
+| E-6 `middleware.ts` 保護パス判定が `/profile`・`/case` を未保護 | **要実装** |
+
+---
+
+### E-1. `lib/defense.ts` — `generateDraft` 内 `defenseHistory` に `truncate` 追加
+
+**対象ファイル**: `lib/defense.ts`
+
+**変更箇所: L79**
+
+`defenseHistory.map` で `escapeXml(m.content)` を `escapeXml(truncate(m.content, 500))` に変更する。
+
+```ts
+// 変更前（L79）
+${defenseHistory.map((m) => `${m.role === "user" ? "あなた" : "弁護人AI"}: ${escapeXml(m.content)}`).join("\n")}
+
+// 変更後
+${defenseHistory.map((m) => `${m.role === "user" ? "あなた" : "弁護人AI"}: ${escapeXml(truncate(m.content, 500))}`).join("\n")}
+```
+
+**注意**:
+- `truncate` は L2 で `@/lib/text-utils` から既に import 済み。追加 import は不要
+- `generateDefenseResponse` 内（L44–L46）の `apiMessages` は変更不要（SDK オブジェクトとして直接渡す用途のため）
+- `dialogHistory` の truncate（L39・L73）は既に適用済み。今回は `defenseHistory` のみが対象
+
+---
+
+### E-2. `app/api/cases/[id]/route.ts` — PATCH 非 asGuest パスを try-catch で保護
+
+**対象ファイル**: `app/api/cases/[id]/route.ts`
+
+**変更箇所: L71–L106**
+
+現在 L72–L73 の `createSessionClient()` と `getUser()` が try-catch の外にある。L71 の `if (!body.asGuest) {` ブロック内を try-catch で囲む。
+
+```ts
+// 変更前（L71–L106）
+if (!body.asGuest) {
+  const supabase = await createSessionClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "ログインが必要です" }, { status: 401 });
+  if (user.id === c.plaintiff_id) {
+    return NextResponse.json({ error: "自分自身とは話し合いできません" }, { status: 409 });
+  }
+  await admin.from("cases").update(...).eq("id", id);
+  const { data: profile } = await admin.from("profiles")...;
+  try {
+    // 既存の judge メッセージ生成 try-catch（L80–L102）
+    ...
+  } catch (err) { ... }
+  const caseData = await buildCaseResponse(admin, id);
+  ...
+  return NextResponse.json({ ... });
+}
+
+// 変更後
+if (!body.asGuest) {
+  let supabase;
+  let user;
+  try {
+    supabase = await createSessionClient();
+    const { data: { user: u } } = await supabase.auth.getUser();
+    user = u;
+  } catch (err) {
+    console.error("createSessionClient failed:", err);
+    return NextResponse.json(
+      { error: "サーバー設定エラーが発生しました。管理者に連絡してください。" },
+      { status: 500 }
+    );
+  }
+  if (!user) return NextResponse.json({ error: "ログインが必要です" }, { status: 401 });
+  if (user.id === c.plaintiff_id) {
+    return NextResponse.json({ error: "自分自身とは話し合いできません" }, { status: 409 });
+  }
+  // 以下は変更なし
+  ...
+}
+```
+
+**参考パターン**: `app/api/cases/[id]/argument/route.ts` L26–L48 の try-catch 構造を踏襲する。
+
+---
+
+### E-4. `lib/claude.ts` — `validateApiKey` のエラー種別区別
+
+**対象ファイル**: `lib/claude.ts`
+
+**変更箇所: L13–L15（catch ブロック）**
+
+```ts
+// 変更前（L13–L15）
+  } catch {
+    return false;
+  }
+
+// 変更後
+  } catch (error) {
+    if (error instanceof Anthropic.AuthenticationError) return false;
+    throw error;
+  }
+```
+
+**注意**:
+- `Anthropic` は L1 で `import Anthropic from "@anthropic-ai/sdk"` 済み。追加 import は不要
+- `Anthropic.AuthenticationError` は 401・403 レスポンス時にスローされる SDK 組み込みのエラークラス
+- それ以外（ネットワーク障害・タイムアウト・5xx 等）は再 throw することで呼び出し元に伝播させ、Anthropic 障害時に正常キーを「無効」と誤判定しない
+
+---
+
+### E-6. `middleware.ts` — 保護パス判定をプレフィックスマッチに変更
+
+**対象ファイル**: `middleware.ts`
+
+**変更箇所: L32–L34**
+
+現在の判定では `/profile` と `/case` が未保護。これらを追加し、プレフィックスマッチに統一する。
+
+```ts
+// 変更前（L32–L34）
+  const isProtected = pathname === "/" || pathname.startsWith("/history");
+  if (!user && isProtected) {
+    return NextResponse.redirect(new URL("/auth/login", request.url));
+  }
+
+// 変更後
+  const PROTECTED_PATH_PREFIXES = ["/history", "/profile", "/case"];
+  const isProtected =
+    pathname === "/" ||
+    PROTECTED_PATH_PREFIXES.some(p => pathname === p || pathname.startsWith(p + "/"));
+  if (!user && isProtected) {
+    return NextResponse.redirect(new URL("/auth/login", request.url));
+  }
+```
+
+**注意**:
+- `/` は完全一致のみ（`/api/...` を誤って保護しないよう、`startsWith("/")` は使わない）
+- `config.matcher` が `auth` と `api` を既に除外しているため、`/api/...` への誤保護リスクは低いが、明示的に `pathname === "/"` の完全一致で対応する
+- `PROTECTED_PATH_PREFIXES` は `middleware` 関数の内部定数として定義する（モジュールトップレベルでもよいが、再利用箇所がないためローカルで十分）
+
+---
+
+### E-3・E-5 — 実装確認のみ（ビルドの実装作業不要）
+
+#### E-3. `app/layout.tsx`（確認ポイント）
+
+- L43 に `<div className="flex-1">{children}</div>` が存在すること（`<main>` ではないこと）
+
+#### E-5. `app/history/page.tsx`（確認ポイント）
+
+- L41–L43 に以下が存在すること:
+  ```ts
+  console.error("[history] cases query failed:", error);
+  throw new Error("ケース一覧の取得に失敗しました");
+  ```
+- L58–L64 で `profileError` を受け取り `console.error("[history] profiles query failed:", profileError)` が存在すること
+
+---
+
+### E タスク 実装順序の推奨
+
+1. **E-4**（`validateApiKey` catch ブロックの 1 行修正）— 影響範囲が最小
+2. **E-1**（`defenseHistory` の `truncate` 追加）— 1 行変更
+3. **E-2**（PATCH 非 asGuest パスの try-catch 拡張）— 構造変更あり、型チェック必要
+4. **E-6**（middleware 保護パス変更）— 動作確認が必要
+5. **E-3・E-5**（確認のみ）— 実装済みのため動作確認で完了
+
+---
+
+### E タスク 確認項目
+
+- [ ] `tsc --noEmit` がエラーなしで通る
+- [ ] E-1: `defense.ts` L79 の `defenseHistory.map` で `truncate(m.content, 500)` が適用されている
+- [ ] E-2: `cases/[id]/route.ts` PATCH の非 asGuest パスで `createSessionClient()` が try-catch 内に収まっている
+- [ ] E-3: `layout.tsx` L43 が `<div>` であること（`<main>` でないこと）（実装確認）
+- [ ] E-4: `claude.ts` の catch ブロックが `AuthenticationError` のみ捕捉し、他は再 throw している
+- [ ] E-5: `history/page.tsx` の cases クエリエラーと profiles クエリエラーで `console.error` が呼ばれている（実装確認）
+- [ ] E-6: `middleware.ts` の保護パス判定に `/profile`・`/case` のプレフィックスマッチが含まれている

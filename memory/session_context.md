@@ -16,62 +16,62 @@ metadata:
 
 ### このセッションでやったこと
 
-**グループ C 設計・実装・監査（`224f157`, `883b90d`）**
+**E グループ（LOW 6件）パイプライン進行中**
 
-- C-1〜C-4 の実装確認をオーディが実施（全件確認済み）
-- `docs/knowledge/design.md`・`handoff/arch-to-eng.md` を大幅更新
-- `docs/backlog.md` を整理・未対応のみ残す
+- ブランチ `feature/20260525-165758` を作成・作業中
+- アーキ完了: `docs/knowledge/design.md` + `docs/knowledge/handoff/arch-to-eng.md` 更新済み
+- ビルド完了（未コミット）: E-1・E-2・E-4・E-6 の実装変更済み
+  - `lib/defense.ts`（E-1: defenseHistory に truncate 追加）
+  - `app/api/cases/[id]/route.ts`（E-2: PATCH ハンドラ try-catch 追加）
+  - `lib/claude.ts`（E-4: validateApiKey の AuthenticationError のみ catch）
+  - `middleware.ts`（E-6: 保護パス判定をプレフィックス方式に変更）
+- **オーディ実行中（バックグラウンド）**: E-1・E-2・E-4・E-6 の監査（task ID: a7bd251cb436e99d0）
+  - セッション終了時点でまだ完了通知未受信
 
-**グループ D セキュリティ修正（`0a36983`・PR #14）**
-
-- D-1: `lib/defense.ts` — `dialogHistory.content` に `truncate(500)` 追加（実装・コミット済み）
-- D-2: `app/api/cases/[id]/defense/route.ts` — 認証パスを try-catch で保護（実装・コミット済み）
-- D-5: `app/api/cases/[id]/route.ts` 他 3箇所 — `judge_messages` 空文字列挿入ガード追加（実装・コミット済み）
-- PR #14 作成・更新済み
-
-**マージ済み PR**
+**前セッション完了分（マージ済み）**
 
 - PR #12: セキュリティ MEDIUM 3件・パフォーマンス MEDIUM 2件
 - PR #13: B-1（UUID 露出防止）・B-2（ログアウトエラー通知）
-
-**コパ自動レビュー待ち**
-
-- PR #14 に対してコパのレビューを待機中
-- 16:48 にスケジュールクーロンが自動チェック → 指摘あれば修正→push→squash merge→ブランチ削除
+- PR #14: D-1・D-2・D-5 セキュリティ修正 + 設計書更新
 
 ### 現在のブランチ状態
 
-- ブランチ: `feature/20260525-161352`
-- 最新コミット: `0a36983` fix(security): D-1・D-2・D-5 セキュリティ修正
-- ワーキングツリーはクリーン（未コミット変更なし）
-- PR #14 は作成済み・コパのレビュー待ち
+- ブランチ: `feature/20260525-165758`
+- 未コミット（変更済み）:
+  - `lib/defense.ts`、`app/api/cases/[id]/route.ts`、`lib/claude.ts`、`middleware.ts`（ビルド成果物）
+  - `docs/knowledge/design.md`、`docs/knowledge/handoff/arch-to-eng.md`（アーキ成果物）
+  - `docs/knowledge/task.md`、`docs/knowledge/handoff/test-to-aud.md`、`memory/session_context.md`
+- 未追跡: `docs/knowledge/test-log/test_20260525_170220.md`
 
-### 未対応バックログ（主要項目）
+### 今回のタスク詳細（E グループ）
 
-**D グループ・未着手**
-
-- D-3: `/api/clear-flash` — Cookie 削除時 `httpOnly: true` 省略
-- D-4: `tests/e2e/security-fixes.spec.ts` — B 系 env チェック漏れ
-- D-6: `app/api/cases/[id]/route.ts` — `defendantName` の DB バリデーションなし
-
-**保留（スコープ外）**
-
-- HMAC トークンの決定論化（DB スキーマ変更が必要）
-- validateApiKey エラー種別区別・middleware 保護パス・layout.tsx 二重ネスト・Supabase エラーログ
+| ID  | ファイル                              | 内容                                               | 状態 |
+| --- | ------------------------------------- | -------------------------------------------------- | ---- |
+| E-1 | `lib/defense.ts`                      | `generateDraft` の `defenseHistory` に `truncate` 未適用 | ビルド完了・オーディ監査中 |
+| E-2 | `app/api/cases/[id]/route.ts`         | PATCH ハンドラ非 asGuest パスの try-catch 漏れ     | ビルド完了・オーディ監査中 |
+| E-3 | `app/layout.tsx`                      | `<main>` 二重ネスト → `<div>` に変更               | 未着手 |
+| E-4 | `lib/claude.ts`                       | `validateApiKey` が全例外を握りつぶす              | ビルド完了・オーディ監査中 |
+| E-5 | `app/history/page.tsx`                | Supabase エラーが無言で握りつぶされる              | 未着手 |
+| E-6 | `middleware.ts`                       | 保護パス判定が完全一致のみ（プレフィックスに変更） | ビルド完了・オーディ監査中 |
 
 ### 次のアクション
 
-1. **[自動]** 16:48 のクーロンが PR #14 のコパレビューを確認・問題なければ squash merge → ブランチ削除
-2. **[リード]** コパ指摘が来た場合は内容確認・対応方針を判断
-3. **[ビルド or リード]** D-3・D-4・D-6 を次 PR で対応するか判断
-4. **[リード]** HMAC 問題はアーキと相談して優先度を決める
-5. **[オプション]** コパ自動リクエストを hook/schedule で恒久自動化
+1. **[確認]** オーディタスク `a7bd251cb436e99d0` の完了確認（`TaskGet` で状態チェック）
+2. **[ビルド]** E-3・E-5 が未着手のため実装を依頼（オーディ完了後でも並行可）
+3. **[リード]** オーディ結果 + E-3・E-5 実装完了後に PR 作成 → コパレビュー → squash merge → ブランチ削除
+4. **[別タスク検討]** D-3・D-4・D-6 および HMAC 問題の優先度判断
+
+### スコープ外（今回は触らない）
+
+- D-3: `/api/clear-flash` — Cookie の `httpOnly` 省略
+- D-4: `tests/e2e/security-fixes.spec.ts` — B 系 env チェック漏れ
+- D-6: `app/api/cases/[id]/route.ts` — `defendantName` の DB バリデーションなし
+- HMAC トークンの決定論化（DB スキーマ変更が必要）
 
 ### 覚えておくべき判断・経緯
 
-- ビルドの作業場所は `app/`, `lib/` のまま（Next.js デフォルト構造を維持）
-- `topic` は 200文字バリデーション済みのため truncate 省略可
-- コパの指摘は `gh api` で取得できる
+- `task.md` の内容はパイプライン最優先（設計書・handoff と矛盾する場合 task.md を優先）
 - セキュリティ修正はビルド担当、設計変更はアーキ経由
-- `lib/case-response.ts` の `contradiction_warnings` は `.limit(100)` 追加済み
-- task.md の内容はパイプライン最優先（設計書・handoff と矛盾する場合 task.md を優先）
+- E-6 の `/` は完全一致のみ（`/api/...` を誤って保護しないよう注意）
+- `truncate` は `@/lib/text-utils` から import 済みのものを使う（E-1）
+- E-4 は `Anthropic.AuthenticationError`（401/403）のみ catch して false、それ以外は再 throw

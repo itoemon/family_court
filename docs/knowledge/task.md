@@ -4,69 +4,66 @@
 
 ## 今回のタスク
 
-バックログの MEDIUM 2件 + LOW 4件を修正する。
+バックログの LOW 6件を一括修正する。
 新機能追加・DBスキーマ変更なし。既存コードの修正のみ。
 
 ## 背景・目的
 
-オーディ監査で指摘されたセキュリティ・品質改善を解消する。
+オーディ監査で蓄積された LOW 指摘をすべて解消し、バックログをゼロにする。
 
 ## 修正対象
 
-### D-1. `defense.ts` の `dialogHistory.content` に `truncate` 未適用
+### E-1. `generateDraft` 内の `defenseHistory` に `truncate` 未適用
 
 - **ファイル**: `lib/defense.ts`
-- **現状**: `escapeXml` は適用済みだが、`dialogHistory` の各 `content` に `truncate` が未適用。
-  長大な発言内容がプロンプトにそのまま展開され、プロンプトインジェクションの攻撃面が残る。
-- **修正**: `dialogHistory` を展開する箇所で `escapeXml(truncate(a.content, 500))` に変更する。
-  `truncate` 関数は同ファイル内（または `lib/judge.ts`）に既存のものを使い回すこと。
+- **内容**: `generateDraft` 内の `defenseHistory` ループで `escapeXml(m.content)` に `truncate` が未適用。
+- **修正**: `escapeXml(truncate(m.content, 500))` に変更する。`truncate` は `@/lib/text-utils` から import 済みのものを使う。
 
-### D-2. `defense/route.ts` 認証ユーザーパスが try-catch 外
-
-- **ファイル**: `app/api/cases/[id]/defense/route.ts`
-- **現状**: `resolveAuth` 内の認証ユーザーパス（L15–L24）が try-catch の外にある。
-  Supabase クライアント初期化失敗時に未捕捉例外が発生しうる。
-- **修正**: 認証ユーザーパスも try-catch で囲み、例外時に
-  `{ error: "サーバー設定エラーが発生しました。管理者に連絡してください。", status: 500 }` を返す。
-  既存の `argument/route.ts` の try-catch パターンを踏襲すること。
-
-### D-3. `/api/clear-flash` の Cookie 削除で `httpOnly: true` が未指定
-
-- **ファイル**: `app/api/clear-flash/route.ts`
-- **現状**: `auth.ts` でセット時に `httpOnly: true` を指定しているが、削除時に省略されている。
-- **修正**: `res.cookies.set('flash_error', '', { path: '/', maxAge: 0, httpOnly: true })` に統一する。
-
-### D-4. A-2 テストで `E2E_TEST_EMAIL_B`・`E2E_TEST_PASSWORD_B` が必須チェックから漏れている
-
-- **ファイル**: `tests/e2e/security-fixes.spec.ts`
-- **現状**: `beforeEach` の必須環境変数チェックに `E2E_TEST_EMAIL_A`・`E2E_TEST_PASSWORD_A` のみ。
-  `_B` 系変数が未設定の CI 環境でランタイムエラーになる。
-- **修正**: `required` 配列に `E2E_TEST_EMAIL_B`・`E2E_TEST_PASSWORD_B` を追加する。
-
-### D-5. 空文字列が `judge_messages` に挿入される
-
-- **ファイル**: `app/api/cases/[id]/route.ts`・`app/api/cases/[id]/argument/route.ts`
-- **現状**: `generateJudgeMessage` が `""` を返したとき、呼び出し元で空チェックせず INSERT するため
-  本文なしのバブルが表示される。
-- **修正**: `generateJudgeMessage` の戻り値を利用している箇所に `if (!content) return;` を追加する。
-
-### D-6. ゲスト名（defendantName）の DB 書き込み前バリデーションなし
+### E-2. PATCH ハンドラ非 asGuest パスで `createSessionClient()` が try-catch 外
 
 - **ファイル**: `app/api/cases/[id]/route.ts`
-- **現状**: `PATCH /api/cases/[id]` のゲスト参加パスで `body.defendantName` の最大長検証がない。
-  プロンプト埋め込みは `truncate(50)` で保護済みだが、DB には無制限長が書き込まれうる。
-- **修正**: 既存のバリデーションブロックに以下を追加する。
+- **内容**: PATCH ハンドラの非 asGuest パス（L72 付近）で `createSessionClient()` が try-catch の外にある。
+- **修正**: 当該ブロックを try-catch で囲み、例外時に `{ error: "サーバー設定エラーが発生しました。管理者に連絡してください。", status: 500 }` を返す。`defense/route.ts` の try-catch パターンを踏襲すること。
+
+### E-3. `layout.tsx` の `<main>` が子ページと二重になりうる
+
+- **ファイル**: `app/layout.tsx`
+- **内容**: layout が `<main>` でラップしているため、子ページが `<main>` を持つと HTML 仕様違反になる。
+- **修正**: layout のラッパータグを `<main>` から `<div>` に変更する。
+
+### E-4. `validateApiKey` がエラー種別を区別しない
+
+- **ファイル**: `lib/claude.ts`
+- **内容**: `catch {}` ですべての例外を握りつぶして `false` を返すため、Anthropic 障害時に正常なキーでも「無効」と表示される。
+- **修正**: Anthropic SDK の `AuthenticationError`（401/403）のみキャッチして `false` を返し、それ以外の例外は再 throw する。
   ```typescript
-  if (typeof body.defendantName === "string" && body.defendantName.trim().length > 50) {
-    return NextResponse.json({ error: "名前は50文字以内で入力してください" }, { status: 400 });
-  }
+  import Anthropic from "@anthropic-ai/sdk";
+  // catch ブロック内:
+  if (error instanceof Anthropic.AuthenticationError) return false;
+  throw error;
   ```
+
+### E-5. Supabase エラーが無言で握りつぶされる
+
+- **ファイル**: `app/history/page.tsx`
+- **内容①（L40）**: `if (error) throw error;` でエラー詳細が露出しないが、可観測性がゼロ。
+- **内容②（L55-63）**: プロフィール取得クエリのエラーが無言で空配列になる。
+- **修正①**: `console.error("[history] cases query failed:", error); throw new Error("ケース一覧の取得に失敗しました");` に変更する。
+- **修正②**: `const { data: profiles, error: profilesError } = ...` としてエラーを受け取り、`if (profilesError) console.error("[history] profiles query failed:", profilesError);` を追加する。
+
+### E-6. middleware の保護パス判定が完全一致のみ
+
+- **ファイル**: `middleware.ts`
+- **内容**: `PROTECTED_PATHS.has(pathname)` の完全一致判定のため、将来 `/history/sub` 等のサブルートが保護されない。
+- **修正**: Set による完全一致判定をプレフィックスマッチに変更する。
+  ```typescript
+  const PROTECTED_PATH_PREFIXES = ["/", "/history", "/profile", "/case"];
+  // 判定:
+  if (!user && PROTECTED_PATH_PREFIXES.some(p => pathname === p || pathname.startsWith(p + "/"))) {
+  ```
+  ただし `/` は完全一致のみとする（`/api/...` を誤って保護しないよう注意）。
 
 ## スコープ外
 
 - HMAC トークンの決定論化（DBスキーマ変更が必要 → 別タスク）
-- validateApiKey のエラー種別区別（後回し）
-- middleware の保護パス判定改善（後回し）
-- layout.tsx の `<main>` 二重ネスト（後回し）
-- Supabase エラーログ追加（後回し）
 - 新機能追加・UI 変更・DBスキーマ変更

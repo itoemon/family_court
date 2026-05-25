@@ -10,8 +10,9 @@ export async function validateApiKey(apiKey: string): Promise<boolean> {
       messages: [{ role: "user", content: "ok" }],
     });
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (error instanceof Anthropic.AuthenticationError) return false;
+    throw error;
   }
 }
 

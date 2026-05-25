@@ -69,8 +69,19 @@ export async function PATCH(
 
   // アカウントログインで参加
   if (!body.asGuest) {
-    const supabase = await createSessionClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    let supabase;
+    let user;
+    try {
+      supabase = await createSessionClient();
+      const { data: { user: u } } = await supabase.auth.getUser();
+      user = u;
+    } catch (err) {
+      console.error("createSessionClient failed:", err);
+      return NextResponse.json(
+        { error: "サーバー設定エラーが発生しました。管理者に連絡してください。" },
+        { status: 500 }
+      );
+    }
     if (!user) return NextResponse.json({ error: "ログインが必要です" }, { status: 401 });
     if (user.id === c.plaintiff_id) {
       return NextResponse.json({ error: "自分自身とは話し合いできません" }, { status: 409 });
