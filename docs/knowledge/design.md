@@ -367,6 +367,76 @@ E2E テストの `beforeEach` で `E2E_TEST_EMAIL_B`・`E2E_TEST_PASSWORD_B` が
 
 ---
 
+## E タスク設計方針（LOW バックログ 6 件）
+
+### 背景・目的
+
+オーディ監査で蓄積された LOW 指摘 6 件をすべて解消し、バックログをゼロにする。新機能追加・DB スキーマ変更なし。既存コードの修正のみ。
+
+### 実装状況サマリ（2026-05-25 調査済み）
+
+| ID | ファイル | 内容 | 状況 |
+|----|---------|------|------|
+| E-1 | `lib/defense.ts` | `generateDraft` 内 `defenseHistory` に `truncate` 未適用 | **要実装** |
+| E-2 | `app/api/cases/[id]/route.ts` | PATCH 非 asGuest パスの `createSessionClient()` が try-catch 外 | **要実装** |
+| E-3 | `app/layout.tsx` | `<main>` → `<div>` 変更 | **実装済み**（L43 が既に `<div>`） |
+| E-4 | `lib/claude.ts` | `validateApiKey` の `catch {}` がすべての例外を握りつぶす | **要実装** |
+| E-5 | `app/history/page.tsx` | Supabase エラーのログ追加 | **実装済み**（L41・L63 で対応済み） |
+| E-6 | `middleware.ts` | 保護パス判定が `/` と `/history` のみ（`/profile`・`/case` 未保護） | **要実装** |
+
+---
+
+### E-1. `lib/defense.ts` — `generateDraft` 内 `defenseHistory` に `truncate` 追加
+
+**方針**: `generateDraft`（L79）の `defenseHistory.map` で `escapeXml(m.content)` を `escapeXml(truncate(m.content, 500))` に変更する。`truncate` は既に L2 で `@/lib/text-utils` から import 済みのため、追加 import は不要。
+
+**スコープ**: `generateDefenseResponse`（L44–L46）の `apiMessages` は Anthropic SDK メッセージオブジェクトとして直接渡す用途であり、プロンプトへの文字列展開ではないため変更不要。
+
+---
+
+### E-2. `app/api/cases/[id]/route.ts` — PATCH 非 asGuest パスを try-catch で保護
+
+**方針**: PATCH ハンドラの非 asGuest パス（L72–L73）で `createSessionClient()` と `getUser()` が try-catch の外にある。これを try-catch で囲み、例外時に `{ error: "サーバー設定エラーが発生しました。管理者に連絡してください。", status: 500 }` を返す。
+
+**参考パターン**: `app/api/cases/[id]/argument/route.ts` の `createSessionClient`・`verifyGuestToken` を包む try-catch 構造を踏襲する。
+
+---
+
+### E-4. `lib/claude.ts` — `validateApiKey` のエラー種別区別
+
+**方針**: 現在の `catch {}` ブロックはすべての例外を `false` に変換しており、Anthropic 障害時に正常な API キーでも「無効」と表示される誤動作を引き起こす。
+
+**変更方針**: Anthropic SDK の `AuthenticationError`（401/403）のみ捕捉して `false` を返し、それ以外（ネットワーク障害・タイムアウト等）は再 throw する。これにより、サービス障害時には呼び出し元でエラーが伝播し、利用者への誤案内を防ぐ。
+
+```ts
+// catch ブロック内（変更後）
+} catch (error) {
+  if (error instanceof Anthropic.AuthenticationError) return false;
+  throw error;
+}
+```
+
+`Anthropic` は L1 で既に import 済みのため追加 import は不要。
+
+---
+
+### E-6. `middleware.ts` — 保護パス判定をプレフィックスマッチに変更
+
+**方針**: 現状（L32）では `pathname === "/" || pathname.startsWith("/history")` の判定のみで、`/profile` および `/case` が保護されていない。
+
+**変更方針**: `PROTECTED_PATH_PREFIXES` 配列でプレフィックスマッチに統一する。`/` は完全一致のみとし、他は `pathname.startsWith(prefix + "/") || pathname === prefix` で判定する。これにより `/profile/edit` 等のサブルートも自動的に保護される。
+
+```ts
+const PROTECTED_PATH_PREFIXES = ["/history", "/profile", "/case"];
+const isProtected =
+  pathname === "/" ||
+  PROTECTED_PATH_PREFIXES.some(p => pathname === p || pathname.startsWith(p + "/"));
+```
+
+**注意**: `/api/...` は `middleware.ts` の `matcher` 設定（`config.matcher`）で既に除外されているため、誤った保護は発生しない。
+
+---
+
 ## 制約・前提条件
 
 - **DB 変更なし**

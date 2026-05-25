@@ -18,44 +18,18 @@
 
 ---
 
-### LOW
-
-#### [LOW] `generateDraft` 内の `defenseHistory` に `truncate` 未適用（lib/defense.ts:88） (由来: audit_20260525_173000.md)
-
-- **内容**: `generateDraft` 内の `defenseHistory` ループで `escapeXml(m.content)` に `truncate` が未適用。AI 応答は `max_tokens: 512` で実害は低いが、防御的観点で統一すべき。
-- **修正案**: `escapeXml(truncate(m.content, 500))` に変更する。
-
-#### [LOW] PATCH ハンドラ非 asGuest パスで `createSessionClient()` が try-catch 外（app/api/cases/[id]/route.ts:72） (由来: audit_20260525_173000.md)
-
-- **内容**: D-2 で `defense/route.ts` は修正済みだが、`route.ts` の PATCH ハンドラ（非 asGuest パス）で `createSessionClient()` が try-catch の外にある。直接的なセキュリティリスクは低いが一貫性を欠く。
-- **修正案**: 当該ブロックを try-catch で囲み、例外時に 500 を返す。
-
-#### [LOW] layout.tsx の `<main>` が子ページと二重になりうる（app/layout.tsx:33） (由来: audit_20260519_162635.md)
-
-- **内容**: layout が `<main>` でラップしているため、子ページが `<main>` を持つと HTML 仕様違反になる。
-- **修正案**: layout のラッパーを `<div>` に変更するか、子ページは `<main>` を使わないと規約化する。
-
-#### [LOW] `validateApiKey` がエラー種別を区別しない（lib/claude.ts:17） (由来: audit_20260520_084404.md)
-
-- **内容**: あらゆる例外を `catch {}` で握りつぶして `false` を返す。Anthropic 障害時に正常なキーでも「無効」と表示される。
-- **修正案**: `AuthenticationError`（401/403）のみキャッチして `false` を返し、それ以外は再 throw する。
-
-#### [LOW] Supabase エラーが無言で握りつぶされる（app/history/page.tsx:40, 55-63） (由来: audit_20260524_193621.md)
-
-- **内容**: `if (error) throw error;` でエラー詳細がユーザーに露出しないが、可観測性がゼロ。プロフィール取得クエリはエラー時に無言で空配列になる。
-- **修正案**: `console.error("[history] query failed:", error)` を追加し、意味のあるエラーメッセージを throw する。
-
-#### [LOW] middleware の保護パス判定が完全一致のみ（middleware.ts:32-34） (由来: audit_20260524_193621.md)
-
-- **内容**: `PROTECTED_PATHS.has(pathname)` の完全一致判定のため、将来のサブルートが保護されない。現時点は Server Component の二重保護があるため実害なし。
-- **修正案**: `pathname.startsWith("/history")` 等のプレフィックスマッチに変更する。
-
 ---
 
 ## 対応済み
 
 | PR | 内容 |
 |----|------|
+| PR #15 (E-1) | `defense.ts` generateDraft の defenseHistory に truncate 適用 |
+| PR #15 (E-2) | `route.ts` PATCH 非 asGuest パスを try-catch で保護 |
+| PR #15 (E-3) | `layout.tsx` `<main>` → `<div>`（確認済み・実装済み） |
+| PR #15 (E-4) | `validateApiKey` エラー種別区別（AuthenticationError のみ false） |
+| PR #15 (E-5) | `history/page.tsx` Supabase エラーログ（確認済み・実装済み） |
+| PR #15 (E-6) | `middleware.ts` 保護パスをプレフィックスマッチに変更 |
 | PR #14 (D-1) | `defense.ts` dialogHistory.content に truncate 適用・text-utils.ts に切り出し |
 | PR #14 (D-2) | `defense/route.ts` 認証ユーザーパスを try-catch で保護 |
 | PR #14 (D-5) | `judge_messages` 空文字列挿入ガード × 3箇所 |

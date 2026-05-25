@@ -29,7 +29,10 @@ export async function middleware(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
 
   const { pathname } = request.nextUrl;
-  const isProtected = pathname === "/" || pathname.startsWith("/history");
+  const PROTECTED_PATH_PREFIXES = ["/history", "/profile", "/case"];
+  const isProtected =
+    pathname === "/" ||
+    PROTECTED_PATH_PREFIXES.some(p => pathname === p || pathname.startsWith(p + "/"));
   if (!user && isProtected) {
     return NextResponse.redirect(new URL("/auth/login", request.url));
   }

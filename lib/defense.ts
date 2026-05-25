@@ -76,7 +76,7 @@ ${dialogHistory.length > 0
 </case_context>
 
 <defense_chat>
-${defenseHistory.map((m) => `${m.role === "user" ? "あなた" : "弁護人AI"}: ${escapeXml(m.content)}`).join("\n")}
+${defenseHistory.map((m) => `${m.role === "user" ? "あなた" : "弁護人AI"}: ${escapeXml(truncate(m.content, 500))}`).join("\n")}
 </defense_chat>
 
 上記の弁護人AIとの対話を踏まえ、次のターンで相手に伝える発言文を200文字以内の日本語で作成してください。

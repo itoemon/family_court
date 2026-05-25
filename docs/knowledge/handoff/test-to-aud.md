@@ -2,7 +2,95 @@
 
 ---
 
-## 直近監査結果サマリー（2026-05-25 17:30 / D-1・D-2・D-5）
+## 直近テスト結果サマリー（2026-05-25 17:02 / E-1・E-2・E-4・E-6）
+
+**テストログ**: [test_20260525_170220.md](../test-log/test_20260525_170220.md)
+
+| 修正 | 判定 | 備考 |
+|------|------|------|
+| E-1  | PASS | L79 で `escapeXml(truncate(m.content, 500))` — truncate → escapeXml の順序正しい |
+| E-2  | PASS | L74〜83 に try-catch あり。catch で console.error + 500。スタックトレース漏洩なし |
+| E-4  | PASS | `AuthenticationError` のみ false を返し、他は再 throw。import 確認済み |
+| E-6  | PASS | `PROTECTED_PATH_PREFIXES` 実装済み。`/` 完全一致・サブルートも保護 |
+
+**tsc**: エラーゼロ
+
+**総合判定: PASS** — ビルドエージェントの実装は設計書と完全一致
+
+---
+
+## オーディへの確認依頼（E タスク）
+
+### 1. E-1: `lib/defense.ts` — `defenseHistory` の truncate 適用確認
+
+**テスタ確認（静的）**: ✅ 設計書通り実装済み
+
+**オーディへの確認依頼**:
+- [ ] `lib/defense.ts` L79 で `escapeXml(truncate(m.content, 500))` — truncate が escapeXml の内側に渡されていること（truncate → escapeXml の順序）
+- [ ] `import { truncate, escapeXml } from "@/lib/text-utils"` が L2 に存在すること
+- [ ] `generateDefenseResponse` 内の `dialogHistory.map`（L39）・`generateDraft` 内の `dialogHistory.map`（L73）はすでに `truncate` 適用済みで変更なしであること（今回の E-1 は `defenseHistory` のみが対象）
+
+### 2. E-2: `app/api/cases/[id]/route.ts` — PATCH 非 asGuest パスの try-catch 確認
+
+**テスタ確認（静的）**: ✅ 設計書通り実装済み
+
+**オーディへの確認依頼**:
+- [ ] L74〜83 の try ブロック内に `createSessionClient()` と `getUser()` の両呼び出しが含まれていること
+- [ ] catch ブロックが `console.error("createSessionClient failed:", err)` のみでスタックトレースをレスポンスに含めていないこと
+- [ ] エラーメッセージが `"サーバー設定エラーが発生しました。管理者に連絡してください。"` という汎用表現であること
+- [ ] try-catch の後に `if (!user)` チェックが続いており、スコープが適切であること
+
+### 3. E-4: `lib/claude.ts` — `validateApiKey` のエラー種別区別確認
+
+**テスタ確認（静的）**: ✅ 設計書通り実装済み
+
+**オーディへの確認依頼**:
+- [ ] catch ブロックが `} catch (error) {` として変数をバインドしていること（旧: `} catch {`）
+- [ ] `if (error instanceof Anthropic.AuthenticationError) return false;` が存在すること
+- [ ] `throw error;` で AuthenticationError 以外を再 throw していること
+- [ ] `Anthropic` が L1 で `import Anthropic from "@anthropic-ai/sdk"` として import されていること（追加 import なし）
+
+### 4. E-6: `middleware.ts` — 保護パス判定の確認
+
+**テスタ確認（静的）**: ✅ 設計書通り実装済み
+
+**オーディへの確認依頼**:
+- [ ] `PROTECTED_PATH_PREFIXES = ["/history", "/profile", "/case"]` が存在すること
+- [ ] `pathname === "/"` の完全一致が維持されており、`startsWith("/")` が使われていないこと
+- [ ] `pathname.startsWith(p + "/")` でサブルート（例: `/history/sub`・`/case/123`）が保護されること
+- [ ] `config.matcher` の正規表現が `api` を除外していること（`/api/...` への誤保護リスクが排除されていること）
+
+---
+
+## 前回監査結果サマリー（2026-05-25 17:44 / E-1・E-2・E-4・E-6）
+
+**監査ログ**: [audit_20260525_174421.md](../audit-log/audit_20260525_174421.md)
+
+| 重要度 | 件数 |
+|--------|------|
+| HIGH   | 0    |
+| MEDIUM | 0    |
+| LOW    | 0    |
+| 合格   | 10   |
+
+**総合判定: PASS**
+
+### E-1〜E-6 監査結果
+
+| タスク | 内容 | 判定 |
+|--------|------|------|
+| E-1 | `lib/defense.ts` の `generateDraft` 内 `defenseHistory` ループ（L79）で `escapeXml(truncate(m.content, 500))` — truncate → escapeXml 順序正しい。D-1 LOW-1 解消。 | 合格 |
+| E-2 | `route.ts` PATCH 非 asGuest パス（L74-83）で `createSessionClient` と `getUser` の両呼び出しが try-catch 内。スタックトレース漏洩なし。D-1 LOW-2 解消。 | 合格 |
+| E-4 | `lib/claude.ts` の `validateApiKey` で `Anthropic.AuthenticationError` のみ `false`、それ以外は再 throw。インポート不要・上位委譲設計は正しい。 | 合格 |
+| E-6 | `middleware.ts` の `PROTECTED_PATH_PREFIXES` 実装。`/` 完全一致維持・`startsWith(p + "/")` でサブルート保護・`config.matcher` で `/api` 除外。 | 合格 |
+
+### 新規指摘事項
+
+なし。前回 LOW-1・LOW-2 は E-1・E-2 で完全解消。
+
+---
+
+## 前回監査結果サマリー（2026-05-25 17:30 / D-1・D-2・D-5）
 
 **監査ログ**: [audit_20260525_173000.md](../audit-log/audit_20260525_173000.md)
 
