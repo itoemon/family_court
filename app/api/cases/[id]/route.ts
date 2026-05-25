@@ -123,6 +123,17 @@ export async function PATCH(
   if (body.defendantName.trim().length > 50) {
     return NextResponse.json({ error: "名前は50文字以内で入力してください" }, { status: 400 });
   }
+  // トークン発行を先に行い、失敗してもケースがロックされないようにする
+  let token: string;
+  try {
+    token = await generateGuestToken(id);
+  } catch (err) {
+    console.error("generateGuestToken failed:", err);
+    return NextResponse.json(
+      { error: "サーバー設定エラーが発生しました。管理者に連絡してください。" },
+      { status: 500 }
+    );
+  }
   await admin.from("cases").update({ defendant_guest_name: body.defendantName.trim(), phase: "opening" }).eq("id", id);
   try {
     const { data: plaintiffProfile } = await admin
@@ -146,16 +157,6 @@ export async function PATCH(
     }
   } catch (err) {
     console.error("[judge] opening generation failed:", err);
-  }
-  let token: string;
-  try {
-    token = await generateGuestToken(id);
-  } catch (err) {
-    console.error("generateGuestToken failed:", err);
-    return NextResponse.json(
-      { error: "サーバー設定エラーが発生しました。管理者に連絡してください。" },
-      { status: 500 }
-    );
   }
   const guestCaseData = await buildCaseResponse(admin, id);
   if (!guestCaseData) return NextResponse.json({ error: "ケースが見つかりません" }, { status: 404 });
