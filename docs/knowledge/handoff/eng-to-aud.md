@@ -2,44 +2,38 @@
 
 > **注意**: このメモは task.md を補足するものです。task.md と矛盾する場合は task.md を優先してください。
 
-**タスク**: 矛盾チェック機能の実装  
-**日時**: 2026-05-24
+**タスク**: 弁護人AI機能のゲストユーザー開放  
+**日時**: 2026-05-25
+
+---
+
+## 変更ファイル一覧
+
+| ファイル | 種別 | 内容 |
+|---|---|---|
+| `supabase/migrations/20260525000002_defense_messages_guest_support.sql` | 新設 | `defense_messages.user_id` の NOT NULL 制約削除 |
+| `app/api/cases/[id]/defense/route.ts` | 変更 | `resolveAuth()` をゲストトークン対応に改修、`userId` 変数で DB クエリを分岐 |
+| `app/api/cases/[id]/defense/draft/route.ts` | 変更 | インライン認証にゲスト分岐を追加、`userId` 変数で DB クエリを分岐 |
 
 ---
 
 ## 実装上の判断・変更点
 
-### 変更・追加ファイル一覧
+### defense/route.ts の resolveAuth 改修
 
-| ファイル | 種別 | 内容 |
-|---|---|---|
-| `supabase/migrations/20260524210000_create_contradiction_warnings.sql` | 新設 | contradiction_warnings テーブル + RLS ポリシー |
-| `lib/types.ts` | 変更 | `ContradictionWarning` 型追加、`Case` に `contradictionWarnings` フィールド追加 |
-| `lib/contradiction.ts` | 新設 | claude-haiku-4-5-20251001 による矛盾判定ロジック |
-| `app/components/ContradictionWarningBubble.tsx` | 新設 | ⚠️ amber 系警告バブルコンポーネント |
-| `lib/case-response.ts` | 変更 | `userId` 引数追加、contradiction_warnings クエリ追加 |
-| `app/api/cases/[id]/argument/route.ts` | 変更 | 発言 INSERT 後の矛盾チェック、buildCaseResponse に userId 渡す |
-| `app/api/cases/[id]/route.ts` | 変更 | GET 時に userId を buildCaseResponse に渡す |
-| `app/api/cases/[id]/verdict/route.ts` | 変更 | Case 型の `contradictionWarnings: []` を追加（型エラー解消のみ） |
-| `app/case/[id]/page.tsx` | 変更 | タイムラインの発言直下に本人のみ警告バブルを表示 |
+設計書の `resolveAuth` シグネチャに従い `req: NextRequest` を第1引数に追加した。
+返り値に `userId: string | null` を追加し、`user.id` への直接参照をすべて `userId` 経由に統一した。
 
----
+DB クエリの分岐パターン:
+```ts
+userId ? query.eq("user_id", userId) : query.is("user_id", null)
+```
 
-### `app/api/cases/[id]/verdict/route.ts` の修正（設計書に記載なし）
+INSERT 時は `user_id: userId`（null を渡すと NULL として保存される。migration で NOT NULL 制約を削除済み）。
 
-`Case` インターフェースに `contradictionWarnings` を必須フィールドとして追加したため、verdict route が `Case` 型のオブジェクトを直接構築する箇所で型エラーが発生した。`contradictionWarnings: []` を追加して解消した。設計書の変更意図（型エラー防止）に沿った最小限の修正である。
+### defense/draft/route.ts の認証ロジック
 
----
-
-### 矛盾チェックの API キー取得先（設計書どおり）
-
-矛盾チェックの API キーは原告（`plaintiff_id`）の `api_key_encrypted` から取得する。被告が発言した場合も原告のキーを使う設計。`api_key_encrypted` が存在しない場合はスキップ（ログなし）。これは設計書・handoff の指示どおり。
-
----
-
-### `callerRole` が `null` の場合の矛盾チェック
-
-矛盾チェックは `authenticatedUserId && insertedArg?.id` の条件で実行される。`callerRole` が `null` の時点で 403 を返すため、矛盾チェックブロックに到達する時点で `callerRole` は非 null が保証される。ただし `callerRole` 変数の型は `Role | null` のままであるため、クエリの `.eq("role", callerRole)` に渡す際は非 null が実質的に保証されているが型が緩い。実害はなく型安全性の改善は設計書スコープ外のため現状維持。
+元の実装は `resolveAuth` 関数を持たずインラインで認証していた。設計書の指示（「同様に認可ロジックをゲスト対応に変更」）に従い、インライン認証のままゲスト分岐を追加した。`userId` / `userRole` を事前に確定してから後続処理に渡す構造にした。
 
 ---
 
@@ -47,21 +41,32 @@
 
 ### 重点確認ポイント
 
-1. **矛盾チェックのトリガー**: 発言 POST 後に矛盾チェックが実行されること。過去ケースが 0 件の場合は何もしないこと（スキップ）。
+1. **ゲストトークンなしのアクセスが 401 になること**
+   - `guest_defendant_${id}` Cookie が存在しない → 401
+   - Cookie が存在するが署名が不正（`verifyGuestToken` が `false`）→ 401
 
-2. **本人のみ表示**: `myRole === arg.role` の条件でフィルタリングしているため、相手の発言には警告バブルが表示されないこと。observer（`myRole === null`）には一切表示されないこと。
+2. **認証済みユーザーのデータとゲストのデータが混在しないこと**
+   - 認証済み: `WHERE case_id = id AND user_id = user.id`
+   - ゲスト: `WHERE case_id = id AND user_id IS NULL`
+   - 別ユーザーの defense_messages が取得・上書きされないこと
 
-3. **RLS**: `contradiction_warnings` テーブルへの SELECT は `user_id = auth.uid()` でのみ許可されること。INSERT は admin クライアント経由のみ（クライアントから直接書き込み不可）。
+3. **ゲストが `defendant_guest_name` のないケースに侵入できないこと**
+   - `c.defendant_guest_name` が falsy の場合はゲストパスに分岐せず 401 を返す
 
-4. **API キー不在の場合**: 原告が API キーを登録していない場合、矛盾チェックがスキップされ、発言・ターン交代は正常に完了すること。
+4. **ゲストのロールが常に `"defendant"` に固定されていること**
+   - ゲストは原告として弁護人AIを使えない
 
-5. **矛盾チェック失敗の場合**: `checkContradiction` が例外を投げても try-catch で握りつぶされ、発言のレスポンスは正常に返ること。
+5. **defense_messages への INSERT が `user_id: null` で成功すること**
+   - migration（`20260525000002_defense_messages_guest_support.sql`）が DB に適用済みであること
 
-6. **警告バブルのデザイン**: amber-50 背景、amber-200 ボーダー、amber-700 テキスト、⚠️ アイコンで表示されること。judge バブル（amber-50/100）と視覚的に区別できること。
+6. **認証済みユーザーの従来動作が変わっていないこと**
+   - セッションユーザーが存在する場合は従来通りの認可チェック（plaintiff / defendant 判定）が機能すること
 
-7. **ゲストユーザー**: `authenticatedUserId === null` の場合に矛盾チェックをスキップすること（ゲスト被告は永続 ID がないため）。
+### セキュリティ観点
 
-8. **既存機能への影響**: 発言投稿・ターン交代・judge メッセージ生成・verdict 生成が従来どおり動作すること。
+- ゲストトークン検証は `verifyGuestToken`（HMAC-SHA256、timing-safe compare）を使用
+- `user_id IS NULL` はゲストのデータ識別子であり、セキュリティゲートは Cookie 検証
+- `guest_defendant_${id}` Cookie のスコープは既存の発行ロジックに依存（本実装では変更なし）
 
 ---
 
@@ -69,9 +74,7 @@
 
 | 項目 | 理由 |
 |---|---|
-| 相手の発言との矛盾チェック | task.md 明示でスコープ外 |
-| 矛盾の深刻度分類 | task.md 明示でスコープ外 |
-| 警告の非表示・スヌーズ機能 | task.md 明示でスコープ外 |
-| ページネーション（過去ケース参照） | task.md 明示でスコープ外、直近 3 件固定 |
-| ゲストユーザーの矛盾チェック | 永続 ID なし。設計書明示 |
-| `callerRole` 型の厳密化 | 設計書スコープ外 |
+| フロントエンドの変更 | API 対応のみで動作する設計。task.md 明示でスコープ外 |
+| RLS ポリシーの変更 | admin クライアント経由のため不要。task.md 明示でスコープ外 |
+| ゲストユーザーの矛盾チェック | 永続 ID なし。task.md 明示でスコープ外 |
+| 複数ゲストの同一ケース参加 | 仕様上あり得ない。設計書明示でスコープ外 |
