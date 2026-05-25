@@ -109,6 +109,14 @@
   `verifyGuestToken` は内部で `computeToken` を呼び出し、`GUEST_TOKEN_SECRET` が未設定の場合は `throw new Error("GUEST_TOKEN_SECRET is not set")` を投げる（`lib/guest-token.ts:4-6`）。この例外は未処理のまま Next.js のグローバルエラーハンドラに到達し、500 が返る。 (由来: audit_20260525_092649.md)
  (由来: audit_20260525_092649.md)
 
+### [LOW-001] A-2 テストで `E2E_TEST_EMAIL_B`・`E2E_TEST_PASSWORD_B` が必須チェックから漏れている（`tests/e2e/security-fixes.spec.ts`:1780–1786, 1894–1897） (由来: audit_20260525_120211.md)
+ (由来: audit_20260525_120211.md)
+- **内容**:   (由来: audit_20260525_120211.md)
+  `beforeEach` の必須環境変数チェックに `E2E_TEST_EMAIL_A`・`E2E_TEST_PASSWORD_A` のみを指定している（1780–1786行）。一方、A-2 テスト「特殊文字を含む名前でも judge メッセージが破綻しない」は `E2E_TEST_EMAIL_B`・`E2E_TEST_PASSWORD_B` を `process.env` から直接参照している（1894–1897行）。   (由来: audit_20260525_120211.md)
+  これらが未設定の CI 環境では、テストは skip されずに `loginAs(pageB, undefined, undefined)` が呼ばれてランタイムエラーで失敗する。エラーメッセージからは「環境変数が足りない」と診断しにくい。 (由来: audit_20260525_120211.md)
+ (由来: audit_20260525_120211.md)
+- **修正案**:   (由来: audit_20260525_120211.md)
+
 ---
 
 ### [LOW-002] middleware の保護パス判定が完全一致のみ（middleware.ts:32-34） (由来: audit_20260524_193621.md)
