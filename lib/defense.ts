@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { truncate, escapeXml } from "@/lib/text-utils";
 
 export interface DefenseParams {
   topic: string;
@@ -9,15 +10,6 @@ export interface DefenseParams {
 
 function getUserRoleLabel(userRole: "plaintiff" | "defendant"): string {
   return userRole === "plaintiff" ? "提案者（原告）" : "反対者（被告）";
-}
-
-function escapeXml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
 }
 
 export async function generateDefenseResponse(
@@ -44,7 +36,7 @@ export async function generateDefenseResponse(
 <topic>${escapeXml(topic)}</topic>
 <dialog_history>
 ${dialogHistory.length > 0
-  ? dialogHistory.map((a, i) => `[${i + 1}] ${a.role === userRole ? "あなた" : "相手"}: ${escapeXml(a.content)}`).join("\n")
+  ? dialogHistory.map((a, i) => `[${i + 1}] ${a.role === userRole ? "あなた" : "相手"}: ${escapeXml(truncate(a.content, 500))}`).join("\n")
   : "（まだ発言はありません）"}
 </dialog_history>
 </case_context>`.trim();
@@ -78,7 +70,7 @@ export async function generateDraft(
 <topic>${escapeXml(topic)}</topic>
 <dialog_history>
 ${dialogHistory.length > 0
-  ? dialogHistory.map((a, i) => `[${i + 1}] ${a.role === userRole ? "あなた" : "相手"}: ${escapeXml(a.content)}`).join("\n")
+  ? dialogHistory.map((a, i) => `[${i + 1}] ${a.role === userRole ? "あなた" : "相手"}: ${escapeXml(truncate(a.content, 500))}`).join("\n")
   : "（まだ発言はありません）"}
 </dialog_history>
 </case_context>

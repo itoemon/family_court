@@ -12,75 +12,66 @@ metadata:
 
 ---
 
-## 最終更新: 2026-05-25
+## 最終更新: 2026-05-25（セッション終了時）
 
 ### このセッションでやったこと
 
-**セキュリティ修正（ビルド）**
+**グループ C 設計・実装・監査（`224f157`, `883b90d`）**
 
-- セキュリティ MEDIUM 3件を一括修正（`a543dc7`）
-  - `app/api/cases/[id]/route.ts` — 認可チェック追加
-  - `lib/guest-token.ts` — verifyGuestToken に try-catch を追加
-  - `lib/judge.ts` — 処理強化（45行追加）
+- C-1〜C-4 の実装確認をオーディが実施（全件確認済み）
+- `docs/knowledge/design.md`・`handoff/arch-to-eng.md` を大幅更新
+- `docs/backlog.md` を整理・未対応のみ残す
 
-**テスト実施（テスタ）**
+**グループ D セキュリティ修正（`0a36983`・PR #14）**
 
-- E2E テスト 8/8 通過（`fbb3e82`）
-- `tests/e2e/security-fixes.spec.ts`・テストログ・`test-to-aud.md` をコミット
+- D-1: `lib/defense.ts` — `dialogHistory.content` に `truncate(500)` 追加（実装・コミット済み）
+- D-2: `app/api/cases/[id]/defense/route.ts` — 認証パスを try-catch で保護（実装・コミット済み）
+- D-5: `app/api/cases/[id]/route.ts` 他 3箇所 — `judge_messages` 空文字列挿入ガード追加（実装・コミット済み）
+- PR #14 作成・更新済み
 
-**オーディ完了（前回）**
+**マージ済み PR**
 
-- 結果: **通過** （HIGH 0・MEDIUM 0・LOW 1）
-- LOW-001: `tests/e2e/security-fixes.spec.ts` の A-2 テストで `E2E_TEST_EMAIL_B`/`E2E_TEST_PASSWORD_B` が `beforeEach` の必須チェックから漏れてる
-- 監査ログ・backlog.md・session_context.md をコミット（`6e6a9a6`）
+- PR #12: セキュリティ MEDIUM 3件・パフォーマンス MEDIUM 2件
+- PR #13: B-1（UUID 露出防止）・B-2（ログアウトエラー通知）
 
-**コパレビュー実施・対応中**
+**コパ自動レビュー待ち**
 
-- コパから5件の指摘。対応状況:
-  1. `tests/e2e/security-fixes.spec.ts:13` — `beforeEach` に B 側環境変数チェックなし → **ビルドが修正中**
-  2. `lib/judge.ts:45` — コメント「truncate → escapeXml の順が必須」と実装不一致 → **ビルドが修正中**
-  3. `docs/backlog.md:118` — 「(由来: ...)」重複・修正案が空 → **リードが修正済み**
-  4. `memory/session_context.md` — 「未コミット」記述が古かった → **本更新で解消**
-  5. `docs/knowledge/audit-log/audit_20260525_120211.md:46` — 行番号不一致 → **リードが修正済み**
-
-**オーディ完了（B-1・B-2 監査）**
-
-- 対象: B-1（UUID 露出防止）・B-2（ログアウトエラー通知）
-- 結果: **通過** （HIGH 0・MEDIUM 0・LOW 1）
-- LOW-001: `app/api/clear-flash/route.ts:5` — Cookie 削除時に `httpOnly: true` が省略されている（実害なし・一貫性の問題）
-- 監査ログ: `docs/knowledge/audit-log/audit_20260525_132523.md`
-- B-1・B-2 バックログ項目を「対応済み」に移動
+- PR #14 に対してコパのレビューを待機中
+- 16:48 にスケジュールクーロンが自動チェック → 指摘あれば修正→push→squash merge→ブランチ削除
 
 ### 現在のブランチ状態
 
-- ブランチ: `feature/20260525-093502`
-- 直近コミット: `6e6a9a6` docs(audit): 監査ログ追加・バックログ・セッション引き継ぎ更新
-- ローカル未コミット: B-1・B-2 監査成果物（audit-log・backlog・session_context）
+- ブランチ: `feature/20260525-161352`
+- 最新コミット: `0a36983` fix(security): D-1・D-2・D-5 セキュリティ修正
+- ワーキングツリーはクリーン（未コミット変更なし）
+- PR #14 は作成済み・コパのレビュー待ち
 
-### 決定事項
+### 未対応バックログ（主要項目）
 
-- B-1・B-2 オーディ結果 HIGH/MEDIUM ゼロ → 通過
-- `lib/judge.ts:45` のコメント修正方針: `topic` は 200文字バリデーション済みのため truncate 不要 → コメントを「名前のみ truncate → escapeXml」に修正
-- PR #12 は全修正コミット後にマージ
+**D グループ・未着手**
 
-### 現在のバックログ（未対応・主要項目）
+- D-3: `/api/clear-flash` — Cookie 削除時 `httpOnly: true` 省略
+- D-4: `tests/e2e/security-fixes.spec.ts` — B 系 env チェック漏れ
+- D-6: `app/api/cases/[id]/route.ts` — `defendantName` の DB バリデーションなし
 
-- **[LOW]** `app/api/clear-flash/route.ts` — Cookie 削除時の `httpOnly: true` 省略（由来: audit_20260525_132523.md）
-- **[LOW]** `app/layout.tsx` — `<main>` の二重ネスト懸念
+**保留（スコープ外）**
+
+- HMAC トークンの決定論化（DB スキーマ変更が必要）
+- validateApiKey エラー種別区別・middleware 保護パス・layout.tsx 二重ネスト・Supabase エラーログ
 
 ### 次のアクション
 
-1. **[リード]** B-1・B-2 監査成果物をコミット
-2. **[リード]** PR #12 マージ → ブランチ削除（ローカル・リモート両方）
-3. **[パフォーマンス修正]** 新ブランチ作成 → グループC着手
-   - `argument/route.ts` — profiles クエリ重複解消（MEDIUM）
-   - `contradiction_warnings` — `.limit(100)` 追加（既に実装済み、確認のみ）
+1. **[自動]** 16:48 のクーロンが PR #14 のコパレビューを確認・問題なければ squash merge → ブランチ削除
+2. **[リード]** コパ指摘が来た場合は内容確認・対応方針を判断
+3. **[ビルド or リード]** D-3・D-4・D-6 を次 PR で対応するか判断
+4. **[リード]** HMAC 問題はアーキと相談して優先度を決める
+5. **[オプション]** コパ自動リクエストを hook/schedule で恒久自動化
 
 ### 覚えておくべき判断・経緯
 
-- ビルドの作業場所は `src/` にまとめず、ルートに `app/`, `lib/` のまま（Next.js デフォルト構造を維持）
-- エージェントのディレクトリ権限はプロンプトベースの制御（ファイルシステムレベルの強制なし）
-- コパの指摘は `gh api` で取得できる（GitHub を開かなくてよい）
-- セキュリティ修正はビルドが担当、設計変更はアーキ経由
-- `topic` は 200文字バリデーション済みで DB 保存後、プロンプト埋め込み前の truncate は省略してよい
-- `lib/case-response.ts` の `contradiction_warnings` は `.limit(100)` 追加済み（バックログ MEDIUM-002 解消）
+- ビルドの作業場所は `app/`, `lib/` のまま（Next.js デフォルト構造を維持）
+- `topic` は 200文字バリデーション済みのため truncate 省略可
+- コパの指摘は `gh api` で取得できる
+- セキュリティ修正はビルド担当、設計変更はアーキ経由
+- `lib/case-response.ts` の `contradiction_warnings` は `.limit(100)` 追加済み
+- task.md の内容はパイプライン最優先（設計書・handoff と矛盾する場合 task.md を優先）

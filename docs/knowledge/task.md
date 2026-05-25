@@ -4,46 +4,69 @@
 
 ## 今回のタスク
 
-バックログに蓄積された MEDIUM 指摘 2件を修正する。
+バックログの MEDIUM 2件 + LOW 4件を修正する。
 新機能追加・DBスキーマ変更なし。既存コードの修正のみ。
 
 ## 背景・目的
 
-オーディ監査で指摘されたセキュリティ・UX 改善を解消する。
-LOW 指摘（middleware・layout・history エラー）はコードを確認した結果、すでに実装済みまたは許容範囲と判断し対象外。
+オーディ監査で指摘されたセキュリティ・品質改善を解消する。
 
 ## 修正対象
 
-### B-1. `defendantId`（ユーザーUUID）を API レスポンスから除去
+### D-1. `defense.ts` の `dialogHistory.content` に `truncate` 未適用
 
-- **ファイル**: `lib/case-response.ts`
-- **現状**: `buildCaseResponse` が `defendantId: c.defendant_id ?? null` を返しており、
-  認証なしの `GET /api/cases/[id]` から誰でも被告の内部 UUID を取得できる。
-- **調査結果**: クライアント（`app/case/[id]/page.tsx` 等）は `callerRole` で役割を判定しており、
-  `defendantId` を参照していないことを確認済み。
-- **修正**: `buildCaseResponse` の返却オブジェクトから `defendantId` フィールドを削除する。
-- **注意**: `defendant` オブジェクト（`{ name, joinedAt }`）は残すこと。UUID のみ削除。
+- **ファイル**: `lib/defense.ts`
+- **現状**: `escapeXml` は適用済みだが、`dialogHistory` の各 `content` に `truncate` が未適用。
+  長大な発言内容がプロンプトにそのまま展開され、プロンプトインジェクションの攻撃面が残る。
+- **修正**: `dialogHistory` を展開する箇所で `escapeXml(truncate(a.content, 500))` に変更する。
+  `truncate` 関数は同ファイル内（または `lib/judge.ts`）に既存のものを使い回すこと。
 
-### B-2. ログアウト失敗時のユーザー通知
+### D-2. `defense/route.ts` 認証ユーザーパスが try-catch 外
 
-- **ファイル**: `app/actions/auth.ts`、`app/components/Header.tsx`
-- **現状**: `supabase.auth.signOut()` がエラーを返しても `console.error` のみでユーザーには
-  何も伝えずに `/` へリダイレクトする。
-- **修正方針**:
-  - `logout()` アクションをエラー時に `redirect('/') ` する前に、
-    Next.js の `cookies()` を使ってフラッシュメッセージ Cookie を1件セットする
-    （`Set-Cookie: flash_error=logout_failed; Path=/; HttpOnly; Max-Age=30`）
-  - `Header.tsx` を Server Component のまま維持する
-  - ホームページ（`app/page.tsx`）または共通レイアウト（`app/layout.tsx`）で
-    フラッシュ Cookie を読み取り、Client Component として `<ErrorBanner>` を表示する
-  - `<ErrorBanner>` は「ログアウト処理でエラーが発生しました。再度お試しください。」を
-    表示し、自動的に Cookie を削除する（表示後に1度だけ消える）
-- **代替案（アーキが判断可）**: Cookie ではなく URL パラメータ経由でも可（`/?error=logout_failed`）。
-  ただし Server Component のみで完結できる方法を優先する。
+- **ファイル**: `app/api/cases/[id]/defense/route.ts`
+- **現状**: `resolveAuth` 内の認証ユーザーパス（L15–L24）が try-catch の外にある。
+  Supabase クライアント初期化失敗時に未捕捉例外が発生しうる。
+- **修正**: 認証ユーザーパスも try-catch で囲み、例外時に
+  `{ error: "サーバー設定エラーが発生しました。管理者に連絡してください。", status: 500 }` を返す。
+  既存の `argument/route.ts` の try-catch パターンを踏襲すること。
+
+### D-3. `/api/clear-flash` の Cookie 削除で `httpOnly: true` が未指定
+
+- **ファイル**: `app/api/clear-flash/route.ts`
+- **現状**: `auth.ts` でセット時に `httpOnly: true` を指定しているが、削除時に省略されている。
+- **修正**: `res.cookies.set('flash_error', '', { path: '/', maxAge: 0, httpOnly: true })` に統一する。
+
+### D-4. A-2 テストで `E2E_TEST_EMAIL_B`・`E2E_TEST_PASSWORD_B` が必須チェックから漏れている
+
+- **ファイル**: `tests/e2e/security-fixes.spec.ts`
+- **現状**: `beforeEach` の必須環境変数チェックに `E2E_TEST_EMAIL_A`・`E2E_TEST_PASSWORD_A` のみ。
+  `_B` 系変数が未設定の CI 環境でランタイムエラーになる。
+- **修正**: `required` 配列に `E2E_TEST_EMAIL_B`・`E2E_TEST_PASSWORD_B` を追加する。
+
+### D-5. 空文字列が `judge_messages` に挿入される
+
+- **ファイル**: `app/api/cases/[id]/route.ts`・`app/api/cases/[id]/argument/route.ts`
+- **現状**: `generateJudgeMessage` が `""` を返したとき、呼び出し元で空チェックせず INSERT するため
+  本文なしのバブルが表示される。
+- **修正**: `generateJudgeMessage` の戻り値を利用している箇所に `if (!content) return;` を追加する。
+
+### D-6. ゲスト名（defendantName）の DB 書き込み前バリデーションなし
+
+- **ファイル**: `app/api/cases/[id]/route.ts`
+- **現状**: `PATCH /api/cases/[id]` のゲスト参加パスで `body.defendantName` の最大長検証がない。
+  プロンプト埋め込みは `truncate(50)` で保護済みだが、DB には無制限長が書き込まれうる。
+- **修正**: 既存のバリデーションブロックに以下を追加する。
+  ```typescript
+  if (typeof body.defendantName === "string" && body.defendantName.trim().length > 50) {
+    return NextResponse.json({ error: "名前は50文字以内で入力してください" }, { status: 400 });
+  }
+  ```
 
 ## スコープ外
 
 - HMAC トークンの決定論化（DBスキーマ変更が必要 → 別タスク）
-- `/my-role` エンドポイント新設（B-1 の UUID 削除で代替可能と判断）
-- 新機能追加・UI の大幅変更・DBスキーマ変更
-- LOW 指摘（調査の結果、実装済みまたは許容範囲と判断）
+- validateApiKey のエラー種別区別（後回し）
+- middleware の保護パス判定改善（後回し）
+- layout.tsx の `<main>` 二重ネスト（後回し）
+- Supabase エラーログ追加（後回し）
+- 新機能追加・UI 変更・DBスキーマ変更

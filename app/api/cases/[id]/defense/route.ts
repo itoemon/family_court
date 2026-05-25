@@ -12,16 +12,21 @@ async function resolveAuth(req: NextRequest, id: string) {
   const { data: c } = await admin.from("cases").select("*").eq("id", id).single();
   if (!c) return { error: "ケースが見つかりません", status: 404 } as const;
 
-  const session = await createSessionClient();
-  const { data: { user } } = await session.auth.getUser();
+  try {
+    const session = await createSessionClient();
+    const { data: { user } } = await session.auth.getUser();
 
-  if (user) {
-    if (user.id !== c.plaintiff_id && user.id !== c.defendant_id) {
-      return { error: "このケースへの参加権限がありません", status: 403 } as const;
+    if (user) {
+      if (user.id !== c.plaintiff_id && user.id !== c.defendant_id) {
+        return { error: "このケースへの参加権限がありません", status: 403 } as const;
+      }
+      const userRole: "plaintiff" | "defendant" =
+        user.id === c.plaintiff_id ? "plaintiff" : "defendant";
+      return { user, userId: user.id as string | null, c, userRole, admin } as const;
     }
-    const userRole: "plaintiff" | "defendant" =
-      user.id === c.plaintiff_id ? "plaintiff" : "defendant";
-    return { user, userId: user.id as string | null, c, userRole, admin } as const;
+  } catch (err) {
+    console.error("createSessionClient failed:", err);
+    return { error: "サーバー設定エラーが発生しました。管理者に連絡してください。", status: 500 } as const;
   }
 
   if (c.defendant_guest_name) {

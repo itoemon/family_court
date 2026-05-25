@@ -93,7 +93,9 @@ export async function PATCH(
           plaintiffName: plaintiffProfile.display_name ?? "提案者",
           defendantName: profile?.display_name ?? "反対者",
         }, apiKey);
-        await admin.from("judge_messages").insert({ case_id: id, content, trigger_type: "opening" });
+        if (content) {
+          await admin.from("judge_messages").insert({ case_id: id, content, trigger_type: "opening" });
+        }
       }
     } catch (err) {
       console.error("[judge] opening generation failed:", err);
@@ -127,7 +129,9 @@ export async function PATCH(
         plaintiffName: plaintiffProfile.display_name ?? "提案者",
         defendantName: body.defendantName.trim(),
       }, apiKey);
-      await admin.from("judge_messages").insert({ case_id: id, content, trigger_type: "opening" });
+      if (content) {
+        await admin.from("judge_messages").insert({ case_id: id, content, trigger_type: "opening" });
+      }
     }
   } catch (err) {
     console.error("[judge] opening generation failed:", err);
