@@ -1,18 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { Role, JudgeTrigger } from "./types";
-
-export function truncate(str: string, max: number): string {
-  return str.slice(0, max);
-}
-
-function escapeXml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
+import { truncate, escapeXml } from "./text-utils";
 
 interface JudgeParams {
   trigger: JudgeTrigger;

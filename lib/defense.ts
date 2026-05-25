@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { truncate } from "@/lib/judge";
+import { truncate, escapeXml } from "@/lib/text-utils";
 
 export interface DefenseParams {
   topic: string;
@@ -10,15 +10,6 @@ export interface DefenseParams {
 
 function getUserRoleLabel(userRole: "plaintiff" | "defendant"): string {
   return userRole === "plaintiff" ? "提案者（原告）" : "反対者（被告）";
-}
-
-function escapeXml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
 }
 
 export async function generateDefenseResponse(

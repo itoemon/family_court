@@ -35,40 +35,20 @@
 - **内容**: layout が `<main>` でラップしているため、子ページが `<main>` を持つと HTML 仕様違反になる。
 - **修正案**: layout のラッパーを `<div>` に変更するか、子ページは `<main>` を使わないと規約化する。
 
-#### [LOW] ゲスト名（defendantName）に最大長バリデーションなし（app/api/cases/[id]/route.ts:87-90） (由来: audit_20260520_083154.md)
-
-- **内容**: `PATCH /api/cases/[id]` のゲスト参加パスで `body.defendantName` の DB 書き込み前の最大長検証がない。プロンプト埋め込みは `truncate(50)` で保護済みだが、DB には無制限長が書き込まれうる。
-- **修正案**: バリデーションブロックに `if (body.defendantName.length > 50) return error(400)` を追加する。
-
 #### [LOW] `validateApiKey` がエラー種別を区別しない（lib/claude.ts:17） (由来: audit_20260520_084404.md)
 
 - **内容**: あらゆる例外を `catch {}` で握りつぶして `false` を返す。Anthropic 障害時に正常なキーでも「無効」と表示される。
 - **修正案**: `AuthenticationError`（401/403）のみキャッチして `false` を返し、それ以外は再 throw する。
-
-#### [LOW] 空文字列が judge_messages に挿入される（lib/judge.ts:26） (由来: audit_20260524_183938.md)
-
-- **内容**: `generateJudgeMessage` が `""` を返したとき呼び出し元で空チェックせず INSERT するため、本文なしのバブルが表示される。
-- **修正案**: 呼び出し元で `if (!content) return;` を追加する。DB に `check (content <> '')` 制約を追加する。
 
 #### [LOW] Supabase エラーが無言で握りつぶされる（app/history/page.tsx:40, 55-63） (由来: audit_20260524_193621.md)
 
 - **内容**: `if (error) throw error;` でエラー詳細がユーザーに露出しないが、可観測性がゼロ。プロフィール取得クエリはエラー時に無言で空配列になる。
 - **修正案**: `console.error("[history] query failed:", error)` を追加し、意味のあるエラーメッセージを throw する。
 
-#### [LOW] A-2 テストで `E2E_TEST_EMAIL_B`・`E2E_TEST_PASSWORD_B` が必須チェックから漏れている（tests/e2e/security-fixes.spec.ts:7-13） (由来: audit_20260525_120211.md)
-
-- **内容**: `beforeEach` の必須環境変数チェックに `_B` 系変数が含まれていない。未設定 CI 環境でランタイムエラーになる。
-- **修正案**: `required` 配列に `E2E_TEST_EMAIL_B`・`E2E_TEST_PASSWORD_B` を追加する。
-
 #### [LOW] middleware の保護パス判定が完全一致のみ（middleware.ts:32-34） (由来: audit_20260524_193621.md)
 
 - **内容**: `PROTECTED_PATHS.has(pathname)` の完全一致判定のため、将来のサブルートが保護されない。現時点は Server Component の二重保護があるため実害なし。
 - **修正案**: `pathname.startsWith("/history")` 等のプレフィックスマッチに変更する。
-
-#### [LOW] `/api/clear-flash` の Cookie 削除で `httpOnly: true` が未指定（app/api/clear-flash/route.ts:5） (由来: audit_20260525_132523.md)
-
-- **内容**: `auth.ts` でセット時に `httpOnly: true` を指定しているが、削除時に省略されている。一貫性を欠く。
-- **修正案**: `res.cookies.set('flash_error', '', { path: '/', maxAge: 0, httpOnly: true })` に統一する。
 
 ---
 
@@ -76,10 +56,16 @@
 
 | PR | 内容 |
 |----|------|
+| PR #14 (D-1) | `defense.ts` dialogHistory.content に truncate 適用・text-utils.ts に切り出し |
+| PR #14 (D-2) | `defense/route.ts` 認証ユーザーパスを try-catch で保護 |
+| PR #14 (D-5) | `judge_messages` 空文字列挿入ガード × 3箇所 |
 | PR #14 (C-1) | `verifyGuestToken` try-catch 保護（argument / defense / draft の 3ファイル） |
 | PR #14 (C-2) | `GUEST_TOKEN_SECRET` 未設定時のフェイルファスト（lib/guest-token.ts） |
-| PR #14 (C-3) | プロンプトインジェクション対策（escapeXml + truncate(50)、lib/judge.ts / lib/defense.ts） |
+| PR #14 (C-3) | プロンプトインジェクション対策（escapeXml + truncate(50)） |
 | PR #14 (C-4) | profiles 重複クエリ削減・contradiction_warnings に .limit(100) |
+| PR #14 (D-3) | `clear-flash` Cookie 削除に httpOnly: true（確認済み） |
+| PR #14 (D-4) | A-2 テスト env チェック（確認済み） |
+| PR #14 (D-6) | ゲスト名 DB バリデーション 50文字（確認済み） |
 | PR #13 (B-1) | `defendantId`（被告 UUID）を認証なし API レスポンスから除去 |
 | PR #13 (B-2) | ログアウト失敗時のフラッシュ Cookie + ErrorBanner 実装 |
 | PR #12       | middleware の保護パス整備・Suspense 境界・logout エラー処理 |
