@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { Role, JudgeTrigger } from "./types";
 
-function truncate(str: string, max: number): string {
+export function truncate(str: string, max: number): string {
   return str.slice(0, max);
 }
 

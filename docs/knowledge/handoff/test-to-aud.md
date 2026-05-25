@@ -2,7 +2,84 @@
 
 ---
 
-## 直近監査結果サマリー（2026-05-25 16:17 / C-1〜C-4）
+## 直近監査結果サマリー（2026-05-25 17:30 / D-1・D-2・D-5）
+
+**監査ログ**: [audit_20260525_173000.md](../audit-log/audit_20260525_173000.md)
+
+| 重要度 | 件数 |
+|--------|------|
+| HIGH   | 0    |
+| MEDIUM | 0    |
+| LOW    | 2    |
+| 合格   | 8    |
+
+**総合判定: PASS**
+
+### D-1〜D-5 監査結果
+
+| タスク | 内容 | 判定 |
+|--------|------|------|
+| D-1 | `lib/defense.ts` truncate → escapeXml 順序（48・82行目）、`generateDefenseResponse`・`generateDraft` 両方に適用 | 合格 |
+| D-2 | `defense/route.ts` `resolveAuth` 認証ユーザーパスを try-catch でカバー、スタックトレース漏洩なし、ゲストパスと一貫 | 合格 |
+| D-5 | `route.ts` 2箇所・`argument/route.ts` 1箇所すべてに `if (content)` チェック済み、空文字列・null・undefined を正しくガード | 合格 |
+
+### 新規指摘事項（次回パイプラインで対応推奨）
+
+| ID | 重要度 | 対象 | 内容 |
+|----|--------|------|------|
+| LOW-1 | LOW | `lib/defense.ts` | `generateDraft` 内の `defenseHistory` ループ（88行目）で `escapeXml(m.content)` に `truncate` 未適用。AI 応答は max_tokens:512 で実害は低い。 |
+| LOW-2 | LOW | `app/api/cases/[id]/route.ts` | PATCH ハンドラの非 asGuest パスで `createSessionClient()` が try-catch 外（72行目）。直接的なセキュリティリスクは低いが C-1 修正済みパターンと非一貫。 |
+
+---
+
+## 直近テスト結果サマリー（2026-05-25 15:45 / D-1・D-2・D-5）
+
+**テストログ**: [test_20260525_154500.md](../test-log/test_20260525_154500.md)
+
+| 修正 | 判定 | 備考 |
+|------|------|------|
+| D-1  | PASS | truncate → escapeXml の順序正しく、2箇所とも実装済み |
+| D-2  | PASS | 認証ユーザーパス全体が try-catch で囲まれ、スタックトレース漏洩なし |
+| D-5  | PASS | route.ts 2箇所・argument/route.ts 1箇所すべてに `if (content)` チェック済み |
+
+**tsc**: エラーゼロ
+
+**総合判定: PASS** — ビルドエージェントの実装は設計書と完全一致
+
+---
+
+## オーディへの確認依頼（D タスク）
+
+### 1. D-1: `lib/defense.ts` — truncate の適用確認
+
+**テスタ確認（静的）**: ✅ 設計書通り実装済み
+
+**オーディへの確認依頼**:
+- [ ] `lib/defense.ts` の 48 行目・82 行目で `truncate(a.content, 500)` が `escapeXml` の引数に渡されていること
+- [ ] `lib/judge.ts` の `truncate` 関数（4 行目）が `export function` として named export になっていること
+- [ ] `defenseHistory` の `content` は変更されていないこと（route.ts で 1000 文字バリデーション済みのため対象外）
+
+### 2. D-2: `defense/route.ts` — try-catch の範囲確認
+
+**テスタ確認（静的）**: ✅ 設計書通り実装済み
+
+**オーディへの確認依頼**:
+- [ ] `resolveAuth` 関数内（15〜30 行目）で `createSessionClient()` の呼び出しから `user` 判定のブロック末尾まで try-catch で囲まれていること
+- [ ] catch ブロックが `console.error("createSessionClient failed:", err)` のみでスタックトレースをレスポンスに含めていないこと
+- [ ] エラーメッセージが `"サーバー設定エラーが発生しました。管理者に連絡してください。"` という汎用表現であること
+
+### 3. D-5: `judge_messages` 空文字列挿入防止確認
+
+**テスタ確認（静的）**: ✅ 設計書通り実装済み
+
+**オーディへの確認依頼**:
+- [ ] `app/api/cases/[id]/route.ts` の 96〜98 行目（アカウント参加時 opening）に `if (content)` チェックがあること
+- [ ] `app/api/cases/[id]/route.ts` の 132〜134 行目（ゲスト参加時 opening）に `if (content)` チェックがあること
+- [ ] `app/api/cases/[id]/argument/route.ts` の 143〜145 行目（turn/closing）に `if (content)` チェックがあること
+
+---
+
+## 前回監査結果サマリー（2026-05-25 16:17 / C-1〜C-4）
 
 **監査ログ**: [audit_20260525_161728.md](../audit-log/audit_20260525_161728.md)
 

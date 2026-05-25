@@ -140,7 +140,9 @@ export async function POST(
         defendantName,
         lastSpeakerRole: callerRole,
       }, plaintiffApiKey);
-      await admin.from("judge_messages").insert({ case_id: id, content, trigger_type: triggerType });
+      if (content) {
+        await admin.from("judge_messages").insert({ case_id: id, content, trigger_type: triggerType });
+      }
     }
   } catch (err) {
     console.error("[judge] turn/closing generation failed:", err);

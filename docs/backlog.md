@@ -10,16 +10,6 @@
 
 ### MEDIUM
 
-#### [MEDIUM] `defense.ts` の `dialogHistory.content` に `truncate` 未適用（lib/defense.ts） (由来: audit_20260525_161728.md)
-
-- **内容**: `escapeXml` は適用済みだが、`dialogHistory` の各 `content` に `truncate` が未適用。長大な発言内容がプロンプトにそのまま展開されるため、プロンプトインジェクションの攻撃面が残る。
-- **修正案**: `escapeXml(truncate(a.content, 500))` に変更する。
-
-#### [MEDIUM] `defense/route.ts` 認証ユーザーパスが try-catch 外（app/api/cases/[id]/defense/route.ts:15-24） (由来: audit_20260525_161728.md)
-
-- **内容**: `resolveAuth` 内の認証ユーザーパス（L15–L24）が try-catch の外にある。Supabase クライアント初期化失敗時に未捕捉例外が発生しうる。
-- **修正案**: 認証ユーザーパスも try-catch で囲み、例外時に 500 レスポンスを返す。
-
 #### [MEDIUM] HMAC トークンが決定論的で個別取り消し不可（lib/guest-token.ts） (由来: audit_20260520_084404.md)
 
 - **内容**: `computeToken` の HMAC 入力が `"${caseId}:defendant"` のみ。ランダム要素・タイムスタンプなし。Cookie キャプチャ時に 7 日間再利用可能。個別セッション取り消し不可。
@@ -29,6 +19,16 @@
 ---
 
 ### LOW
+
+#### [LOW] `generateDraft` 内の `defenseHistory` に `truncate` 未適用（lib/defense.ts:88） (由来: audit_20260525_173000.md)
+
+- **内容**: `generateDraft` 内の `defenseHistory` ループで `escapeXml(m.content)` に `truncate` が未適用。AI 応答は `max_tokens: 512` で実害は低いが、防御的観点で統一すべき。
+- **修正案**: `escapeXml(truncate(m.content, 500))` に変更する。
+
+#### [LOW] PATCH ハンドラ非 asGuest パスで `createSessionClient()` が try-catch 外（app/api/cases/[id]/route.ts:72） (由来: audit_20260525_173000.md)
+
+- **内容**: D-2 で `defense/route.ts` は修正済みだが、`route.ts` の PATCH ハンドラ（非 asGuest パス）で `createSessionClient()` が try-catch の外にある。直接的なセキュリティリスクは低いが一貫性を欠く。
+- **修正案**: 当該ブロックを try-catch で囲み、例外時に 500 を返す。
 
 #### [LOW] layout.tsx の `<main>` が子ページと二重になりうる（app/layout.tsx:33） (由来: audit_20260519_162635.md)
 
