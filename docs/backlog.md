@@ -8,12 +8,6 @@
 
 ## 未対応
 
-### [MEDIUM] ログアウト失敗時にユーザーへの通知がない
-
-- **ファイル**: `app/actions/auth.ts`
-- **内容**: `signOut()` が失敗してもユーザーは気づかずリダイレクトされる。サーバーセッションが残存しうる
-- **修正案**: `useActionState` でエラーをクライアントに返す。ただしログアウトボタンを Client Component 化する必要があり、現設計（Server Action + `<form>`）との兼ね合いで要設計判断
-- **由来**: PR #2 コパ指摘
 
 ### [LOW] layout.tsx の `<main>` が子ページと二重になりうる
 
@@ -23,6 +17,7 @@
 - **由来**: audit_20260519_162635.md / LOW-002
 
 ### [MEDIUM-001] ケースAPIが内部ユーザーIDを認証なしに公開（app/api/cases/[id]/route.ts:38、同:107、app/api/cases/[id]/argument/route.ts:107） (由来: audit_20260520_083154.md)
+<!-- B-1対応済み: defendantId は lib/types.ts・lib/case-response.ts・verdict/route.ts から削除済み（audit_20260525_132523.md）-->
  (由来: audit_20260520_083154.md)
 - **内容**:   (由来: audit_20260520_083154.md)
   `GET /api/cases/[id]` は認証不要なエンドポイントである（要件定義 §画面一覧: ケースルームは「認証: 任意」）。今回のコミットで `buildCaseResponse` に `defendantId: c.defendant_id ?? null` が明示的に追加され（route.ts:38）、さらに `select("*")` + `...c` スプレッドにより `plaintiff_id` / `defendant_id` を含む全DBカラムもそのままレスポンスに含まれる状態が継続している。   (由来: audit_20260520_083154.md)
@@ -130,6 +125,13 @@
 
 ---
 
+### [LOW-001] `/api/clear-flash` の Cookie 削除に `httpOnly: true` が指定されていない（`app/api/clear-flash/route.ts:5`） (由来: audit_20260525_132523.md)
+
+- **内容**: `auth.ts` でセット時に `httpOnly: true` を指定しているが、`clear-flash/route.ts` での削除時に `httpOnly` オプションが省略されている。現行の主要ブラウザでは削除失敗は生じないが、セット・削除間のオプション不一致として一貫性を欠く
+- **修正案**: `res.cookies.set('flash_error', '', { path: '/', maxAge: 0, httpOnly: true })` にオプションを統一する
+
+---
+
 ### [LOW-003] プロフィール取得クエリのエラーが無言で握りつぶされる（app/history/page.tsx:55-63）
 
 - **内容**:
@@ -155,6 +157,18 @@
 ---
 
 ## 対応済み
+
+### [MEDIUM] B-1: `defendantId`（被告 Supabase UUID）を認証なし API レスポンスから除去
+
+- **ファイル**: `lib/types.ts`・`lib/case-response.ts`・`app/api/cases/[id]/verdict/route.ts`
+- **内容**: `defendantId` フィールドを型定義・ビルダー・verdict ルートから削除。クライアント側参照も 0件であることを grep で確認
+- **由来**: audit_20260520_083154.md / MEDIUM-001 → audit_20260525_132523.md で対応確認
+
+### [MEDIUM] B-2: ログアウト失敗時にユーザーへの通知がない
+
+- **ファイル**: `app/actions/auth.ts`・`app/layout.tsx`・`app/components/ErrorBanner.tsx`・`app/api/clear-flash/route.ts`
+- **内容**: Cookie 方式のフラッシュメッセージを実装。`httpOnly: true`・`maxAge: 30` で XSS 対策・短命設計を満たしている
+- **由来**: PR #2 コパ指摘 → audit_20260525_132523.md で対応確認
 
 ### [MEDIUM] logout() で signOut() のエラーが握り潰される
 

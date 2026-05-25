@@ -71,7 +71,6 @@ export async function buildCaseResponse(
     maxRounds: c.max_rounds,
     createdAt: c.created_at,
     updatedAt: c.updated_at,
-    defendantId: c.defendant_id ?? null,
     plaintiff: { name: plaintiff?.display_name ?? "提案者", joinedAt: c.created_at },
     defendant,
     arguments: (args ?? []).map((a) => ({

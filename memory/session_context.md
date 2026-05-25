@@ -28,7 +28,7 @@ metadata:
 - E2E テスト 8/8 通過（`fbb3e82`）
 - `tests/e2e/security-fixes.spec.ts`・テストログ・`test-to-aud.md` をコミット
 
-**オーディ完了**
+**オーディ完了（前回）**
 
 - 結果: **通過** （HIGH 0・MEDIUM 0・LOW 1）
 - LOW-001: `tests/e2e/security-fixes.spec.ts` の A-2 テストで `E2E_TEST_EMAIL_B`/`E2E_TEST_PASSWORD_B` が `beforeEach` の必須チェックから漏れてる
@@ -43,29 +43,38 @@ metadata:
   4. `memory/session_context.md` — 「未コミット」記述が古かった → **本更新で解消**
   5. `docs/knowledge/audit-log/audit_20260525_120211.md:46` — 行番号不一致 → **リードが修正済み**
 
+**オーディ完了（B-1・B-2 監査）**
+
+- 対象: B-1（UUID 露出防止）・B-2（ログアウトエラー通知）
+- 結果: **通過** （HIGH 0・MEDIUM 0・LOW 1）
+- LOW-001: `app/api/clear-flash/route.ts:5` — Cookie 削除時に `httpOnly: true` が省略されている（実害なし・一貫性の問題）
+- 監査ログ: `docs/knowledge/audit-log/audit_20260525_132523.md`
+- B-1・B-2 バックログ項目を「対応済み」に移動
+
 ### 現在のブランチ状態
 
 - ブランチ: `feature/20260525-093502`
 - 直近コミット: `6e6a9a6` docs(audit): 監査ログ追加・バックログ・セッション引き継ぎ更新
-- ローカル未コミット: ドキュメント整形3件（コパ #3・#4・#5）＋ビルド実装修正2件（コパ #1・#2）
+- ローカル未コミット: B-1・B-2 監査成果物（audit-log・backlog・session_context）
 
 ### 決定事項
 
-- オーディ結果 HIGH/MEDIUM ゼロ → PR 作成して main にマージ可
+- B-1・B-2 オーディ結果 HIGH/MEDIUM ゼロ → 通過
 - `lib/judge.ts:45` のコメント修正方針: `topic` は 200文字バリデーション済みのため truncate 不要 → コメントを「名前のみ truncate → escapeXml」に修正
 - PR #12 は全修正コミット後にマージ
 
-### 現在のバックログ（未対応）
+### 現在のバックログ（未対応・主要項目）
 
-- **[MEDIUM]** `app/actions/auth.ts` — ログアウト失敗時のユーザー通知なし（要設計判断）
+- **[LOW]** `app/api/clear-flash/route.ts` — Cookie 削除時の `httpOnly: true` 省略（由来: audit_20260525_132523.md）
 - **[LOW]** `app/layout.tsx` — `<main>` の二重ネスト懸念
 
-### 次のアクション（PR #12 マージ後）
+### 次のアクション
 
-1. **[リード]** ブランチ削除（ローカル・リモート両方）
-2. **[パフォーマンス修正]** 新ブランチ作成 → グループC着手
+1. **[リード]** B-1・B-2 監査成果物をコミット
+2. **[リード]** PR #12 マージ → ブランチ削除（ローカル・リモート両方）
+3. **[パフォーマンス修正]** 新ブランチ作成 → グループC着手
    - `argument/route.ts` — profiles クエリ重複解消（MEDIUM）
-   - `contradiction_warnings` — `.limit(100)` 追加（MEDIUM）
+   - `contradiction_warnings` — `.limit(100)` 追加（既に実装済み、確認のみ）
 
 ### 覚えておくべき判断・経緯
 
@@ -74,3 +83,4 @@ metadata:
 - コパの指摘は `gh api` で取得できる（GitHub を開かなくてよい）
 - セキュリティ修正はビルドが担当、設計変更はアーキ経由
 - `topic` は 200文字バリデーション済みで DB 保存後、プロンプト埋め込み前の truncate は省略してよい
+- `lib/case-response.ts` の `contradiction_warnings` は `.limit(100)` 追加済み（バックログ MEDIUM-002 解消）
