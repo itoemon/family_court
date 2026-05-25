@@ -42,7 +42,7 @@ export async function generateJudgeMessage(
 function buildPrompt(params: JudgeParams): string {
   const { trigger, topic, plaintiffName, defendantName, lastSpeakerRole } = params;
 
-  // ユーザー入力を事前処理（truncate → escapeXml の順が必須）
+  // ユーザー入力を事前処理（名前のみ truncate → escapeXml の順で処理、topic は保存前に 200 文字バリデーション済み）
   const safeTopic = escapeXml(topic);
   const safePlaintiff = escapeXml(truncate(plaintiffName, 50));
   const safeDefendant = escapeXml(truncate(defendantName, 50));

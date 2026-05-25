@@ -5,7 +5,7 @@ import { test, expect } from '@playwright/test';
 // ────────────────────────────────────────────────────────────
 
 test.beforeEach(() => {
-  const required = ['E2E_TEST_EMAIL_A', 'E2E_TEST_PASSWORD_A'];
+  const required = ['E2E_TEST_EMAIL_A', 'E2E_TEST_PASSWORD_A', 'E2E_TEST_EMAIL_B', 'E2E_TEST_PASSWORD_B'];
   const missing = required.filter((k) => !process.env[k]);
   if (missing.length > 0) {
     test.skip(true, `必須環境変数が未設定: ${missing.join(', ')}`);
