@@ -25,9 +25,14 @@ async function resolveAuth(req: NextRequest, id: string) {
   }
 
   if (c.defendant_guest_name) {
-    const cookieToken = req.cookies.get(`guest_defendant_${id}`)?.value;
-    if (cookieToken && verifyGuestToken(id, cookieToken)) {
-      return { user: null, userId: null, c, userRole: "defendant" as const, admin } as const;
+    try {
+      const cookieToken = req.cookies.get(`guest_defendant_${id}`)?.value;
+      if (cookieToken && verifyGuestToken(id, cookieToken)) {
+        return { user: null, userId: null, c, userRole: "defendant" as const, admin } as const;
+      }
+    } catch (err) {
+      console.error("verifyGuestToken failed:", err);
+      return { error: "サーバー設定エラーが発生しました。管理者に連絡してください。", status: 500 } as const;
     }
   }
 
