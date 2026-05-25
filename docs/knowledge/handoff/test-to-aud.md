@@ -1,5 +1,39 @@
 # テスタ → オーディ 引き継ぎメモ（パイプライン毎に上書きされる）
 
+---
+
+## 直近監査結果サマリー（2026-05-25 16:17 / C-1〜C-4）
+
+**監査ログ**: [audit_20260525_161728.md](../audit-log/audit_20260525_161728.md)
+
+| 重要度 | 件数 |
+|--------|------|
+| HIGH   | 0    |
+| MEDIUM | 2    |
+| LOW    | 1    |
+| 合格   | 9    |
+
+**総合判定: PASS**
+
+### C-1〜C-4 確認結果
+
+| タスク | 内容 | 判定 |
+|--------|------|------|
+| C-1 | verifyGuestToken try-catch（3ファイル） | 合格（defense/route.ts の認証ユーザーパスに軽微な観察あり） |
+| C-2 | GUEST_TOKEN_SECRET フェイルファスト | 合格（IIFE でモジュールロード時に検証、`!` アサーション除去済み） |
+| C-3 | プロンプトインジェクション対策（judge.ts / defense.ts） | 合格（escapeXml・XML タグ分離・無効化注記すべて実装済み） |
+| C-4 | profiles クエリ重複排除・.limit(100) | 合格 |
+
+### 新規指摘事項（次回パイプラインで対応推奨）
+
+| ID | 重要度 | 対象 | 内容 |
+|----|--------|------|------|
+| MEDIUM-NEW-1 | MEDIUM | `lib/defense.ts` | `dialogHistory` の content に `truncate` 未適用 |
+| MEDIUM-NEW-2 | MEDIUM | `defense/route.ts` | 認証ユーザーパスが try-catch 外 |
+| LOW-NEW-1 | LOW | `judge.ts` / `defense.ts` | `topic` に `truncate` 未適用（防御的観点） |
+
+---
+
 > **注意**: このメモは task.md を補足するものです。task.md と矛盾する場合は task.md を優先してください。
 
 **タスク**: セキュリティ MEDIUM 2件（B-1: UUID 露出防止・B-2: ログアウトエラー通知）の修正  

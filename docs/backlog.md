@@ -8,6 +8,17 @@
 
 ## 未対応
 
+### [MEDIUM-NEW-1] `defense.ts` の `dialogHistory.content` に `truncate` 未適用（lib/defense.ts） (由来: audit_20260525_161728.md)
+
+- **内容**: `escapeXml` は適用済みだが、`dialogHistory` の各 `content` に `truncate` が未適用。長大な発言内容がプロンプトにそのまま展開されるため、プロンプトインジェクションの攻撃面が残る。
+- **修正案**: `escapeXml(truncate(a.content, 500))` に変更する。
+
+### [MEDIUM-NEW-2] `defense/route.ts` 認証ユーザーパスが try-catch 外（app/api/cases/[id]/defense/route.ts:15-24） (由来: audit_20260525_161728.md)
+
+- **内容**: `resolveAuth` 内の認証ユーザーパス（L15–L24）が try-catch の外にある。Supabase クライアント初期化失敗時に未捕捉例外が発生しうる。
+- **修正案**: 認証ユーザーパスも try-catch で囲み、例外時に適切な 500 レスポンスを返す。
+
+---
 
 ### [LOW] layout.tsx の `<main>` が子ページと二重になりうる
 

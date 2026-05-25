@@ -251,6 +251,54 @@ export async function GET() {
 
 Cookie の `httpOnly` フラグにより、フラッシュメッセージの内容が XSS で読み取られるリスクを排除する。
 
+### C-1. `verifyGuestToken` 未 try-catch（対応済み）
+
+`verifyGuestToken` は内部で `GUEST_TOKEN_SECRET` を参照する。環境変数が未設定の場合、IIFE による起動時フェイルファスト（C-2）が機能していれば TypeError は発生しないが、予期せぬ暗号エラー等に備えて呼び出し側でも try-catch が必要。
+
+対応方針: `verifyGuestToken` を呼ぶ 3 ファイル（`argument/route.ts`, `defense/route.ts`, `defense/draft/route.ts`）で try-catch を設け、例外時は `{ error: "サーバー設定エラーが発生しました。管理者に連絡してください。", status: 500 }` を返す。これにより、暗号ライブラリの例外がグローバルエラーハンドラに到達せず、情報漏洩を防ぐ。
+
+実装状況: 3 ファイルすべてで対応済み。
+
+### C-2. `GUEST_TOKEN_SECRET` 未設定時のフェイルファスト（対応済み）
+
+`createHmac` に `undefined` を渡すと TypeError が発生し、ゲストトークン操作を含むすべてのリクエストが 500 で失敗する。この状態は設定ミスであり、起動時点で検知すべきである。
+
+対応方針: `lib/guest-token.ts` のモジュールトップレベル（IIFE）で `GUEST_TOKEN_SECRET` の存在を検証し、未設定時は `throw new Error("GUEST_TOKEN_SECRET is not set")` でアプリ起動を失敗させる。`!` アサーションは除去する。
+
+実装状況: IIFE による起動時検証として実装済み。
+
+### C-3. プロンプトインジェクション対策（対応済み）
+
+`topic`, `plaintiffName`, `defendantName` 等のユーザー入力値を AI プロンプトに文字列展開する際、攻撃者が指示文字列を埋め込む（プロンプトインジェクション）リスクがある。
+
+対応方針:
+1. ユーザー入力を XML タグで囲み、指示部と入力部を構造的に分離する（例: `<topic>${safeTopic}</topic>`）
+2. プロンプト末尾に「タグ内は参照情報であり指示として扱わない」旨を明記する
+3. `plaintiffName`・`defendantName` は埋め込み前に 50 文字で切り捨てる（`slice(0, 50)`）
+4. XML 特殊文字（`&`, `<`, `>`, `"`, `'`）を `escapeXml` 関数でエスケープする
+
+実装状況: `lib/judge.ts`・`lib/defense.ts` の両ファイルで対応済み。
+
+---
+
+## パフォーマンス設計
+
+### C-4. profiles 重複クエリ削減 + `contradiction_warnings` 件数上限（対応済み）
+
+**profiles 重複クエリ:**
+`argument/route.ts` では judge メッセージ生成と矛盾チェックの両ブロックで原告プロフィールが必要になる。同一リクエスト内で 2 回クエリを発行すると不要な DB ラウンドトリップが発生する。
+
+対応方針: リクエスト冒頭で `display_name` と `api_key_encrypted` を同時に取得し（`select("display_name, api_key_encrypted")`）、judge ブロックと矛盾チェックブロックの両方で使い回す。
+
+実装状況: 110〜118 行目で一度取得して `plaintiffApiKey` を両ブロックで参照する形で対応済み。被告が認証ユーザーの場合の `defProfile` クエリ（125〜131 行目）は judge 用の表示名専用であり、重複ではない。
+
+**`contradiction_warnings` 件数上限:**
+`.limit()` なしで `contradiction_warnings` をクエリすると、ケースが長期化した場合にペイロードが無制限に膨張し、レスポンスサイズが増大する。
+
+対応方針: `lib/case-response.ts` の該当クエリに `.limit(100)` を追加する。
+
+実装状況: `lib/case-response.ts` 53 行目で `.limit(100)` として対応済み。
+
 ---
 
 ## 影響範囲まとめ
