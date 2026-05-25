@@ -1,24 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient, createSessionClient } from "@/lib/supabase/server";
+import { verifyGuestToken } from "@/lib/guest-token";
 import { decryptApiKey } from "@/lib/crypto";
 import { generateDraft } from "@/lib/defense";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: RouteContext
 ) {
   const { id } = await params;
-
-  const session = await createSessionClient();
-  const {
-    data: { user },
-  } = await session.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: "認証が必要です" }, { status: 401 });
-  }
-
   const admin = createAdminClient();
 
   const { data: c } = await admin
@@ -30,12 +22,31 @@ export async function POST(
     return NextResponse.json({ error: "ケースが見つかりません" }, { status: 404 });
   }
 
-  if (user.id !== c.plaintiff_id && user.id !== c.defendant_id) {
-    return NextResponse.json({ error: "このケースへの参加権限がありません" }, { status: 403 });
-  }
+  // 認証済みユーザーの確認
+  const session = await createSessionClient();
+  const { data: { user } } = await session.auth.getUser();
 
-  const userRole: "plaintiff" | "defendant" =
-    user.id === c.plaintiff_id ? "plaintiff" : "defendant";
+  let userId: string | null = null;
+  let userRole: "plaintiff" | "defendant";
+
+  if (user) {
+    if (user.id !== c.plaintiff_id && user.id !== c.defendant_id) {
+      return NextResponse.json({ error: "このケースへの参加権限がありません" }, { status: 403 });
+    }
+    userId = user.id;
+    userRole = user.id === c.plaintiff_id ? "plaintiff" : "defendant";
+  } else if (c.defendant_guest_name) {
+    // ゲストトークンの確認
+    const cookieToken = req.cookies.get(`guest_defendant_${id}`)?.value;
+    if (cookieToken && verifyGuestToken(id, cookieToken)) {
+      userId = null;
+      userRole = "defendant";
+    } else {
+      return NextResponse.json({ error: "認証が必要です" }, { status: 401 });
+    }
+  } else {
+    return NextResponse.json({ error: "認証が必要です" }, { status: 401 });
+  }
 
   const { data: plaintiffProfile } = await admin
     .from("profiles")
@@ -56,12 +67,15 @@ export async function POST(
     return NextResponse.json({ error: "APIキーの復号に失敗しました" }, { status: 500 });
   }
 
-  const { data: defenseRows } = await admin
+  const defenseQuery = admin
     .from("defense_messages")
     .select("role, content")
     .eq("case_id", id)
-    .eq("user_id", user.id)
     .order("created_at", { ascending: true });
+
+  const { data: defenseRows } = userId
+    ? await defenseQuery.eq("user_id", userId)
+    : await defenseQuery.is("user_id", null);
 
   if (!defenseRows || defenseRows.length === 0) {
     return NextResponse.json(

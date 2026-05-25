@@ -1,52 +1,57 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient, createSessionClient } from "@/lib/supabase/server";
+import { verifyGuestToken } from "@/lib/guest-token";
 import { decryptApiKey } from "@/lib/crypto";
 import { generateDefenseResponse } from "@/lib/defense";
 import { DefenseMessage } from "@/lib/types";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-async function resolveAuth(id: string) {
-  const session = await createSessionClient();
-  const {
-    data: { user },
-  } = await session.auth.getUser();
-  if (!user) return { error: "認証が必要です", status: 401 } as const;
-
+async function resolveAuth(req: NextRequest, id: string) {
   const admin = createAdminClient();
-  const { data: c } = await admin
-    .from("cases")
-    .select("*")
-    .eq("id", id)
-    .single();
+  const { data: c } = await admin.from("cases").select("*").eq("id", id).single();
   if (!c) return { error: "ケースが見つかりません", status: 404 } as const;
 
-  if (user.id !== c.plaintiff_id && user.id !== c.defendant_id) {
-    return { error: "このケースへの参加権限がありません", status: 403 } as const;
+  const session = await createSessionClient();
+  const { data: { user } } = await session.auth.getUser();
+
+  if (user) {
+    if (user.id !== c.plaintiff_id && user.id !== c.defendant_id) {
+      return { error: "このケースへの参加権限がありません", status: 403 } as const;
+    }
+    const userRole: "plaintiff" | "defendant" =
+      user.id === c.plaintiff_id ? "plaintiff" : "defendant";
+    return { user, userId: user.id as string | null, c, userRole, admin } as const;
   }
 
-  const userRole: "plaintiff" | "defendant" =
-    user.id === c.plaintiff_id ? "plaintiff" : "defendant";
+  if (c.defendant_guest_name) {
+    const cookieToken = req.cookies.get(`guest_defendant_${id}`)?.value;
+    if (cookieToken && verifyGuestToken(id, cookieToken)) {
+      return { user: null, userId: null, c, userRole: "defendant" as const, admin } as const;
+    }
+  }
 
+  return { error: "認証が必要です", status: 401 } as const;
+}
+
+async function resolveApiKey(plaintiffId: string, admin: ReturnType<typeof createAdminClient>) {
   const { data: plaintiffProfile } = await admin
     .from("profiles")
     .select("api_key_encrypted")
-    .eq("id", c.plaintiff_id)
+    .eq("id", plaintiffId)
     .single();
 
   if (!plaintiffProfile?.api_key_encrypted) {
-    console.error(`[defense] plaintiff ${c.plaintiff_id} has no api_key_encrypted`);
+    console.error(`[defense] plaintiff ${plaintiffId} has no api_key_encrypted`);
     return { error: "APIキーが設定されていません", status: 500 } as const;
   }
 
-  let apiKey: string;
   try {
-    apiKey = decryptApiKey(plaintiffProfile.api_key_encrypted);
+    return { apiKey: decryptApiKey(plaintiffProfile.api_key_encrypted) } as const;
   } catch (err) {
     console.error("[defense] api key decryption failed:", err);
     return { error: "APIキーの復号に失敗しました", status: 500 } as const;
   }
-  return { user, c, userRole, apiKey, admin } as const;
 }
 
 function toDefenseMessage(row: {
@@ -64,23 +69,26 @@ function toDefenseMessage(row: {
 }
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: RouteContext
 ) {
   const { id } = await params;
-  const auth = await resolveAuth(id);
+  const auth = await resolveAuth(req, id);
   if ("error" in auth) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
-  const { user, admin } = auth;
+  const { userId, admin } = auth;
 
-  const { data: rows } = await admin
+  const baseQuery = admin
     .from("defense_messages")
     .select("id, role, content, created_at")
     .eq("case_id", id)
-    .eq("user_id", user.id)
     .order("created_at", { ascending: true });
+
+  const { data: rows } = userId
+    ? await baseQuery.eq("user_id", userId)
+    : await baseQuery.is("user_id", null);
 
   const messages: DefenseMessage[] = (rows ?? []).map(toDefenseMessage);
   return NextResponse.json({ messages });
@@ -91,12 +99,18 @@ export async function POST(
   { params }: RouteContext
 ) {
   const { id } = await params;
-  const auth = await resolveAuth(id);
+  const auth = await resolveAuth(req, id);
   if ("error" in auth) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
-  const { user, c, userRole, apiKey, admin } = auth;
+  const { userId, c, userRole, admin } = auth;
+
+  const keyResult = await resolveApiKey(c.plaintiff_id, admin);
+  if ("error" in keyResult) {
+    return NextResponse.json({ error: keyResult.error }, { status: keyResult.status });
+  }
+  const { apiKey } = keyResult;
 
   const body = await req.json();
   const content: string = body.content ?? "";
@@ -107,15 +121,16 @@ export async function POST(
     return NextResponse.json({ error: "1000文字以内で入力してください" }, { status: 400 });
   }
 
-  // 既存の会話履歴を取得
-  const { data: existingRows } = await admin
+  const existingQuery = admin
     .from("defense_messages")
     .select("id, role, content, created_at")
     .eq("case_id", id)
-    .eq("user_id", user.id)
     .order("created_at", { ascending: true });
 
-  // 対話チャット履歴を取得
+  const { data: existingRows } = userId
+    ? await existingQuery.eq("user_id", userId)
+    : await existingQuery.is("user_id", null);
+
   const { data: argumentRows } = await admin
     .from("arguments")
     .select("role, content")
@@ -127,7 +142,6 @@ export async function POST(
     content: a.content as string,
   }));
 
-  // AI応答を先に生成（INSERT前に実行して孤立レコードを防ぐ）
   const defenseHistoryForAI = [
     ...(existingRows ?? []).map((r) => ({
       role: r.role as "user" | "assistant",
@@ -157,10 +171,9 @@ export async function POST(
     return NextResponse.json({ error: "AI応答の生成に失敗しました" }, { status: 500 });
   }
 
-  // AI生成成功後にまとめてINSERT
   const { error: insertUserError } = await admin
     .from("defense_messages")
-    .insert({ case_id: id, user_id: user.id, role: "user", content: content.trim() });
+    .insert({ case_id: id, user_id: userId, role: "user", content: content.trim() });
   if (insertUserError) {
     console.error("[defense] user message insert failed:", insertUserError);
     return NextResponse.json({ error: "メッセージの保存に失敗しました" }, { status: 500 });
@@ -168,19 +181,21 @@ export async function POST(
 
   const { error: insertAIError } = await admin
     .from("defense_messages")
-    .insert({ case_id: id, user_id: user.id, role: "assistant", content: aiText });
+    .insert({ case_id: id, user_id: userId, role: "assistant", content: aiText });
   if (insertAIError) {
     console.error("[defense] AI message insert failed:", insertAIError);
     return NextResponse.json({ error: "AI応答の保存に失敗しました" }, { status: 500 });
   }
 
-  // 最新の全会話履歴を返却
-  const { data: latestRows } = await admin
+  const latestQuery = admin
     .from("defense_messages")
     .select("id, role, content, created_at")
     .eq("case_id", id)
-    .eq("user_id", user.id)
     .order("created_at", { ascending: true });
+
+  const { data: latestRows } = userId
+    ? await latestQuery.eq("user_id", userId)
+    : await latestQuery.is("user_id", null);
 
   const messages: DefenseMessage[] = (latestRows ?? []).map(toDefenseMessage);
   return NextResponse.json({ messages });
