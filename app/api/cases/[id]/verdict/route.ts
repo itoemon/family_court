@@ -43,7 +43,6 @@ export async function POST(
   const caseForClaude: Case = {
     id: c.id,
     topic: c.topic,
-    defendantId: c.defendant_id ?? null,
     plaintiff: { name: profile.display_name, joinedAt: c.created_at },
     defendant,
     arguments: (args ?? []).map((a) => ({

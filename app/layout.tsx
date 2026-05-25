@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Suspense } from "react";
+import { cookies } from "next/headers";
 import "./globals.css";
 import Header from "@/app/components/Header";
 import Footer from "@/app/components/Footer";
+import ErrorBanner from "@/app/components/ErrorBanner";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -20,11 +22,14 @@ export const metadata: Metadata = {
   description: "AI裁判官があなたの議論に判決を下す",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const cookieStore = await cookies()
+  const flashError = cookieStore.get('flash_error')?.value ?? null
+
   return (
     <html
       lang="ja"
@@ -34,6 +39,7 @@ export default function RootLayout({
         <Suspense fallback={<div className="h-14 bg-stone-50 border-b border-stone-200" />}>
           <Header />
         </Suspense>
+        {flashError && <ErrorBanner errorCode={flashError} />}
         <div className="flex-1">{children}</div>
         <Footer />
       </body>

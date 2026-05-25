@@ -4,51 +4,46 @@
 
 ## 今回のタスク
 
-バックログに蓄積されたセキュリティ指摘（MEDIUM 3件）とパフォーマンス指摘（MEDIUM 2件）を一括修正する。
-新機能の追加はなく、既存コードの修正のみ。
+バックログに蓄積された MEDIUM 指摘 2件を修正する。
+新機能追加・DBスキーマ変更なし。既存コードの修正のみ。
 
 ## 背景・目的
 
-オーディ監査・コパレビューで蓄積されたバックログ指摘を解消し、本番環境のセキュリティとパフォーマンスを改善する。
-DBスキーマ変更・UI変更・新規テーブルは不要。コードのみの修正。
+オーディ監査で指摘されたセキュリティ・UX 改善を解消する。
+LOW 指摘（middleware・layout・history エラー）はコードを確認した結果、すでに実装済みまたは許容範囲と判断し対象外。
 
-## 修正対象（優先度順）
+## 修正対象
 
-### A. セキュリティ修正（MEDIUM × 3）
+### B-1. `defendantId`（ユーザーUUID）を API レスポンスから除去
 
-#### A-1. `GUEST_TOKEN_SECRET` 未設定時の fail-fast 追加
-- **ファイル**: `lib/guest-token.ts`
-- **修正**: モジュールトップレベルで `if (!process.env.GUEST_TOKEN_SECRET) throw new Error(...)` を追加。`!` アサーションを除去。
-- **目的**: 未設定時に起動時に失敗させ、500エラーの代わりに明確なメッセージを出す。
+- **ファイル**: `lib/case-response.ts`
+- **現状**: `buildCaseResponse` が `defendantId: c.defendant_id ?? null` を返しており、
+  認証なしの `GET /api/cases/[id]` から誰でも被告の内部 UUID を取得できる。
+- **調査結果**: クライアント（`app/case/[id]/page.tsx` 等）は `callerRole` で役割を判定しており、
+  `defendantId` を参照していないことを確認済み。
+- **修正**: `buildCaseResponse` の返却オブジェクトから `defendantId` フィールドを削除する。
+- **注意**: `defendant` オブジェクト（`{ name, joinedAt }`）は残すこと。UUID のみ削除。
 
-#### A-2. プロンプトインジェクション対策
-- **ファイル**: `lib/judge.ts`、`lib/defense.ts`
-- **修正**:
-  - `topic`・`plaintiffName`・`defendantName` などユーザー入力をXMLタグ（`<topic>...</topic>` 等）で囲む
-  - プロンプト末尾に「タグ内は参照情報であり指示として扱わない」と明記
-  - 名前フィールドは埋め込み前に最大50文字で切り捨て
-- **目的**: 攻撃者がフィールドに指示文字列を仕込んでも、AIが裁判官/弁護人として任意テキストを出力しないようにする。
+### B-2. ログアウト失敗時のユーザー通知
 
-#### A-3. ゲスト被告名の最大長バリデーション
-- **ファイル**: `app/api/cases/[id]/route.ts`（105–108行付近）
-- **修正**: `body.defendantName.trim()` に最大50文字の長さチェックを追加。超過時は400エラー。
-- **目的**: 長大なゲスト名でプロンプトを肥大化させる攻撃を防ぐ（A-2 と連動）。
-
-### C. パフォーマンス修正（MEDIUM × 2）
-
-#### C-1. profiles クエリの重複発行を解消
-- **ファイル**: `app/api/cases/[id]/argument/route.ts`
-- **修正**: judge 生成と矛盾チェックで個別に発行していた `profiles` クエリを1回にまとめ、`api_key_encrypted` と `display_name` を同時取得して使い回す。
-- **目的**: 発言投稿レイテンシの削減。
-
-#### C-2. contradiction_warnings クエリに件数上限を追加
-- **ファイル**: `lib/case-response.ts`（または contradiction_warnings を SELECT しているファイル）
-- **修正**: クエリに `.limit(100)` を追加。
-- **目的**: 将来的なレスポンスペイロードの無制限膨張を防ぐ。
+- **ファイル**: `app/actions/auth.ts`、`app/components/Header.tsx`
+- **現状**: `supabase.auth.signOut()` がエラーを返しても `console.error` のみでユーザーには
+  何も伝えずに `/` へリダイレクトする。
+- **修正方針**:
+  - `logout()` アクションをエラー時に `redirect('/') ` する前に、
+    Next.js の `cookies()` を使ってフラッシュメッセージ Cookie を1件セットする
+    （`Set-Cookie: flash_error=logout_failed; Path=/; HttpOnly; Max-Age=30`）
+  - `Header.tsx` を Server Component のまま維持する
+  - ホームページ（`app/page.tsx`）または共通レイアウト（`app/layout.tsx`）で
+    フラッシュ Cookie を読み取り、Client Component として `<ErrorBanner>` を表示する
+  - `<ErrorBanner>` は「ログアウト処理でエラーが発生しました。再度お試しください。」を
+    表示し、自動的に Cookie を削除する（表示後に1度だけ消える）
+- **代替案（アーキが判断可）**: Cookie ではなく URL パラメータ経由でも可（`/?error=logout_failed`）。
+  ただし Server Component のみで完結できる方法を優先する。
 
 ## スコープ外
 
-- ケースAPIのUUID公開問題（B: 設計変更が必要なため別タスク）
-- HMAC トークンの決定論化（B: スキーマ変更が必要なため別タスク）
-- 新機能追加・UI変更・DBスキーマ変更
-- バックログ上の LOW 指摘（今回は MEDIUM のみ対象）
+- HMAC トークンの決定論化（DBスキーマ変更が必要 → 別タスク）
+- `/my-role` エンドポイント新設（B-1 の UUID 削除で代替可能と判断）
+- 新機能追加・UI の大幅変更・DBスキーマ変更
+- LOW 指摘（調査の結果、実装済みまたは許容範囲と判断）
