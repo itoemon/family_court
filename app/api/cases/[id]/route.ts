@@ -107,6 +107,9 @@ export async function PATCH(
   if (!body.defendantName?.trim()) {
     return NextResponse.json({ error: "名前は必須です" }, { status: 400 });
   }
+  if (body.defendantName.trim().length > 50) {
+    return NextResponse.json({ error: "名前は50文字以内で入力してください" }, { status: 400 });
+  }
   await admin.from("cases").update({ defendant_guest_name: body.defendantName.trim(), phase: "opening" }).eq("id", id);
   try {
     const { data: plaintiffProfile } = await admin

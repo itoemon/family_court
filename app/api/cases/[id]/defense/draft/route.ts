@@ -36,13 +36,17 @@ export async function POST(
     userId = user.id;
     userRole = user.id === c.plaintiff_id ? "plaintiff" : "defendant";
   } else if (c.defendant_guest_name) {
-    // ゲストトークンの確認
-    const cookieToken = req.cookies.get(`guest_defendant_${id}`)?.value;
-    if (cookieToken && verifyGuestToken(id, cookieToken)) {
-      userId = null;
-      userRole = "defendant";
-    } else {
-      return NextResponse.json({ error: "認証が必要です" }, { status: 401 });
+    try {
+      const cookieToken = req.cookies.get(`guest_defendant_${id}`)?.value;
+      if (cookieToken && verifyGuestToken(id, cookieToken)) {
+        userId = null;
+        userRole = "defendant";
+      } else {
+        return NextResponse.json({ error: "認証が必要です" }, { status: 401 });
+      }
+    } catch (err) {
+      console.error("verifyGuestToken failed:", err);
+      return NextResponse.json({ error: "サーバー設定エラーが発生しました。管理者に連絡してください。" }, { status: 500 });
     }
   } else {
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 });

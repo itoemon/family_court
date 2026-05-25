@@ -1,10 +1,13 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+const GUEST_TOKEN_SECRET: string = (() => {
+  const secret = process.env.GUEST_TOKEN_SECRET;
+  if (!secret) throw new Error("GUEST_TOKEN_SECRET is not set");
+  return secret;
+})();
+
 function computeToken(caseId: string): string {
-  if (!process.env.GUEST_TOKEN_SECRET) {
-    throw new Error("GUEST_TOKEN_SECRET is not set");
-  }
-  return createHmac("sha256", process.env.GUEST_TOKEN_SECRET)
+  return createHmac("sha256", GUEST_TOKEN_SECRET)
     .update(`${caseId}:defendant`)
     .digest("hex");
 }

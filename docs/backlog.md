@@ -101,6 +101,23 @@
   }
   ```
 
+### [MEDIUM-001] `verifyGuestToken` の例外が未処理（`defense/route.ts:29`, `draft/route.ts:41`） (由来: audit_20260525_092649.md)
+ (由来: audit_20260525_092649.md)
+- **内容**:   (由来: audit_20260525_092649.md)
+  既存の `argument/route.ts:26-48` および `route.ts:25-48` では、`verifyGuestToken` 呼び出しを含む認証ブロック全体を try-catch で囲み、例外時に `{ error: "サーバー設定エラーが発生しました。管理者に連絡してください。", status: 500 }` を返している。   (由来: audit_20260525_092649.md)
+  今回新たに実装された `defense/route.ts` の `resolveAuth`（29行目）と `draft/route.ts` のインライン認証ブロック（41行目）には try-catch がない。   (由来: audit_20260525_092649.md)
+  `verifyGuestToken` は内部で `computeToken` を呼び出し、`GUEST_TOKEN_SECRET` が未設定の場合は `throw new Error("GUEST_TOKEN_SECRET is not set")` を投げる（`lib/guest-token.ts:4-6`）。この例外は未処理のまま Next.js のグローバルエラーハンドラに到達し、500 が返る。 (由来: audit_20260525_092649.md)
+ (由来: audit_20260525_092649.md)
+
+### [LOW-001] A-2 テストで `E2E_TEST_EMAIL_B`・`E2E_TEST_PASSWORD_B` が必須チェックから漏れている（`tests/e2e/security-fixes.spec.ts`:7–13, 121–123） (由来: audit_20260525_120211.md)
+
+- **内容**:
+  `beforeEach` の必須環境変数チェックに `E2E_TEST_EMAIL_A`・`E2E_TEST_PASSWORD_A` のみを指定している（7–13行）。一方、A-2 テスト「特殊文字を含む名前でも judge メッセージが破綻しない」は `E2E_TEST_EMAIL_B`・`E2E_TEST_PASSWORD_B` を `process.env` から直接参照している（121–123行）。
+  これらが未設定の CI 環境では、テストは skip されずに `loginAs(pageB, undefined, undefined)` が呼ばれてランタイムエラーで失敗する。エラーメッセージからは「環境変数が足りない」と診断しにくい。
+
+- **修正案**:
+  `beforeEach` の `required` 配列に A-2 テストが使用する変数を追加する。または A-2 テスト冒頭で個別にチェックし、未設定時に `test.skip()` を呼ぶ。
+
 ---
 
 ### [LOW-002] middleware の保護パス判定が完全一致のみ（middleware.ts:32-34） (由来: audit_20260524_193621.md)
