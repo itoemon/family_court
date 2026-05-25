@@ -1,1 +1,2 @@
 20260524000000_create_judge_messages.sql
+20260525000003_add_guest_tokens.sql

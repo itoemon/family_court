@@ -8,15 +8,17 @@
 
 ## 未対応
 
-### MEDIUM
+### LOW
 
-#### [MEDIUM] HMAC トークンが決定論的で個別取り消し不可（lib/guest-token.ts） (由来: audit_20260520_084404.md)
+#### [LOW-001] `createSessionClient()` が try-catch 外（`defense/draft/route.ts:26`） (由来: audit_20260525_185446.md)
 
-- **内容**: `computeToken` の HMAC 入力が `"${caseId}:defendant"` のみ。ランダム要素・タイムスタンプなし。Cookie キャプチャ時に 7 日間再利用可能。個別セッション取り消し不可。
-- **修正案**: DB にトークンテーブルを追加し、nonce を発行する設計に変更（スキーマ変更必要）。
-- **備考**: DB スキーマ変更が必要なため別タスクで対応。
+- **内容**: 26 行目の `createSessionClient()` が try-catch で保護されていない。他の全 Route は try-catch 内で呼んでいるため挙動が一貫しない。例外時に Next.js デフォルトエラーハンドラが動作し、開発環境でスタックトレースが露出しうる。
+- **修正案**: 既存 Route のパターンに倣い、26–27 行目を try-catch で包む。
 
----
+#### [LOW-002] `guest_tokens.token_hash` に UNIQUE 制約なし（`supabase/migrations/20260525000003_add_guest_tokens.sql`） (由来: audit_20260525_185446.md)
+
+- **内容**: HMAC-SHA256 の衝突確率は実用上ゼロだが、アプリバグで同一ハッシュが複数 INSERT された際に DB レベルで検知できない。
+- **修正案**: `CREATE UNIQUE INDEX ON guest_tokens(token_hash);` をマイグレーションに追加する。
 
 ---
 
@@ -24,6 +26,7 @@
 
 | PR | 内容 |
 |----|------|
+| PR #16 (F-1) | HMAC ゲストトークンを nonce ベースに刷新（guest_tokens テーブル追加） |
 | PR #15 (E-1) | `defense.ts` generateDraft の defenseHistory に truncate 適用 |
 | PR #15 (E-2) | `route.ts` PATCH 非 asGuest パスを try-catch で保護 |
 | PR #15 (E-3) | `layout.tsx` `<main>` → `<div>`（確認済み・実装済み） |
