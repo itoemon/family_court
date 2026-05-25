@@ -101,6 +101,14 @@
   }
   ```
 
+### [MEDIUM-001] `verifyGuestToken` の例外が未処理（`defense/route.ts:29`, `draft/route.ts:41`） (由来: audit_20260525_092649.md)
+ (由来: audit_20260525_092649.md)
+- **内容**:   (由来: audit_20260525_092649.md)
+  既存の `argument/route.ts:26-48` および `route.ts:25-48` では、`verifyGuestToken` 呼び出しを含む認証ブロック全体を try-catch で囲み、例外時に `{ error: "サーバー設定エラーが発生しました。管理者に連絡してください。", status: 500 }` を返している。   (由来: audit_20260525_092649.md)
+  今回新たに実装された `defense/route.ts` の `resolveAuth`（29行目）と `draft/route.ts` のインライン認証ブロック（41行目）には try-catch がない。   (由来: audit_20260525_092649.md)
+  `verifyGuestToken` は内部で `computeToken` を呼び出し、`GUEST_TOKEN_SECRET` が未設定の場合は `throw new Error("GUEST_TOKEN_SECRET is not set")` を投げる（`lib/guest-token.ts:4-6`）。この例外は未処理のまま Next.js のグローバルエラーハンドラに到達し、500 が返る。 (由来: audit_20260525_092649.md)
+ (由来: audit_20260525_092649.md)
+
 ---
 
 ### [LOW-002] middleware の保護パス判定が完全一致のみ（middleware.ts:32-34） (由来: audit_20260524_193621.md)
