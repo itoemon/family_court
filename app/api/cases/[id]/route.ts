@@ -35,7 +35,7 @@ export async function GET(
       }
     } else if (rawCase.defendant_guest_name) {
       const cookieToken = req.cookies.get(`guest_defendant_${id}`)?.value;
-      if (cookieToken && verifyGuestToken(id, cookieToken)) {
+      if (cookieToken && await verifyGuestToken(id, cookieToken)) {
         callerRole = "defendant";
       }
     }
@@ -149,7 +149,7 @@ export async function PATCH(
   }
   let token: string;
   try {
-    token = generateGuestToken(id);
+    token = await generateGuestToken(id);
   } catch (err) {
     console.error("generateGuestToken failed:", err);
     return NextResponse.json(

@@ -32,7 +32,7 @@ async function resolveAuth(req: NextRequest, id: string) {
   if (c.defendant_guest_name) {
     try {
       const cookieToken = req.cookies.get(`guest_defendant_${id}`)?.value;
-      if (cookieToken && verifyGuestToken(id, cookieToken)) {
+      if (cookieToken && await verifyGuestToken(id, cookieToken)) {
         return { user: null, userId: null, c, userRole: "defendant" as const, admin } as const;
       }
     } catch (err) {

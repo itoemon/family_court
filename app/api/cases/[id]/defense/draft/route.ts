@@ -38,7 +38,7 @@ export async function POST(
   } else if (c.defendant_guest_name) {
     try {
       const cookieToken = req.cookies.get(`guest_defendant_${id}`)?.value;
-      if (cookieToken && verifyGuestToken(id, cookieToken)) {
+      if (cookieToken && await verifyGuestToken(id, cookieToken)) {
         userId = null;
         userRole = "defendant";
       } else {
