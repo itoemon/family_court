@@ -39,13 +39,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "ファイルが見つかりません" }, { status: 400 });
   }
 
-  const mimeType = file.type as AllowedMime;
-  if (!ALLOWED_MIME.includes(mimeType)) {
+  if (!(ALLOWED_MIME as readonly string[]).includes(file.type)) {
     return NextResponse.json({ error: "JPEG・PNG・WebP のみ対応しています" }, { status: 400 });
   }
+  const mimeType = file.type as AllowedMime;
 
   if (file.size > MAX_SIZE) {
     return NextResponse.json({ error: "ファイルサイズは2MB以下にしてください" }, { status: 400 });
+  }
+
+  // magic bytes 検証（Content-Type 偽装対策）— 旧ファイル削除より先に行う
+  const bytes = await file.arrayBuffer();
+  const detectedMime = detectMimeFromBytes(bytes);
+  if (detectedMime !== mimeType) {
+    return NextResponse.json({ error: "ファイルの内容が拡張子と一致しません" }, { status: 400 });
   }
 
   const ext = MIME_TO_EXT[mimeType];
@@ -59,12 +66,13 @@ export async function POST(req: NextRequest) {
     .eq("id", user.id)
     .single();
 
+  // 検証通過後に旧ファイルを削除（拡張子変更時のみ）
   if (profile?.avatar_url) {
     try {
       const url = new URL(profile.avatar_url);
       const prefix = "/storage/v1/object/public/avatars/";
       if (url.pathname.startsWith(prefix)) {
-        const oldPath = url.pathname.slice(prefix.length);
+        const oldPath = url.pathname.slice(prefix.length).split("?")[0];
         if (oldPath !== newPath) {
           await admin.storage.from("avatars").remove([oldPath]);
         }
@@ -72,13 +80,6 @@ export async function POST(req: NextRequest) {
     } catch {
       // 旧ファイルの削除失敗はアップロードを止めない
     }
-  }
-
-  const bytes = await file.arrayBuffer();
-
-  const detectedMime = detectMimeFromBytes(bytes);
-  if (detectedMime !== mimeType) {
-    return NextResponse.json({ error: "ファイルの内容が拡張子と一致しません" }, { status: 400 });
   }
 
   const { error: uploadError } = await admin.storage
