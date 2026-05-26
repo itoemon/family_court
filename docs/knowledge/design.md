@@ -2,447 +2,173 @@
 
 ## 概要（変更の目的・背景）
 
-オーディ監査で蓄積された MEDIUM 指摘 2 件（セキュリティ 1・UX 1）を解消する。
+現行の `lib/guest-token.ts` における `computeToken` は、HMAC の入力が `"${caseId}:defendant"` のみで決定論的である。ランダム要素・タイムスタンプを持たないため、Cookie をキャプチャされると 7 日間有効なトークンが再利用可能となり、個別セッションの取り消しができない（バックログ MEDIUM 指摘）。
 
-新機能追加・DB スキーマ変更なし。既存コードの修正と Client Component の新規作成のみ。
+本変更では、トークン発行ごとにランダムな nonce（32 バイト）を生成し、その HMAC を DB テーブル `guest_tokens` に保存する方式に刷新する。Cookie に持つのは nonce の平文のみとし、HMAC（`token_hash`）は DB にのみ保管する。これにより、Cookie 単体からトークンを偽造・延命することが不可能になる。また、DB レコードに `revoked_at` カラムを設けることで、将来の個別セッション取り消し機能の基盤を整える。
 
 ---
 
 ## API 仕様（変更・追加するエンドポイントのリクエスト/レスポンス定義）
 
-### GET /api/cases/[id]（B-1）
+### 変更: `lib/guest-token.ts`（内部ライブラリ。HTTP エンドポイントではない）
 
-**変更点**: レスポンスから `defendantId` フィールドを削除する。
+```typescript
+// 変更前（同期）
+export function generateGuestToken(caseId: string): string
+export function verifyGuestToken(caseId: string, token: string): boolean
 
-| フィールド | 変更前 | 変更後 |
-|-----------|--------|--------|
-| `defendantId` | `string \| null` | **削除** |
+// 変更後（非同期）
+export async function generateGuestToken(caseId: string): Promise<string>
+export async function verifyGuestToken(caseId: string, token: string): Promise<boolean>
+```
 
-他のフィールドに変更なし。クライアントは引き続き `callerRole` で自分の役割を判定する。
+両関数が非同期になるため、呼び出し元の全 API Route で `await` が必要になる。
 
-新設エンドポイントなし。
+#### `generateGuestToken` の処理フロー
+
+| ステップ | 処理 |
+|---------|------|
+| 1 | `crypto.randomBytes(32)` で nonce を生成し、64 桁 hex 文字列に変換する |
+| 2 | `HMAC-SHA256(nonce_hex, GUEST_TOKEN_SECRET)` を計算し、`token_hash`（hex 文字列）とする |
+| 3 | `createAdminClient()` 経由で `guest_tokens` テーブルに `(case_id, token_hash, expires_at = now() + 7 days)` を INSERT する |
+| 4 | `nonce_hex` のみを返す（Cookie にセットされる値。`token_hash` は返さない） |
+
+INSERT 失敗時はエラーをスローする。呼び出し元 API Route が try-catch でキャッチして 500 を返すこと。
+
+#### `verifyGuestToken` の処理フロー
+
+| ステップ | 処理 |
+|---------|------|
+| 1 | Cookie から受け取った `nonce_hex` で `HMAC-SHA256(nonce_hex, GUEST_TOKEN_SECRET)` を再計算する |
+| 2 | `createAdminClient()` 経由で `guest_tokens` テーブルを検索する: `token_hash = <計算値> AND case_id = <引数> AND expires_at > now() AND revoked_at IS NULL` |
+| 3 | 1 件以上ヒットすれば `true`、0 件なら `false` を返す |
+
+DB エラー時は例外をスローする。呼び出し元で catch して `false` 扱いにするか 500 を返すかは、既存の各 API Route の try-catch パターンに従う（PR #14 C-1 で実装済みの構造を維持する）。
+
+> **なぜ `case_id` でも絞るか**: `token_hash` のみでも nonce 衝突確率は無視できるが、`case_id` インデックスを活用することで検索効率を上げつつ、異なるケースへのクロス検証を構造的に防ぐ（Defense-in-Depth）。
+
+### 影響する API Route（呼び出し変更のみ）
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `app/api/cases/[id]/join/route.ts` | `generateGuestToken(caseId)` を `await` に変更 |
+| `app/api/cases/[id]/argument/route.ts` | `verifyGuestToken(caseId, token)` を `await` に変更 |
+| `app/api/cases/[id]/defense/route.ts` | `verifyGuestToken(caseId, token)` を `await` に変更 |
+| `app/api/cases/[id]/route.ts` | `verifyGuestToken(caseId, token)` を `await` に変更（PATCH asGuest パス） |
+
+これら 4 ファイルはロジックの変更は不要。`await` の追加のみ。
 
 ---
 
 ## データモデル（DB スキーマ・型定義の変更）
 
-### `lib/types.ts` — `Case` インターフェースから `defendantId` を削除
+### 新設テーブル: `guest_tokens`
 
-```ts
-// 変更前
-export interface Case {
-  id: string;
-  topic: string;
-  defendantId: string | null;  // ← 削除
-  callerRole?: "plaintiff" | "defendant" | "observer";
-  // ...
-}
+```sql
+CREATE TABLE guest_tokens (
+  id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  case_id     uuid        NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+  token_hash  text        NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  expires_at  timestamptz NOT NULL,
+  revoked_at  timestamptz
+);
+
+CREATE INDEX ON guest_tokens(case_id);
+
+ALTER TABLE guest_tokens ENABLE ROW LEVEL SECURITY;
+-- ポリシーを一切 CREATE しないことで Service Role のみアクセス可能になる
 ```
 
-```ts
-// 変更後
-export interface Case {
-  id: string;
-  topic: string;
-  callerRole?: "plaintiff" | "defendant" | "observer";
-  // ...
-}
-```
+| カラム | 型 | 説明 |
+|---|---|---|
+| `id` | uuid | PK。外部公開しない |
+| `case_id` | uuid | ケース外部キー。ケース削除時に CASCADE 削除 |
+| `token_hash` | text | `HMAC-SHA256(nonce, SECRET)` の hex 文字列。nonce 平文は保存しない |
+| `created_at` | timestamptz | 発行日時 |
+| `expires_at` | timestamptz | 有効期限（`created_at + INTERVAL '7 days'`） |
+| `revoked_at` | timestamptz | NULL = 有効。値があれば個別取り消し済み |
 
-DB スキーマ変更なし。`cases.defendant_id` カラムはサーバー側でのみ使用を継続する。
+> **なぜ RLS でポリシーなしにするか**: `guest_tokens` の全操作は `createAdminClient()`（Service Role）経由のみで行う。anon・authenticated ロールから直接参照を許可する理由がなく、誤ったクライアント経由アクセスを構造的に防ぐ。ADR-003 の「API Routes はサービスロールキーで RLS をバイパスし、信頼済み操作を行う」方針と一致する。
+
+#### マイグレーションファイル
+
+`supabase/migrations/` 配下に新規 SQL ファイルを作成する。ファイル名は Supabase CLI の命名規則（`YYYYMMDDHHMMSS_add_guest_tokens.sql`）に従う。内容は上記 DDL 一式。
+
+#### 既存テーブルへの影響
+
+`cases`・`arguments`・`verdicts`・`profiles` への変更はなし。`guest_tokens` は `cases(id)` を外部キーで参照するため、`cases` テーブルが先に存在していること。
 
 ---
 
 ## コンポーネント設計（新設・変更するファイルの責務と仕様）
 
-### B-1. `lib/case-response.ts` — `defendantId` フィールドを削除
+### `supabase/migrations/YYYYMMDDHHMMSS_add_guest_tokens.sql`（新設）
 
-**変更箇所**: 返却オブジェクトの 1 行のみ。
+`guest_tokens` テーブルの DDL のみを含む。ロールバック手順（`DROP TABLE guest_tokens;`）を SQL コメントで記載する。
 
-```ts
-// 変更前（74 行目付近）
-return {
-  id: c.id,
-  topic: c.topic,
-  // ...
-  defendantId: c.defendant_id ?? null,  // ← この行を削除
-  plaintiff: { ... },
-  // ...
-};
-```
+### `lib/guest-token.ts`（変更）
 
-```ts
-// 変更後
-return {
-  id: c.id,
-  topic: c.topic,
-  // ...
-  plaintiff: { ... },
-  // ...
-};
-```
+既存の同期関数を非同期に刷新する。このファイルの責務は以下に限定する:
 
-**注意点**: `defendant` オブジェクト（`{ name, joinedAt }`）は残すこと。UUID だけを削除する。
+- nonce 生成（`crypto.randomBytes`。Node.js 組み込み API、追加依存なし）
+- HMAC 計算（`node:crypto` の `createHmac`。既存の実装を継続）
+- `guest_tokens` テーブルへの INSERT / SELECT（`createAdminClient()` 使用）
+- `GUEST_TOKEN_SECRET` 未設定時の起動時フェイルファスト（既存の IIFE 実装を継続）
 
----
+**このファイルに含めないもの**: Cookie への読み書き、HTTP レスポンスの組み立て、ケースのフェーズ検証。それらは各 API Route の責務とする。
 
-### B-1. `app/api/cases/[id]/verdict/route.ts` — `defendantId` フィールドを削除
+### `app/api/cases/[id]/join/route.ts`（変更）
 
-`verdict/route.ts` は `Case` 型を Claude への内部処理用ローカル変数として組み立てる（API レスポンスには含まれない）。`Case` 型から `defendantId` が消えるためコンパイルエラーになる。
+`generateGuestToken(caseId)` の呼び出しに `await` を追加する。既存の try-catch 構造の中に収まっているか確認し、なければ追加する。
 
-**変更箇所**: `caseForClaude` オブジェクトの 1 行のみ（46 行目付近）。
+### `app/api/cases/[id]/argument/route.ts`（変更）
 
-```ts
-// 変更前
-const caseForClaude: Case = {
-  id: c.id,
-  topic: c.topic,
-  defendantId: c.defendant_id ?? null,  // ← この行を削除
-  plaintiff: { ... },
-  // ...
-};
-```
+`verifyGuestToken(caseId, token)` の呼び出しに `await` を追加する。PR #14 C-1 で既存の try-catch が実装済みのため、構造変更は不要。
 
-```ts
-// 変更後
-const caseForClaude: Case = {
-  id: c.id,
-  topic: c.topic,
-  plaintiff: { ... },
-  // ...
-};
-```
+### `app/api/cases/[id]/defense/route.ts`（変更）
 
-`lib/claude.ts` の `requestVerdict` は `Case.defendantId` を参照していないため、処理への影響はない。
+`verifyGuestToken(caseId, token)` の呼び出しに `await` を追加する。PR #14 C-1 で既存の try-catch が実装済みのため、構造変更は不要。
 
----
+### `app/api/cases/[id]/route.ts`（変更）
 
-### B-2. `app/actions/auth.ts` — ログアウト失敗時にフラッシュ Cookie をセット
-
-**方針**: Cookie 方式。`app/layout.tsx`（Server Component）で Cookie を読み取り `<ErrorBanner>` を表示することで、全ページで表示対象になる。
-
-**変更前:**
-```ts
-export async function logout(): Promise<void> {
-  const supabase = await createSessionClient()
-  const { error } = await supabase.auth.signOut()
-  if (error) console.error('signOut error:', error)
-  redirect('/')
-}
-```
-
-**変更後:**
-```ts
-import { cookies } from 'next/headers'
-
-export async function logout(): Promise<void> {
-  const supabase = await createSessionClient()
-  const { error } = await supabase.auth.signOut()
-  if (error) {
-    console.error('signOut error:', error)
-    const cookieStore = await cookies()
-    cookieStore.set('flash_error', 'logout_failed', {
-      path: '/',
-      httpOnly: true,
-      maxAge: 30,
-    })
-  }
-  redirect('/')
-}
-```
-
-**設計判断**:
-- `maxAge: 30`（秒）: 短命な Cookie であり、1 ページロード内で確実に消える
-- `httpOnly: true`: JS からの読み取りを防ぐ（XSS 対策）
-- `secure` フラグは Next.js が本番環境で自動付与するため明示不要
-
----
-
-### B-2. `app/layout.tsx` — フラッシュ Cookie を読み取り `<ErrorBanner>` を差し込む
-
-`RootLayout` は Server Component のため `cookies()` を直接 `await` できる。
-
-**変更箇所**: `cookies()` で `flash_error` を読み取り、値があれば `<ErrorBanner>` を `children` の前に差し込む。Cookie 自体の削除は `<ErrorBanner>` 側（クライアント）の fetch で行う（後述）。
-
-```tsx
-// 変更後のイメージ
-import { cookies } from 'next/headers'
-import ErrorBanner from '@/app/components/ErrorBanner'
-
-export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const cookieStore = await cookies()
-  const flashError = cookieStore.get('flash_error')?.value ?? null
-
-  return (
-    <html ...>
-      <body ...>
-        <Suspense ...><Header /></Suspense>
-        {flashError && <ErrorBanner errorCode={flashError} />}
-        <div className="flex-1">{children}</div>
-        <Footer />
-      </body>
-    </html>
-  )
-}
-```
-
-**注意**: `RootLayout` は Server Component のまま。`ErrorBanner` のみ Client Component とする。
-
----
-
-### B-2. `app/components/ErrorBanner.tsx` — 新規作成（Client Component）
-
-**責務**:
-1. `errorCode` prop を受け取り、対応するエラーメッセージを日本語で表示する
-2. マウント時（`useEffect`）に `/api/clear-flash` を fetch して Cookie を削除する
-3. ユーザーが閉じるボタンを押したら非表示にする
-
-**Props:**
-```ts
-interface ErrorBannerProps {
-  errorCode: string
-}
-```
-
-**エラーコードとメッセージのマッピング（コンポーネント内に定義）:**
-```ts
-const ERROR_MESSAGES: Record<string, string> = {
-  logout_failed: 'ログアウト処理でエラーが発生しました。再度お試しください。',
-}
-```
-
-**Cookie 削除の仕組み**: `useEffect` で `/api/clear-flash` に GET リクエストを送る。このエンドポイントが `Set-Cookie: flash_error=; Max-Age=0` を返すことで Cookie を削除する。
-
-**UI仕様**:
-- 背景色: `bg-rose-50`、ボーダー: `border-rose-100`
-- テキスト色: `text-rose-700`
-- 閉じるボタン（×）を右端に配置する
-- `Suspense` でラップ不要（props として渡された値のみ使用）
-
----
-
-### B-2. `app/api/clear-flash/route.ts` — 新規作成（Cookie 削除エンドポイント）
-
-**責務**: `flash_error` Cookie を `Max-Age=0` で上書きして削除する。
-
-```ts
-import { NextResponse } from 'next/server'
-
-export async function GET() {
-  const res = NextResponse.json({ ok: true })
-  res.cookies.set('flash_error', '', { path: '/', maxAge: 0 })
-  return res
-}
-```
-
-**設計判断**: Server Action で Cookie を削除する方法もあるが、`useEffect` からは Server Action を直接呼べないため、シンプルな GET エンドポイントを採用する。
+PATCH asGuest パスの `verifyGuestToken(caseId, token)` 呼び出しに `await` を追加する。
 
 ---
 
 ## セキュリティ設計（認証・認可・入力検証の方針）
 
-### B-1 の根拠
+### トークン分離の原則
 
-`GET /api/cases/[id]` は認証不要のエンドポイント。`defendantId`（被告の Supabase ユーザー UUID）が公開されると、UUID を知った第三者が被告になりすましの試みや、他のエンドポイントへのプローブに利用できる。クライアントは `callerRole` フィールドで役割を判定しており、`defendantId` は不要。
+| データ | 保存場所 | アクセス可能な主体 |
+|---|---|---|
+| nonce（平文） | httpOnly Cookie のみ | サーバーサイドのみ（JS・外部からアクセス不可） |
+| token_hash | DB `guest_tokens` テーブル | Service Role（Admin Client）のみ |
 
-### B-2 の根拠
+Cookie に nonce のみを持ち、HMAC を DB に分離することで、Cookie 単体・DB 単体のいずれが漏洩しても攻撃者はトークンを偽造できない。
 
-`signOut()` がエラーを返すのは、ネットワーク障害・トークン期限切れ・Supabase 側の一時障害等。エラーを無視して `/` にリダイレクトすると、セッションが残存したままブラウザがホームに戻る可能性がある。ユーザーに「ログアウトできていない可能性がある」ことを伝えることで再試行を促す。
+### 検証条件の多重チェック
 
-Cookie の `httpOnly` フラグにより、フラッシュメッセージの内容が XSS で読み取られるリスクを排除する。
+`verifyGuestToken` の SELECT クエリは以下 4 条件の AND で構成する:
 
-### C-1. `verifyGuestToken` 未 try-catch（対応済み）
+1. `token_hash = <再計算値>`（HMAC 一致）
+2. `case_id = <引数の caseId>`（ケース限定、クロス利用防止）
+3. `expires_at > now()`（有効期限内）
+4. `revoked_at IS NULL`（取り消しなし）
 
-`verifyGuestToken` は内部で `GUEST_TOKEN_SECRET` を参照する。環境変数が未設定の場合、IIFE による起動時フェイルファスト（C-2）が機能していれば TypeError は発生しないが、予期せぬ暗号エラー等に備えて呼び出し側でも try-catch が必要。
+いずれか不一致の場合 `false` を返す（fail-closed）。
 
-対応方針: `verifyGuestToken` を呼ぶ 3 ファイル（`argument/route.ts`, `defense/route.ts`, `defense/draft/route.ts`）で try-catch を設け、例外時は `{ error: "サーバー設定エラーが発生しました。管理者に連絡してください。", status: 500 }` を返す。これにより、暗号ライブラリの例外がグローバルエラーハンドラに到達せず、情報漏洩を防ぐ。
+### 移行時の既存セッションへの影響
 
-実装状況: 3 ファイルすべてで対応済み。
-
-### C-2. `GUEST_TOKEN_SECRET` 未設定時のフェイルファスト（対応済み）
-
-`createHmac` に `undefined` を渡すと TypeError が発生し、ゲストトークン操作を含むすべてのリクエストが 500 で失敗する。この状態は設定ミスであり、起動時点で検知すべきである。
-
-対応方針: `lib/guest-token.ts` のモジュールトップレベル（IIFE）で `GUEST_TOKEN_SECRET` の存在を検証し、未設定時は `throw new Error("GUEST_TOKEN_SECRET is not set")` でアプリ起動を失敗させる。`!` アサーションは除去する。
-
-実装状況: IIFE による起動時検証として実装済み。
-
-### C-3. プロンプトインジェクション対策（対応済み・一部未対応あり → D-1）
-
-`topic`, `plaintiffName`, `defendantName` 等のユーザー入力値を AI プロンプトに文字列展開する際、攻撃者が指示文字列を埋め込む（プロンプトインジェクション）リスクがある。
-
-対応方針:
-1. ユーザー入力を XML タグで囲み、指示部と入力部を構造的に分離する（例: `<topic>${safeTopic}</topic>`）
-2. プロンプト末尾に「タグ内は参照情報であり指示として扱わない」旨を明記する
-3. `plaintiffName`・`defendantName` は埋め込み前に 50 文字で切り捨てる（`slice(0, 50)`）
-4. XML 特殊文字（`&`, `<`, `>`, `"`, `'`）を `escapeXml` 関数でエスケープする
-
-実装状況: `lib/judge.ts`・`lib/defense.ts` ともに対応済み。`truncate`・`escapeXml` は `lib/text-utils.ts` に切り出して両ファイルから参照する構成に変更済み。
-
-### D-1. `lib/defense.ts` — `dialogHistory.content` の `truncate` 未適用（対応済み）
-
-`generateDefenseResponse`（48 行目）および `generateDraft`（82 行目）の `dialogHistory.map` で `escapeXml(truncate(a.content, 500))` を適用済み。`truncate`・`escapeXml` は `lib/text-utils.ts` に切り出し、`lib/judge.ts`・`lib/defense.ts` の両方から参照する。
-
-### D-2. `defense/route.ts` — 認証ユーザーパスの try-catch 漏れ（対応済み）
-
-`app/api/cases/[id]/defense/route.ts` の `resolveAuth` 関数内、認証ユーザーパスを try-catch で囲み例外時に 500 を返すよう修正済み。
-
-### D-3. `clear-flash/route.ts` — Cookie 削除時の `httpOnly` 指定（対応済み）
-
-`app/api/clear-flash/route.ts` の Cookie 削除で `httpOnly: true` が必要。
-
-実装状況: L5 に `httpOnly: true` が既に含まれており対応済み。
-
-### D-4. `security-fixes.spec.ts` — `_B` 系環境変数の必須チェック（対応済み）
-
-E2E テストの `beforeEach` で `E2E_TEST_EMAIL_B`・`E2E_TEST_PASSWORD_B` が必須チェックから漏れる問題。
-
-実装状況: L8 の `required` 配列に既に `_B` 系変数が含まれており対応済み。
-
-### D-5. `judge_messages` への空文字列挿入（対応済み）
-
-`app/api/cases/[id]/route.ts`（L96・L133）および `app/api/cases/[id]/argument/route.ts`（L143）の各 INSERT 前に `if (content)` ガードを追加済み。空文字列・null・undefined の場合は INSERT をスキップする。
-
-### D-6. ゲスト名 DB バリデーション（対応済み）
-
-`PATCH /api/cases/[id]` のゲスト参加パスで `body.defendantName` の最大長検証。
-
-実装状況: `app/api/cases/[id]/route.ts` L110–L112 にバリデーションが既に実装済み（50文字超で 400 を返す）。
-
----
-
-## パフォーマンス設計
-
-### C-4. profiles 重複クエリ削減 + `contradiction_warnings` 件数上限（対応済み）
-
-**profiles 重複クエリ:**
-`argument/route.ts` では judge メッセージ生成と矛盾チェックの両ブロックで原告プロフィールが必要になる。同一リクエスト内で 2 回クエリを発行すると不要な DB ラウンドトリップが発生する。
-
-対応方針: リクエスト冒頭で `display_name` と `api_key_encrypted` を同時に取得し（`select("display_name, api_key_encrypted")`）、judge ブロックと矛盾チェックブロックの両方で使い回す。
-
-実装状況: 110〜118 行目で一度取得して `plaintiffApiKey` を両ブロックで参照する形で対応済み。被告が認証ユーザーの場合の `defProfile` クエリ（125〜131 行目）は judge 用の表示名専用であり、重複ではない。
-
-**`contradiction_warnings` 件数上限:**
-`.limit()` なしで `contradiction_warnings` をクエリすると、ケースが長期化した場合にペイロードが無制限に膨張し、レスポンスサイズが増大する。
-
-対応方針: `lib/case-response.ts` の該当クエリに `.limit(100)` を追加する。
-
-実装状況: `lib/case-response.ts` 53 行目で `.limit(100)` として対応済み。
-
----
-
-## 影響範囲まとめ
-
-### B-1
-
-| ファイル | 変更種別 | 変更量 |
-|---------|---------|-------|
-| `lib/types.ts` | 修正（1行削除） | 最小 |
-| `lib/case-response.ts` | 修正（1行削除） | 最小 |
-| `app/api/cases/[id]/verdict/route.ts` | 修正（1行削除） | 最小 |
-
-クライアント側（`app/case/[id]/page.tsx` 等）は `defendantId` を参照していないため変更不要（grep 確認済み）。
-
-### B-2
-
-| ファイル | 変更種別 | 変更量 |
-|---------|---------|-------|
-| `app/actions/auth.ts` | 修正（Cookie セット追加） | 小 |
-| `app/layout.tsx` | 修正（Cookie 読み取り・ErrorBanner 差し込み） | 小 |
-| `app/components/ErrorBanner.tsx` | **新規作成** | 中 |
-| `app/api/clear-flash/route.ts` | **新規作成** | 小 |
-
----
-
-### D タスク（MEDIUM 2件 + LOW 4件 セキュリティ・品質修正）
-
-| 修正 ID | ファイル | 変更種別 | 変更量 | 状況 |
-|--------|---------|---------|-------|------|
-| D-1 | `lib/defense.ts`・`lib/text-utils.ts` | 修正（truncate 追加・ユーティリティ切り出し） | 最小 | 対応済み |
-| D-2 | `app/api/cases/[id]/defense/route.ts` | 修正（try-catch 拡張） | 小 | 対応済み |
-| D-3 | `app/api/clear-flash/route.ts` | — | — | 対応済み |
-| D-4 | `tests/e2e/security-fixes.spec.ts` | — | — | 対応済み |
-| D-5 | `app/api/cases/[id]/route.ts`・`argument/route.ts` | 修正（空チェック追加 × 3 箇所） | 最小 | 対応済み |
-| D-6 | `app/api/cases/[id]/route.ts` | — | — | 対応済み |
-
----
-
-## E タスク設計方針（LOW バックログ 6 件）
-
-### 背景・目的
-
-オーディ監査で蓄積された LOW 指摘 6 件をすべて解消し、バックログをゼロにする。新機能追加・DB スキーマ変更なし。既存コードの修正のみ。
-
-### 実装状況サマリ（2026-05-25 調査済み）
-
-| ID | ファイル | 内容 | 状況 |
-|----|---------|------|------|
-| E-1 | `lib/defense.ts` | `generateDraft` 内 `defenseHistory` に `truncate` 未適用 | **要実装** |
-| E-2 | `app/api/cases/[id]/route.ts` | PATCH 非 asGuest パスの `createSessionClient()` が try-catch 外 | **要実装** |
-| E-3 | `app/layout.tsx` | `<main>` → `<div>` 変更 | **実装済み**（L43 が既に `<div>`） |
-| E-4 | `lib/claude.ts` | `validateApiKey` の `catch {}` がすべての例外を握りつぶす | **要実装** |
-| E-5 | `app/history/page.tsx` | Supabase エラーのログ追加 | **実装済み**（L41・L63 で対応済み） |
-| E-6 | `middleware.ts` | 保護パス判定が `/` と `/history` のみ（`/profile`・`/case` 未保護） | **要実装** |
-
----
-
-### E-1. `lib/defense.ts` — `generateDraft` 内 `defenseHistory` に `truncate` 追加
-
-**方針**: `generateDraft`（L79）の `defenseHistory.map` で `escapeXml(m.content)` を `escapeXml(truncate(m.content, 500))` に変更する。`truncate` は既に L2 で `@/lib/text-utils` から import 済みのため、追加 import は不要。
-
-**スコープ**: `generateDefenseResponse`（L44–L46）の `apiMessages` は Anthropic SDK メッセージオブジェクトとして直接渡す用途であり、プロンプトへの文字列展開ではないため変更不要。
-
----
-
-### E-2. `app/api/cases/[id]/route.ts` — PATCH 非 asGuest パスを try-catch で保護
-
-**方針**: PATCH ハンドラの非 asGuest パス（L72–L73）で `createSessionClient()` と `getUser()` が try-catch の外にある。これを try-catch で囲み、例外時に `{ error: "サーバー設定エラーが発生しました。管理者に連絡してください。", status: 500 }` を返す。
-
-**参考パターン**: `app/api/cases/[id]/argument/route.ts` の `createSessionClient`・`verifyGuestToken` を包む try-catch 構造を踏襲する。
-
----
-
-### E-4. `lib/claude.ts` — `validateApiKey` のエラー種別区別
-
-**方針**: 現在の `catch {}` ブロックはすべての例外を `false` に変換しており、Anthropic 障害時に正常な API キーでも「無効」と表示される誤動作を引き起こす。
-
-**変更方針**: Anthropic SDK の `AuthenticationError`（401/403）のみ捕捉して `false` を返し、それ以外（ネットワーク障害・タイムアウト等）は再 throw する。これにより、サービス障害時には呼び出し元でエラーが伝播し、利用者への誤案内を防ぐ。
-
-```ts
-// catch ブロック内（変更後）
-} catch (error) {
-  if (error instanceof Anthropic.AuthenticationError) return false;
-  throw error;
-}
-```
-
-`Anthropic` は L1 で既に import 済みのため追加 import は不要。
-
----
-
-### E-6. `middleware.ts` — 保護パス判定をプレフィックスマッチに変更
-
-**方針**: 現状（L32）では `pathname === "/" || pathname.startsWith("/history")` の判定のみで、`/profile` および `/case` が保護されていない。
-
-**変更方針**: `PROTECTED_PATH_PREFIXES` 配列でプレフィックスマッチに統一する。`/` は完全一致のみとし、他は `pathname.startsWith(prefix + "/") || pathname === prefix` で判定する。これにより `/profile/edit` 等のサブルートも自動的に保護される。
-
-```ts
-const PROTECTED_PATH_PREFIXES = ["/history", "/profile", "/case"];
-const isProtected =
-  pathname === "/" ||
-  PROTECTED_PATH_PREFIXES.some(p => pathname === p || pathname.startsWith(p + "/"));
-```
-
-**注意**: `/api/...` は `middleware.ts` の `matcher` 設定（`config.matcher`）で既に除外されているため、誤った保護は発生しない。
+マイグレーション適用後、旧方式で発行された Cookie には DB レコードが存在しないため、全て無効と判定される。進行中のゲストセッションはリジョイン（再参加）が必要になる。一時的な UX 低下は許容すべきトレードオフである。本番適用はトラフィックが少ない時間帯に行うことを推奨する。
 
 ---
 
 ## 制約・前提条件
 
-- **DB 変更なし**
-- **B-1**: `defendant` オブジェクト（`{ name, joinedAt }`）は残す。削除するのは UUID のみ
-- **B-2**: `Header.tsx` は Server Component のまま維持する
-- **B-2**: `app/page.tsx` は Client Component のまま変更不要（Cookie 方式のため URL パラメータ不要）
-- **B-2**: `ErrorBanner` は全ページ共通の `app/layout.tsx` に差し込むため、ホームページ以外でもログアウトエラーが表示される（意図した動作）
-- **D タスク**: 新機能追加・DB スキーマ変更なし。既存コードの修正のみ
-- **スコープ外**: HMAC トークンの決定論化・`/my-role` エンドポイント新設・LOW 指摘
+- `GUEST_TOKEN_SECRET` 環境変数は設定済みであること（`environment.md` 記載、PR #14 C-2 でフェイルファスト実装済み）
+- `createAdminClient()` が `lib/supabase/server.ts` に実装済みであること（`environment.md` 記載）
+- `supabase/schema.sql` の `cases` テーブルが存在していること（`guest_tokens` が `cases(id)` を外部参照するため）
+- マイグレーションは Supabase CLI（`supabase db push` または `supabase migration apply`）で適用すること
+- `expires_at` は SQL の `DEFAULT now() + INTERVAL '7 days'` で DB 側が計算する（アプリ側での日付計算は行わない）
+- スコープ外: ゲストトークンの手動取り消し UI・トークン一覧管理画面・定期クリーンアップジョブ（`revoked_at` カラムは将来のための基盤）

@@ -4,66 +4,71 @@
 
 ## 今回のタスク
 
-バックログの LOW 6件を一括修正する。
-新機能追加・DBスキーマ変更なし。既存コードの修正のみ。
+HMAC ゲストトークンを nonce ベースに刷新する（MEDIUM 1件）。
+DB スキーマ変更あり。
 
 ## 背景・目的
 
-オーディ監査で蓄積された LOW 指摘をすべて解消し、バックログをゼロにする。
+現在の `lib/guest-token.ts` の `computeToken` は入力が `"${caseId}:defendant"` のみで決定論的。
+Cookie をキャプチャされると 7 日間再利用可能で、個別セッション取り消しが不可。
+DB にトークンテーブルを追加し、nonce（ランダム値）を発行することでセキュリティを改善する。
 
 ## 修正対象
 
-### E-1. `generateDraft` 内の `defenseHistory` に `truncate` 未適用
+### F-1. `guest_tokens` テーブルを新設し、nonce ベースのトークンに刷新
 
-- **ファイル**: `lib/defense.ts`
-- **内容**: `generateDraft` 内の `defenseHistory` ループで `escapeXml(m.content)` に `truncate` が未適用。
-- **修正**: `escapeXml(truncate(m.content, 500))` に変更する。`truncate` は `@/lib/text-utils` から import 済みのものを使う。
+- **影響ファイル**:
+  - `supabase/migrations/` — 新規マイグレーション SQL
+  - `lib/guest-token.ts` — `generateGuestToken` / `verifyGuestToken` を刷新
+  - `app/api/cases/[id]/join/route.ts` — トークン発行側
+  - `app/api/cases/[id]/argument/route.ts` — トークン検証側
+  - `app/api/cases/[id]/defense/route.ts` — トークン検証側
+  - `app/api/cases/[id]/route.ts` — トークン検証側（PATCH asGuest パス）
 
-### E-2. PATCH ハンドラ非 asGuest パスで `createSessionClient()` が try-catch 外
+#### DB スキーマ
 
-- **ファイル**: `app/api/cases/[id]/route.ts`
-- **内容**: PATCH ハンドラの非 asGuest パス（L72 付近）で `createSessionClient()` が try-catch の外にある。
-- **修正**: 当該ブロックを try-catch で囲み、例外時に `{ error: "サーバー設定エラーが発生しました。管理者に連絡してください。", status: 500 }` を返す。`defense/route.ts` の try-catch パターンを踏襲すること。
+```sql
+CREATE TABLE guest_tokens (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  case_id     uuid NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+  token_hash  text NOT NULL,           -- HMAC-SHA256(nonce, SECRET) の hex
+  created_at  timestamptz DEFAULT now(),
+  expires_at  timestamptz NOT NULL,    -- created_at + 7 days
+  revoked_at  timestamptz              -- NULL = 有効
+);
+CREATE INDEX ON guest_tokens(case_id);
+```
 
-### E-3. `layout.tsx` の `<main>` が子ページと二重になりうる
+RLS: 全操作を Service Role のみ許可（Row Level Security で anon/authenticated をブロック）。
 
-- **ファイル**: `app/layout.tsx`
-- **内容**: layout が `<main>` でラップしているため、子ページが `<main>` を持つと HTML 仕様違反になる。
-- **修正**: layout のラッパータグを `<main>` から `<div>` に変更する。
+#### トークン発行フロー（`generateGuestToken`）
 
-### E-4. `validateApiKey` がエラー種別を区別しない
+1. `crypto.randomBytes(32)` で nonce を生成
+2. `HMAC-SHA256(nonce, GUEST_TOKEN_SECRET)` でハッシュを計算
+3. `guest_tokens` テーブルに `(case_id, token_hash, expires_at)` を INSERT（Admin Client 使用）
+4. Cookie に渡すトークン値は `${nonce_hex}` のみ（ハッシュは DB にのみ保存）
 
-- **ファイル**: `lib/claude.ts`
-- **内容**: `catch {}` ですべての例外を握りつぶして `false` を返すため、Anthropic 障害時に正常なキーでも「無効」と表示される。
-- **修正**: Anthropic SDK の `AuthenticationError`（401/403）のみキャッチして `false` を返し、それ以外の例外は再 throw する。
-  ```typescript
-  import Anthropic from "@anthropic-ai/sdk";
-  // catch ブロック内:
-  if (error instanceof Anthropic.AuthenticationError) return false;
-  throw error;
-  ```
+#### トークン検証フロー（`verifyGuestToken`）
 
-### E-5. Supabase エラーが無言で握りつぶされる
+1. Cookie のトークン値（nonce_hex）を受け取る
+2. `HMAC-SHA256(nonce, GUEST_TOKEN_SECRET)` を再計算
+3. `guest_tokens` テーブルで `token_hash` が一致し、`expires_at > now()` かつ `revoked_at IS NULL` のレコードを検索
+4. 見つかれば `true`、なければ `false`
 
-- **ファイル**: `app/history/page.tsx`
-- **内容①（L40）**: `if (error) throw error;` でエラー詳細が露出しないが、可観測性がゼロ。
-- **内容②（L55-63）**: プロフィール取得クエリのエラーが無言で空配列になる。
-- **修正①**: `console.error("[history] cases query failed:", error); throw new Error("ケース一覧の取得に失敗しました");` に変更する。
-- **修正②**: `const { data: profiles, error: profilesError } = ...` としてエラーを受け取り、`if (profilesError) console.error("[history] profiles query failed:", profilesError);` を追加する。
+#### API シグネチャ変更
 
-### E-6. middleware の保護パス判定が完全一致のみ
+```typescript
+// 変更前
+export function generateGuestToken(caseId: string): string
+export function verifyGuestToken(caseId: string, token: string): boolean
 
-- **ファイル**: `middleware.ts`
-- **内容**: `PROTECTED_PATHS.has(pathname)` の完全一致判定のため、将来 `/history/sub` 等のサブルートが保護されない。
-- **修正**: Set による完全一致判定をプレフィックスマッチに変更する。
-  ```typescript
-  const PROTECTED_PATH_PREFIXES = ["/", "/history", "/profile", "/case"];
-  // 判定:
-  if (!user && PROTECTED_PATH_PREFIXES.some(p => pathname === p || pathname.startsWith(p + "/"))) {
-  ```
-  ただし `/` は完全一致のみとする（`/api/...` を誤って保護しないよう注意）。
+// 変更後（非同期化）
+export async function generateGuestToken(caseId: string): Promise<string>
+export async function verifyGuestToken(caseId: string, token: string): Promise<boolean>
+```
 
 ## スコープ外
 
-- HMAC トークンの決定論化（DBスキーマ変更が必要 → 別タスク）
-- 新機能追加・UI 変更・DBスキーマ変更
+- ゲストトークンの手動取り消し UI
+- トークン一覧管理画面
+- 他のトークン種別への応用
