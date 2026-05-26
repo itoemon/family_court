@@ -122,7 +122,7 @@ export default function Home() {
           <button
             onClick={handleCreate}
             disabled={loading || !topic.trim()}
-            className="w-full bg-brand-500 hover:bg-brand-600 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
+            className="w-full bg-brand-700 hover:bg-brand-800 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
           >
             {loading ? "準備中..." : "はじめる"}
           </button>

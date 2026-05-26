@@ -23,7 +23,13 @@ export async function POST(
   }
 
   // 認証済みユーザーの確認
-  const session = await createSessionClient();
+  let session: Awaited<ReturnType<typeof createSessionClient>>;
+  try {
+    session = await createSessionClient();
+  } catch (err) {
+    console.error("[defense/draft] session client creation failed:", err);
+    return NextResponse.json({ error: "認証セッションの取得に失敗しました" }, { status: 500 });
+  }
   const { data: { user } } = await session.auth.getUser();
 
   let userId: string | null = null;
