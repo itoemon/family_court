@@ -4,76 +4,85 @@
 
 ## 今回のタスク
 
-ユーザー機能の一部を実装する（FEAT-002 Phase 1）。
-
-- **G-1. プロフィールアイコン設定**: Supabase Storage にアップロードし、プロフィール画面から変更できるようにする
-- **G-2. 弁護人AIカスタム指示**: ユーザーが弁護人AIへの指示の一部を上書きできるようにする
-
-## 背景・目的
-
-`igiari` はまだユーザーの個性を表現できる要素が少ない。アイコンとカスタムAI指示を追加することで、ユーザーがサービスに愛着を持ちやすくする。フレンド機能（FEAT-002 Phase 2）は別 PR とする。
+FEAT-002 Phase 2（フレンド機能）と LOW-001/002（技術負債）を同一 PR で実装する。
 
 ---
 
-## G-1. プロフィールアイコン設定
+## H-1〜H-4. フレンド機能（FEAT-002 Phase 2）
+
+### 背景・目的
+
+FEAT-003（法律作成機能）の前提となるユーザー間のつながりを管理する仕組みを追加する。
+フレンドが存在することで、法律への招待対象をフレンドに限定できる。
 
 ### 要件
 
-- プロフィール画面（`/profile`）に画像アップロード UI を追加する
-- アップロード先: Supabase Storage（バケット名: `avatars`）
-- パス規則: `{user_id}/avatar.{拡張子}` （上書きアップロードで更新）
-- 保存先: `profiles.avatar_url`（Storage の公開 URL を保存）
-- 対応フォーマット: JPEG / PNG / WebP
-- サイズ上限: 2MB
-- 表示箇所: プロフィール画面のアイコン領域（現在は頭文字の丸アイコン）
-- ヘッダーにはアイコンを表示しない（スコープ外）
+#### H-1. フレンドリクエスト送信
+
+- プロフィール画面（`/profile`）またはフレンド専用画面に検索フォームを設ける
+- メールアドレスまたは表示名（display_name）でユーザーを検索できる
+- 検索結果のユーザーに対してリクエストを送信できる
+- 自分自身・既存フレンド・送信済みリクエスト相手への送信は不可
+
+#### H-2. リクエスト承認 / 拒否
+
+- 受信したリクエストを一覧表示する
+- 承認: `friend_requests.status` を `accepted` に更新する
+- 拒否: `friend_requests.status` を `rejected` に更新する（または削除）
+
+#### H-3. フレンド一覧表示
+
+- 承認済みのフレンドを一覧表示する（display_name + アイコン）
+- フレンドのプロフィールは表示しない（名前とアイコンのみ）
+
+#### H-4. フレンド削除
+
+- フレンド一覧からフレンドを削除できる
+- 削除すると双方のフレンド関係が解除される（`friend_requests` レコードを削除）
 
 ### DB 変更
 
-- `profiles` テーブルに `avatar_url text` カラムを追加する（nullable）
+- `friend_requests` テーブルを新規作成
+  - `id` uuid PK
+  - `sender_id` uuid（`profiles.id` 参照）
+  - `receiver_id` uuid（`profiles.id` 参照）
+  - `status` text（`pending` / `accepted` / `rejected`）
+  - `created_at` timestamptz
 
-### Storage 設定
+### 画面
 
-- `avatars` バケットを作成（public）
-- RLS: 認証済みユーザーが自分の `{user_id}/` 配下のみ upload/update/delete できる
-- 読み取りは全員可（public URL で直接参照）
+| 画面 | パス | 認証 |
+|------|------|------|
+| フレンド管理 | `/friends` | 必須 |
+
+- `/friends` にフレンド一覧・リクエスト受信一覧・検索フォームをまとめる
+- ヘッダーナビに「フレンド」リンクを追加する
 
 ### スコープ外
 
-- ヘッダーへのアイコン表示
-- アイコントリミング・リサイズ UI
-- デフォルトアバター画像の用意（現行の頭文字丸アイコンを fallback として維持）
+- フレンドのプロフィール詳細表示
+- フレンドとのダイレクトメッセージ
+- フレンド数の上限制御
+- フォロー型（非対称）の関係
 
 ---
 
-## G-2. 弁護人AIカスタム指示
+## LOW-001. `anon` ロールへの不要な SELECT 権限削除（supabase/migrations/20260526000002_feat002_phase2_friends.sql）
 
-### 要件
+- `GRANT SELECT ON public.friend_requests TO anon` を削除する
+- `REVOKE ALL ON FUNCTION search_users(text, uuid) FROM PUBLIC` を追加し、service_role のみに限定する
 
-- プロフィール画面に「弁護人AIへの指示（任意）」テキストエリアを追加する
-- 入力した内容が弁護人AIのシステムプロンプトの末尾に付加される
-- 最大文字数: 200 文字（DB バリデーション + UI カウンター）
-- 空欄の場合はデフォルトプロンプトのみで動作（現行と同じ）
+---
 
-### DB 変更
+## LOW-002. FK 違反（23503）を 500 ではなく 400 で返す（app/api/friends/requests/route.ts）
 
-- `profiles` テーブルに `defense_custom_instruction text` カラムを追加する（nullable, max 200）
-
-### AI 連携
-
-- `lib/defense.ts` の `generateDraft` / ヒアリング用プロンプト生成に `customInstruction` を受け取れるようにする
-- 弁護人APIルート（`defense/route.ts`, `defense/draft/route.ts`）で plaintiff の `defense_custom_instruction` を取得してプロンプトに渡す
-- プロンプトへの付加位置: システムプロンプトの末尾（「追加指示:」ラベル付き）
-
-### スコープ外
-
-- 被告側のカスタム指示（今回は提案者側のみ）
-- 指示のプリセット選択 UI
+- `insertError.code === "23503"` を個別ハンドルして 400 を返す
+- 存在しない `receiver_id` を送った場合のクライアントエラーを正しく区別する
 
 ---
 
 ## スコープ外（共通）
 
-- フレンド機能（FEAT-002 Phase 2 として別 PR）
-- ヘッダー・ナビゲーションの変更
-- メール通知
+- メール通知（フレンドリクエスト受信時）
+- リアルタイム通知
+- フレンドのケース履歴閲覧

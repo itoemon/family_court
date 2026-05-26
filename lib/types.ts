@@ -103,3 +103,28 @@ export interface Profile {
   created_at: string;
   updated_at: string;
 }
+
+export type FriendRequest = {
+  id: string;
+  sender_id: string;
+  receiver_id: string;
+  status: 'pending' | 'accepted' | 'rejected';
+  created_at: string;
+};
+
+export type FriendProfile = {
+  id: string;
+  display_name: string;
+  avatar_url: string | null;
+};
+
+export type FriendListItem = {
+  request_id: string;
+  friend: FriendProfile;
+};
+
+export type IncomingRequest = {
+  id: string;
+  sender: FriendProfile;
+  created_at: string;
+};
