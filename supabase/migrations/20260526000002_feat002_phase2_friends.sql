@@ -26,7 +26,7 @@ CREATE POLICY "friend_requests_select_own"
   USING (sender_id = auth.uid() OR receiver_id = auth.uid());
 
 -- INSERT / UPDATE / DELETE はサービスロール（API Routes）のみ
-GRANT SELECT ON public.friend_requests TO anon;
+-- anon への GRANT は不要（全アクセスは API Route 経由で service_role が行う）
 GRANT SELECT ON public.friend_requests TO authenticated;
 GRANT ALL    ON public.friend_requests TO service_role;
 

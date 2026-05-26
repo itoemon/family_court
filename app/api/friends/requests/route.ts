@@ -103,6 +103,9 @@ export async function POST(req: NextRequest) {
     if (insertError.code === "23505") {
       return NextResponse.json({ error: "既にリクエスト済みまたはフレンドです" }, { status: 409 });
     }
+    if (insertError.code === "23503") {
+      return NextResponse.json({ error: "指定されたユーザーが存在しません" }, { status: 400 });
+    }
     console.error("[friends/requests] insert failed:", insertError);
     return NextResponse.json({ error: "リクエストの送信に失敗しました" }, { status: 500 });
   }
