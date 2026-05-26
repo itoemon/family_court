@@ -2,167 +2,247 @@
 
 ## 概要（変更の目的・背景）
 
-FEAT-002 Phase 1 として、ユーザーの個性表現要素を追加する。
+FEAT-002 Phase 2（フレンド機能）と LOW-001/002（技術負債）を同一 PR で実装する。
 
-- **G-1. プロフィールアイコン設定**: Supabase Storage を利用したアバター画像アップロード機能
-- **G-2. 弁護人AIカスタム指示**: ユーザーが弁護人AIのシステムプロンプト末尾を上書きできる機能
+**FEAT-002 Phase 2** は FEAT-003（法律作成機能）の前提となるユーザー間のつながり管理を追加する。`friend_requests` テーブル 1 枚で双方向フレンド関係を表現し、`/friends` ページに検索・リクエスト管理・フレンド一覧をまとめる。
 
-変更対象は `profiles` テーブル・プロフィール画面（`/profile`）・弁護人AI連携ロジックに限定される。フレンド機能（Phase 2）・ヘッダーナビゲーション変更はスコープ外。
+**LOW-001/002** は既存 API Route の入力検証補強であり、FEAT-002 と独立して実装できる。
 
 ---
 
 ## API 仕様（変更・追加するエンドポイントのリクエスト/レスポンス定義）
 
-### G-1: POST /api/profile/avatar
+### GET /api/users/search
 
-アバター画像をサーバーサイドで受け取り、Storage にアップロードし、`profiles.avatar_url` を更新する。
+ユーザーを display_name（前方一致）またはメールアドレス（完全一致）で検索する。
 
-**リクエスト**
+- 認証: 必須（セッション）
+- クエリパラメータ: `q`（1〜100 文字の文字列、必須）
+- 除外対象: 自分自身・既存フレンド（status = accepted）・送信済みリクエスト相手（status = pending）
+- Response 200:
+  ```json
+  [
+    { "id": "uuid", "display_name": "string", "avatar_url": "string | null" }
+  ]
+  ```
+- Error: 400（`q` 欠如または不正）、401（未認証）
+- 上限: 1 クエリあたり最大 20 件
 
-```
-Content-Type: multipart/form-data
-Field: file  (Blob)
-```
-
-| 項目 | 内容 |
-|---|---|
-| 受理 MIME type | `image/jpeg` / `image/png` / `image/webp` |
-| ファイルサイズ上限 | 2 MB（2,097,152 bytes） |
-
-**処理フロー**
-
-1. `auth.getUser()` で認証確認（未認証 → 401）
-2. `request.formData()` でファイル取得
-3. MIME type・サイズのサーバーサイドバリデーション（不正 → 400）
-4. MIME type から拡張子を決定（`image/jpeg` → `jpg`、`image/png` → `png`、`image/webp` → `webp`）
-5. 既存 `profiles.avatar_url` を参照し、拡張子が異なるファイルが存在する場合は旧 Storage オブジェクトを先に削除する
-6. `createAdminClient().storage.from('avatars').upload('{user_id}/avatar.{ext}', ..., { upsert: true })` でアップロード
-7. `storage.from('avatars').getPublicUrl(path)` で公開 URL を取得
-8. `createAdminClient()` で `profiles.avatar_url` を更新
-
-**レスポンス（200）**
-
-```json
-{ "avatar_url": "https://..." }
-```
-
-**エラーレスポンス**
-
-| ステータス | 条件 |
-|---|---|
-| 401 | 未認証 |
-| 400 | MIME type 不正・サイズ超過 |
-| 500 | Storage アップロード失敗・DB 更新失敗 |
+**実装方式**: `auth.users` への直接 SQL クエリは制限されるため、`SECURITY DEFINER` PostgreSQL 関数 `search_users` を定義し API Route から `supabase.rpc()` で呼び出す（詳細はデータモデル参照）。
 
 ---
 
-### G-2: PATCH /api/profile
+### GET /api/friends
 
-`defense_custom_instruction` など非機密プロフィールフィールドを更新する。
+自分のフレンド一覧（status = accepted）を返す。
 
-**リクエスト**
+- 認証: 必須
+- Response 200:
+  ```json
+  [
+    {
+      "request_id": "uuid",
+      "friend": { "id": "uuid", "display_name": "string", "avatar_url": "string | null" }
+    }
+  ]
+  ```
+  `request_id` は削除操作（DELETE /api/friends/[id]）に使用する。
 
-```json
-{ "defense_custom_instruction": "string | null" }
+---
+
+### POST /api/friends/requests
+
+フレンドリクエストを送信する。
+
+- 認証: 必須
+- Request body:
+  ```json
+  { "receiver_id": "uuid" }
+  ```
+- サーバー側検証: 自分自身・既存フレンド・送信済み相手への送信は 409（DB の UNIQUE 制約との二重防衛）
+- Response 201: `{ "id": "uuid" }`
+- Error: 400（`receiver_id` 形式不正）、401、409（重複・自己送信）
+
+---
+
+### GET /api/friends/requests
+
+自分宛ての未処理リクエスト（status = pending）一覧を返す。
+
+- 認証: 必須
+- Response 200:
+  ```json
+  [
+    {
+      "id": "uuid",
+      "sender": { "id": "uuid", "display_name": "string", "avatar_url": "string | null" },
+      "created_at": "timestamptz"
+    }
+  ]
+  ```
+
+---
+
+### PATCH /api/friends/requests/[id]
+
+リクエストを承認または拒否する。`[id]` は `friend_requests.id`。
+
+- 認証: 必須（自分が `receiver_id` のリクエストのみ操作可）
+- Request body: `{ "action": "accept" | "reject" }`
+- `accept`: `status` を `accepted` に更新
+- `reject`: レコードを削除（再送を許容するため更新ではなく削除）
+- Response 200: `{ "ok": true }`
+- Error: 400（`action` 不正）、401、403（自分が受信者でない）、404（存在しない）
+
+---
+
+### DELETE /api/friends/[id]
+
+フレンド関係を削除する。`[id]` は `friend_requests.id`。
+
+- 認証: 必須（自分が `sender_id` または `receiver_id` のレコードのみ削除可）
+- Response 200: `{ "ok": true }`
+- Error: 401、403（自分が関与していない）、404（存在しない）
+
+---
+
+### 既存 API Route の修正
+
+#### LOW-001: app/api/profile/avatar/route.ts
+
+`file.type`（クライアント申告値）のみに依存した MIME 検証を補強する。ファイル先頭 12 バイトの magic bytes でシグネチャを照合し、不一致なら 400 を返す。
+
+検証ロジック（疑似コード）:
+```
+bytes = file.slice(0, 12).arrayBuffer() → Uint8Array
+isJpeg  = bytes[0..2] === FF D8 FF
+isPng   = bytes[0..7] === 89 50 4E 47 0D 0A 1A 0A
+isWebp  = bytes[0..3] === 52 49 46 46  AND  bytes[8..11] === 57 45 42 50
+if !isJpeg && !isPng && !isWebp → 400
 ```
 
-| フィールド | 型 | 制約 |
-|---|---|---|
-| `defense_custom_instruction` | `string \| null` | 最大 200 文字。空文字列は `null` として扱う |
+`file.slice(0, 12).arrayBuffer()` で先頭 12 バイトのみ読み取ることでメモリ効率を確保する。
 
-**処理フロー**
+#### LOW-002: app/api/profile/route.ts
 
-1. `auth.getUser()` で認証確認（未認証 → 401）
-2. `defense_custom_instruction` の文字数検証（200 文字超過 → 400）
-3. `createAdminClient()` で `profiles` を `update`（profiles は signup 時作成済みのため `upsert` 不要）
+`defenseCustomInstruction !== undefined` の分岐の先頭に型チェックを追加する。
 
-**レスポンス（200）**
-
-```json
-{ "success": true }
 ```
-
-**エラーレスポンス**
-
-| ステータス | 条件 |
-|---|---|
-| 401 | 未認証 |
-| 400 | 200 文字超過 |
-| 500 | DB 更新失敗 |
-
-> **注意**: 既存の `/api/profile` PATCH エンドポイントがある場合はフィールドを追加して拡張する。ない場合は新規作成する。API キー更新エンドポイントとのメソッド・パス衝突を実装前に確認すること。
+if defenseCustomInstruction !== undefined:
+  if typeof defenseCustomInstruction !== "string" AND defenseCustomInstruction !== null:
+    return 400
+  # 既存の length チェックへ続く
+```
 
 ---
 
 ## データモデル（DB スキーマ・型定義の変更）
 
-### profiles テーブルへのカラム追加
+### friend_requests テーブル（新規）
 
 ```sql
--- migration ファイルとして supabase/migrations/ に追加すること
+CREATE TABLE friend_requests (
+  id          uuid        DEFAULT gen_random_uuid() PRIMARY KEY,
+  sender_id   uuid        NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  receiver_id uuid        NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  status      text        NOT NULL DEFAULT 'pending'
+                          CHECK (status IN ('pending', 'accepted', 'rejected')),
+  created_at  timestamptz NOT NULL DEFAULT now(),
 
--- G-1: アバター URL
-ALTER TABLE profiles
-  ADD COLUMN avatar_url text;
+  CONSTRAINT no_self_request CHECK (sender_id <> receiver_id)
+);
 
--- G-2: 弁護人カスタム指示
-ALTER TABLE profiles
-  ADD COLUMN defense_custom_instruction text
-  CHECK (defense_custom_instruction IS NULL OR char_length(defense_custom_instruction) <= 200);
+-- 同一ペアの重複を方向を問わず防止する（A→B と B→A が同一キーになる）
+CREATE UNIQUE INDEX friend_requests_pair_idx
+  ON friend_requests (LEAST(sender_id, receiver_id), GREATEST(sender_id, receiver_id));
+
+CREATE INDEX friend_requests_sender_idx   ON friend_requests (sender_id);
+CREATE INDEX friend_requests_receiver_idx ON friend_requests (receiver_id);
 ```
 
-両カラムとも nullable。既存レコードへの影響なし（デフォルト値の設定不要）。
+**UNIQUE INDEX の意図**: `LEAST/GREATEST` でペアをソートすることで双方向の重複を DB レベルで阻止する。アプリ側の 409 チェックと合わせた二重防衛になる。
 
----
+### ユーザー検索関数（新規）
 
-### Supabase Storage: avatars バケット
-
-バケット作成と RLS ポリシーを migration または Supabase ダッシュボードで設定する。
+`auth.users` は通常 SQL から参照不可のため、`SECURITY DEFINER` 関数で境界を作る。
 
 ```sql
--- バケット作成（public = true: 公開 URL で直接参照可能）
-INSERT INTO storage.buckets (id, name, public)
-VALUES ('avatars', 'avatars', true);
-
--- 認証済みユーザーが自分の {user_id}/ 配下のみ操作できる
-CREATE POLICY "Users can upload own avatar"
-  ON storage.objects FOR INSERT TO authenticated
-  WITH CHECK (
-    bucket_id = 'avatars'
-    AND (storage.foldername(name))[1] = auth.uid()::text
-  );
-
-CREATE POLICY "Users can update own avatar"
-  ON storage.objects FOR UPDATE TO authenticated
-  USING (
-    bucket_id = 'avatars'
-    AND (storage.foldername(name))[1] = auth.uid()::text
-  );
-
-CREATE POLICY "Users can delete own avatar"
-  ON storage.objects FOR DELETE TO authenticated
-  USING (
-    bucket_id = 'avatars'
-    AND (storage.foldername(name))[1] = auth.uid()::text
-  );
-
--- 読み取りは全員可（公開 URL で直接参照するため）
-CREATE POLICY "Anyone can read avatars"
-  ON storage.objects FOR SELECT TO public
-  USING (bucket_id = 'avatars');
+CREATE OR REPLACE FUNCTION search_users(
+  query       text,
+  current_uid uuid
+)
+RETURNS TABLE (id uuid, display_name text, avatar_url text)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT p.id, p.display_name, p.avatar_url
+  FROM profiles p
+  JOIN auth.users u ON u.id = p.id
+  WHERE
+    p.id <> current_uid
+    AND (
+      p.display_name ILIKE query || '%'   -- 前方一致
+      OR u.email = query                  -- 完全一致のみ
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM friend_requests fr
+      WHERE fr.status IN ('pending', 'accepted')
+        AND (
+          (fr.sender_id = current_uid AND fr.receiver_id = p.id)
+          OR
+          (fr.receiver_id = current_uid AND fr.sender_id = p.id)
+        )
+    )
+  LIMIT 20;
+END;
+$$;
 ```
 
----
+### RLS ポリシー
 
-### TypeScript 型定義の変更（lib/types.ts）
+environment.md の方針「API Routes では `createAdminClient()` を使用、RLS に認可を委ねない」に従い、API Routes はサービスロールキーで操作する。RLS は多重防衛として有効化する。
 
-`Profile` 型に以下を追加する。
+```sql
+ALTER TABLE friend_requests ENABLE ROW LEVEL SECURITY;
+
+-- 直接クライアントアクセス対策: 自分が関与するレコードのみ参照可
+CREATE POLICY "friend_requests_select_own"
+  ON friend_requests FOR SELECT
+  USING (sender_id = auth.uid() OR receiver_id = auth.uid());
+
+-- INSERT / UPDATE / DELETE はサービスロール（API Routes）のみ
+-- → ユーザー向け書き込みポリシーは設定しない
+```
+
+### TypeScript 型定義の追加（lib/types.ts）
 
 ```typescript
-type Profile = {
-  // ... 既存フィールド ...
+export type FriendRequest = {
+  id: string;
+  sender_id: string;
+  receiver_id: string;
+  status: 'pending' | 'accepted' | 'rejected';
+  created_at: string;
+};
+
+export type FriendProfile = {
+  id: string;
+  display_name: string;
   avatar_url: string | null;
-  defense_custom_instruction: string | null;
+};
+
+export type FriendListItem = {
+  request_id: string;
+  friend: FriendProfile;
+};
+
+export type IncomingRequest = {
+  id: string;
+  sender: FriendProfile;
+  created_at: string;
 };
 ```
 
@@ -170,85 +250,56 @@ type Profile = {
 
 ## コンポーネント設計（新設・変更するファイルの責務と仕様）
 
-### app/api/profile/avatar/route.ts（新規）
+### ディレクトリ構成（新規・変更ファイル）
 
-**責務**: アバター画像のサーバーサイドバリデーション・Storage アップロード・`profiles.avatar_url` 更新。
-
-| 項目 | 内容 |
-|---|---|
-| メソッド | POST |
-| 認証 | `auth.getUser()` |
-| Supabase クライアント | `createAdminClient()`（Storage 操作・profiles 更新） |
-| フォームデータ取得 | `request.formData()` |
-| MIME type → 拡張子マッピング | `image/jpeg` → `jpg` / `image/png` → `png` / `image/webp` → `webp` |
-
----
-
-### app/api/profile/route.ts（新規 or 既存を拡張）
-
-**責務**: `defense_custom_instruction` などの非機密プロフィールフィールドの更新。PATCH メソッドを実装する。
-
----
-
-### app/profile/page.tsx および関連コンポーネント（変更）
-
-プロフィール画面に以下 2 つの UI ブロックを追加する。
-
-**G-1: アバター表示・アップロード UI**
-
-| 要素 | 仕様 |
-|---|---|
-| アイコン表示 | `avatar_url` が non-null なら `<img>` を表示。null なら現行の頭文字丸アイコンを fallback として表示 |
-| ファイル選択 | `<input type="file" accept="image/jpeg,image/png,image/webp">` を hidden にし、label または button でラップ |
-| クライアントサイドバリデーション | MIME type・サイズ（2MB 以下）をアップロード前にチェックし、不正なら UI でエラーメッセージを表示 |
-| アップロード中状態 | ローディングインジケーターを表示し、完了または失敗まで送信ボタンを disabled にする（二重送信防止） |
-
-**G-2: カスタム指示 UI**
-
-| 要素 | 仕様 |
-|---|---|
-| テキストエリア | `maxLength={200}`、`rows` は 3 以上 |
-| 文字数カウンター | `200 - 現在文字数` をリアルタイム表示（0 未満は表示しない） |
-| 保存ボタン | クリックで PATCH /api/profile を呼び出す |
-
----
-
-### lib/defense.ts（変更）
-
-`generateDraft` とヒアリング質問生成関数のパラメータに `customInstruction` を追加する。
-
-```typescript
-// 追加するパラメータ（両関数共通）
-customInstruction?: string | null
+```
+app/
+  friends/
+    page.tsx                        # Server Component: 認証チェック + 初期データ取得
+    _components/
+      FriendList.tsx                # Client Component: フレンド一覧 + 削除ボタン
+      RequestList.tsx               # Client Component: 受信リクエスト一覧 + 承認/拒否ボタン
+      SearchSection.tsx             # Client Component: 検索フォーム + 送信ボタン
+  api/
+    friends/
+      route.ts                      # GET /api/friends
+      [id]/
+        route.ts                    # DELETE /api/friends/[id]
+      requests/
+        route.ts                    # GET, POST /api/friends/requests
+        [id]/
+          route.ts                  # PATCH /api/friends/requests/[id]
+    users/
+      search/
+        route.ts                    # GET /api/users/search
+  _components/
+    Header.tsx（変更）              # 認証済みナビに「フレンド」リンクを追加
 ```
 
-**システムプロンプトへの付加方式**
+### app/friends/page.tsx
 
-`customInstruction` が truthy な場合のみ、システムプロンプトの末尾に「追加指示:」ラベル付きで付加する。
+Server Component。`createSessionClient()` でセッション確認し、未認証なら `/auth/login` へリダイレクト。`createAdminClient()` でフレンド一覧と受信リクエストを `Promise.all` で並列取得し、各 Client Component に Props として渡す。
 
-```typescript
-const systemPrompt = baseSystemPrompt
-  + (customInstruction
-      ? `\n\n追加指示:\n${escapeXml(truncate(customInstruction, 200))}`
-      : '');
-```
+### FriendList.tsx（Client Component）
 
-- `escapeXml` と `truncate` は既存ユーティリティ（PR #14 C-3 で確立）をそのまま流用する
-- `truncate` の上限は DB CHECK 制約と合わせて 200 文字
+- Props: `initialFriends: FriendListItem[]`
+- ローカル state でリストを管理し、削除後は楽観的更新（失敗時はロールバック）
+- `DELETE /api/friends/{request_id}` を fetch する
 
----
+### RequestList.tsx（Client Component）
 
-### app/api/defense/route.ts、app/api/defense/draft/route.ts（変更）
+- Props: `initialRequests: IncomingRequest[]`
+- 承認・拒否ボタン → `PATCH /api/friends/requests/{id}` → state から除去
+- 承認後は `router.refresh()` でページ全体を再検証し、フレンド一覧に反映する
 
-両ルートはすでに plaintiff の `profiles` を参照して `api_key_encrypted` を取得している。同一クエリに `defense_custom_instruction` を追加し、`lib/defense.ts` の関数呼び出しに渡す。
+### SearchSection.tsx（Client Component）
 
-```typescript
-// 既存クエリに defense_custom_instruction を追加
-const { api_key_encrypted, defense_custom_instruction } = profile;
+- **検索方式: 送信ボタン方式（debounce なし）**。debounce はリクエスト抑制に有効だが実装が複雑になるため、明示的な「検索」ボタン押下で `GET /api/users/search?q=...` を呼ぶ。
+- 検索結果の各ユーザーに「リクエストを送る」ボタンを表示。送信成功後、そのユーザーを結果リストから除外する。
 
-// 関数呼び出しに追加
-await generateDraft({ ..., customInstruction: defense_custom_instruction });
-```
+### Header.tsx（変更）
+
+認証済みナビゲーション部分に `<Link href="/friends">フレンド</Link>` を追加する。既存リンクのスタイルクラスに揃える。
 
 ---
 
@@ -256,37 +307,42 @@ await generateDraft({ ..., customInstruction: defense_custom_instruction });
 
 ### 認証・認可
 
-- 全 API Route で `auth.getUser()` による認証確認（`getSession()` は使用しない。requirements.md のセキュリティ要件に準拠）
-- Storage 書き込みは `createAdminClient()` 経由で行い、アップロードパスが `{認証済み user_id}/...` に一致することをサーバーサイドで検証してから実行する
-- Storage には別途 RLS ポリシーを設定し、直接アクセスへの二重防御とする
+| エンドポイント | 認証 | 追加の認可チェック（サーバー側） |
+|---|---|---|
+| GET /api/users/search | セッション必須（401） | — |
+| GET /api/friends | セッション必須 | — |
+| POST /api/friends/requests | セッション必須 | `receiver_id ≠ 自分` のチェック |
+| GET /api/friends/requests | セッション必須 | — |
+| PATCH /api/friends/requests/[id] | セッション必須 | `receiver_id = 自分` の確認 |
+| DELETE /api/friends/[id] | セッション必須 | `sender_id = 自分 OR receiver_id = 自分` の確認 |
+
+全エンドポイントで `createSessionClient()` によるセッション確認を実施する。認可チェックはサーバー側（API Route）で行い、RLS に依存しない（environment.md の方針に準拠）。
 
 ### 入力検証
 
-| 入力 | 検証方法 |
-|---|---|
-| アバターファイル | MIME type（allowlist: jpeg/png/webp）・サイズ（≤ 2MB）をサーバーサイドで検証 |
-| defense_custom_instruction | API Route で ≤ 200 文字の検証 + DB の CHECK 制約（二重バリデーション） |
-| プロンプト埋め込み時 | `escapeXml(truncate(customInstruction, 200))` によるプロンプトインジェクション対策 |
+- 検索クエリ `q`: 1 文字以上 100 文字以下の文字列
+- `receiver_id`: UUID v4 形式チェック
+- `action`: `"accept"` または `"reject"` のみ許可（それ以外は 400）
 
-### アバター URL の扱い
+### ユーザー検索のプライバシー方針
 
-- `profiles.avatar_url` に保存するのは Supabase Storage の公開 URL（平文）であり、機密情報ではない。暗号化不要
-- `avatar_url` はクライアントに返してよい
+- メールアドレスは**完全一致のみ**（前方一致・部分一致は不可）
+- display_name は**前方一致**（`ILIKE 'query%'`）。部分一致は不可
+- 返却フィールドは `id`・`display_name`・`avatar_url` のみ（メールアドレスは返さない）
+- 返却上限は 20 件
 
 ---
 
 ## 制約・前提条件
 
-1. **profiles レコードの存在保証**: `PATCH /api/profile` は `upsert` ではなく `update` を使う。profiles レコードはサインアップ時に作成される前提。この前提が崩れる場合はガード処理を追加すること。
+1. **`profiles.avatar_url`**: FEAT-002 Phase 1（PR #19）で追加済みを前提とする。未追加の場合は検索関数・型定義の修正が必要。
 
-2. **avatars バケットの事前作成**: Supabase Storage バケットは migration（`storage.buckets` テーブルへの INSERT）またはダッシュボードで作成する。作成を忘れると `/api/profile/avatar` が 500 エラーになる。
+2. **メールアドレス検索と auth.users**: `profiles` テーブルにメールカラムはない。`search_users` 関数内で `auth.users` を JOIN することで解決する。この関数は `SECURITY DEFINER` で定義するため、Supabase migration ファイル（`supabase/migrations/`）に追加する。
 
-3. **拡張子変更時の旧ファイル削除**: `{user_id}/avatar.jpg` → `{user_id}/avatar.png` のように拡張子が変わる再アップロードでは、`upsert: true` では旧オブジェクトが残る。API Route は新アップロード前に `profiles.avatar_url` から旧パスを抽出し、Storage オブジェクトを明示的に削除すること。
+3. **拒否レコードの削除方針**: task.md の「`rejected` に更新する（または削除）」に対し、本設計では**削除を採用**する。削除により同一ペア間の再送が可能になり、UNIQUE INDEX との整合性も保てる。`rejected` レコードを残す場合は再送時に 409 が恒久的に発生するため採用しない。
 
-4. **弁護人カスタム指示は原告のみ**: `defense_custom_instruction` は plaintiff（原告）のプロフィールから取得してプロンプトに付加する。被告側カスタム指示はスコープ外。
+4. **フレンドのプロフィール詳細表示はスコープ外**: フレンド一覧に表示するのは display_name とアバターアイコンのみ。フレンドの `/profile` への導線は設けない。
 
-5. **Next.js App Router での multipart 取得**: Route Handler で `multipart/form-data` を受け取る場合は `request.formData()` を使用する（`body-parser` は不要）。実際の API は AGENTS.md の指示に従い `node_modules/next/dist/docs/` で確認すること。
+5. **リアルタイム通知はスコープ外**: リクエスト受信の確認はページリロードのみ。ポーリングも本フェーズでは不要。
 
-6. **未解決: プロフィール画面の現行コンポーネント構成**: `/profile` の既存 Server/Client Component 分割・`profiles` 取得クエリの構造は実装コードを確認して判断すること。新 UI ブロックをどの階層に追加するかは実装時に決定する。
-
-7. **未解決: PATCH /api/profile の存在確認**: API キー登録に既存の PATCH エンドポイントが存在する場合は拡張する。ない場合は新規作成する。
+6. **フレンド数上限なし**: task.md の「フレンド数の上限制御」がスコープ外のため、DB・API 両面で上限を設けない。FEAT-003 設計時に必要に応じて検討する。

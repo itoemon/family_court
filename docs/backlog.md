@@ -11,37 +11,39 @@
 
 ### 機能（FEAT）
 
-#### [FEAT-002] ユーザー機能の拡充
+#### [FEAT-002 Phase 2] フレンド機能
 
 - **内容**:
-  - アイコン設定（Supabase Storage にアップロード、プロフィール画面から変更）
-  - 弁護人 AI のカスタム指示機能（プロンプトの一部をユーザーが上書きできる）
-  - フレンド機能（ユーザー間のつながりを管理、後述の法律機能の基盤）
-- **優先度**: 中
-- **依存**: FEAT-004（フレンド機能は法律機能の前提となりうる）
+  - フレンドリクエスト送信（メアドまたは表示名で検索）
+  - リクエスト承認 / 拒否
+  - フレンド一覧表示
+  - フレンド削除
+- **優先度**: 中（FEAT-003 の前提）
+- **備考**: `friend_requests` テーブル 1 枚で実現できる見込み。
 
-### [MEDIUM-001] avatars バケットにバケットレベルのサイズ・MIME制限が未設定（supabase/migrations/20260526000001_feat002_phase1_profiles.sql:11-13） (由来: audit_20260526_115705.md)
- (由来: audit_20260526_115705.md)
-- **内容**: `storage.buckets` への INSERT で `file_size_limit` と `allowed_mime_types` を指定していない。Supabase Storage の RLS ポリシーはオブジェクトの「誰がどのパスに書けるか」を制限するが、ファイルのサイズや種別は制限しない。認証済みユーザーが Supabase JS クライアントを直接使ってアップロードリクエストを送ると、API Route のバリデーション（2MB・jpeg/png/webp のみ）を迂回し、任意サイズ・任意形式のファイルを公開バケットに書き込める。`avatars` バケットは `public = true` のため、アップロードされたファイルは誰でも公開 URL でアクセスできる。設計書は「Storage には別途 RLS ポリシーを設定し、直接アクセスへの二重防御とする」と明記しているが、実装ではパス制限のみで種別・サイズの防御が機能していない。 (由来: audit_20260526_115705.md)
-- **修正案**: `INSERT INTO storage.buckets` に `file_size_limit`（2097152 = 2MB）と `allowed_mime_types`（`['image/jpeg', 'image/png', 'image/webp']`）を追加する。 (由来: audit_20260526_115705.md)
- (由来: audit_20260526_115705.md)
-  ```sql (由来: audit_20260526_115705.md)
-  INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types) (由来: audit_20260526_115705.md)
--- (由来: audit_20260526_115705.md)
-### [LOW-001] MIME タイプの magic bytes 検証なし（app/api/profile/avatar/route.ts:31-32） (由来: audit_20260526_115705.md)
- (由来: audit_20260526_115705.md)
-- **内容**: `file.type` はクライアントが multipart リクエストの `Content-Type` ヘッダーに設定した値をそのまま使う。悪意あるクライアントは実体が SVG（スクリプト埋め込み可）・HTML・任意バイナリのファイルに `Content-Type: image/jpeg` ヘッダーを付与してリクエストを送ることができ、MIME allowlist チェック（行 32）を通過してしまう。ただし Supabase Storage はアップロード時に指定した `contentType` でオブジェクトを配信するため、ブラウザは `Content-Type: image/jpeg` で受け取りスクリプトとして実行しない。現状の直接的な実行リスクは低いが、公開バケットに意図しないコンテンツが格納される可能性がある。 (由来: audit_20260526_115705.md)
-- **修正案**: ファイル先頭バイト（magic bytes）でファイル種別を検証する。`arrayBuffer()` の最初の 12 バイトを読んで JPEG（`FF D8 FF`）・PNG（`89 50 4E 47`）・WebP（`52 49 46 46 … 57 45 42 50`）のシグネチャと照合し、不一致なら 400 を返す。MEDIUM-001 の bucket レベル `allowed_mime_types` 制限と組み合わせることで二重防御となる。 (由来: audit_20260526_115705.md)
- (由来: audit_20260526_115705.md)
---- (由来: audit_20260526_115705.md)
- (由来: audit_20260526_115705.md)
-### [LOW-002] `defenseCustomInstruction` フィールドの型検証が未実施（app/api/profile/route.ts:33-34） (由来: audit_20260526_115705.md)
- (由来: audit_20260526_115705.md)
-- **内容**: `req.json()` で取得した `defenseCustomInstruction` が文字列であることを検証していない。クライアントが `{"defenseCustomInstruction": 12345}` のように数値・配列・オブジェクト等を送ると、行 33 の `=== ""` チェックは通過せず（数値は `""` でない）、行 34 の `instruction.length` が `undefined` となる。`undefined > 200` は `false` のためバリデーションをスキップし、非文字列値がそのまま `updates.defense_custom_instruction` にセットされる。PostgreSQL は数値等を text に coerce するため DB レベルでは大きな問題にならないが、型安全な境界での検証が欠如しており、DB の CHECK 制約頼みになっている。エンドユーザーへの影響は軽微だが、API のロバスト性が低い。 (由来: audit_20260526_115705.md)
-- **修正案**: `defenseCustomInstruction !== undefined` の分岐内先頭で型チェックを追加する。 (由来: audit_20260526_115705.md)
- (由来: audit_20260526_115705.md)
-  ```typescript (由来: audit_20260526_115705.md)
-  if (typeof defenseCustomInstruction !== "string" && defenseCustomInstruction !== null) { (由来: audit_20260526_115705.md)
+### [MEDIUM-001] 検索エンドポイントに rate limiting がなく display_name を前方一致で全列挙できる（app/api/users/search/route.ts:4-26） (由来: audit_20260526_142833.md)
+ (由来: audit_20260526_142833.md)
+- **内容**: `GET /api/users/search?q=` は認証済みユーザーであれば制限なく呼び出せる。`search_users` 関数は `display_name ILIKE query || '%'` で前方一致検索を行い、最大 20 件を返す。攻撃者は `q=a`, `q=b`, ..., `q=z`, `q=aa`, ... と網羅的にリクエストを送ることで、全登録ユーザーの `display_name` を体系的に列挙できる。`id` と `avatar_url` も一緒に返されるため、そのまま FEAT-003 でのなりすましリクエストの下調べに利用できる。メール検索は完全一致のためリスクは低いが、display_name の前方一致は実質的にユーザーディレクトリとして機能する。   (由来: audit_20260526_142833.md)
+- **エンドユーザーへの影響**: 他のユーザーに知られたくない表示名が第三者に取得され、社会工学的攻撃（フィッシングなど）に利用される可能性がある。   (由来: audit_20260526_142833.md)
+- **修正案**: Next.js Middleware またはエッジ関数で IP または `user.id` 単位のレートリミットを設ける（例: 1分間に30リクエストまで）。短期的には `q` の最小文字数を設計書の「1文字」から「2〜3文字」に引き上げることで列挙コストを大きく上げられる。Upstash Redis + `@upstash/ratelimit` の組み合わせが Vercel 環境での定番実装。 (由来: audit_20260526_142833.md)
+ (由来: audit_20260526_142833.md)
+--- (由来: audit_20260526_142833.md)
+-- (由来: audit_20260526_142833.md)
+### [LOW-001] `anon` ロールへの不要な SELECT 権限付与（supabase/migrations/20260526000002_feat002_phase2_friends.sql:29） (由来: audit_20260526_142833.md)
+ (由来: audit_20260526_142833.md)
+- **内容**: `GRANT SELECT ON public.friend_requests TO anon;` により、未認証のブラウザクライアント（anon キー）も `friend_requests` テーブルに対して SELECT 権限を持つ。現時点では RLS ポリシー `friend_requests_select_own` が `USING (sender_id = auth.uid() OR receiver_id = auth.uid())` で制御しており、anon リクエストでは `auth.uid()` が NULL を返すため実際の行は一切返らない。機能上の問題はないが、最小権限の原則に反する。将来誰かが RLS ポリシーを変更・削除した場合（migration ミス、Supabase ダッシュボード操作など）、フレンド関係の全データが未認証ユーザーに公開されるリスクがある。   (由来: audit_20260526_142833.md)
+- **エンドユーザーへの影響**: 上記の状態変化が起きた場合、全ユーザーのフレンド関係（誰と誰がつながっているか）が漏洩する。   (由来: audit_20260526_142833.md)
+- **修正案**: `GRANT SELECT ON public.friend_requests TO anon;` の行を削除する。`anon` ロールは直接クライアントからの読み取りに使われるが、`friend_requests` へのアクセスはすべて API Route（service_role）経由で行われるため、anon への GRANT は不要である。 (由来: audit_20260526_142833.md)
+ (由来: audit_20260526_142833.md)
+--- (由来: audit_20260526_142833.md)
+-- (由来: audit_20260526_142833.md)
+### [LOW-002] 存在しない receiver_id に対する FK 違反（23503）が未処理で 500 を返す（app/api/friends/requests/route.ts:102-107） (由来: audit_20260526_142833.md)
+ (由来: audit_20260526_142833.md)
+- **内容**: `POST /api/friends/requests` は `receiver_id` の UUID v4 形式を正規表現で検証している（line 72）が、その UUID が `profiles.id` に存在するかどうかは確認しない。存在しない UUID を `receiver_id` として送信した場合、`friend_requests.receiver_id` の外部キー制約（`REFERENCES profiles(id)`）が PostgreSQL エラーコード 23503 を返す。コードは `23505`（重複）のみ個別ハンドルしており（line 103）、23503 はライン 106-107 の汎用 500 分岐に落ちる。レスポンス本文は `"リクエストの送信に失敗しました"` となりエラーコードを露出しないが、ステータスコードが 500（サーバー障害）になることは誤りであり、適切な 400（クライアント入力エラー）と区別できない。   (由来: audit_20260526_142833.md)
+- **エンドユーザーへの影響**: フロントエンドは 5xx をサーバー側の障害として扱うため、ユーザーへの誤ったエラーメッセージ表示や不要なリトライが発生する可能性がある。ただし存在しない UUID を UI から送る経路は通常ないため、現実の発火は限定的。   (由来: audit_20260526_142833.md)
+- **修正案**: `insertError.code === "23503"` を個別ハンドルして 400 または 404 を返す。 (由来: audit_20260526_142833.md)
+ (由来: audit_20260526_142833.md)
+  ```typescript (由来: audit_20260526_142833.md)
 
 ---
 
@@ -58,7 +60,7 @@
   - オーナーは全参加者の合意を得て法律を削除できる
 - **優先度**: 中〜高（サービスの差別化軸）
 - **備考**: DB 設計が複雑（法律・参加者・改定案・合意状態のテーブル群が必要）。アーキへの要件定義を先行させること。
-- **依存**: FEAT-002（フレンド機能）
+- **依存**: FEAT-002 Phase 2（フレンド機能）
 
 ---
 
@@ -96,32 +98,6 @@
 
 ---
 
-### 改善（IMP）
-
-#### [IMP-001] チャットページ以外での自動スクロール停止
-
-- **内容**: ページ読み込み時に最下部へ自動スクロールする挙動が、チャットページ（`/case/[id]`）以外でも発生している。チャットページのみに限定する。
-- **優先度**: 高（現在進行形のバグ）
-- **推定原因**: `useEffect` + `scrollIntoView` や `scroll-smooth` がグローバルに効いている可能性。
-
----
-
-### MEDIUM（オーディ監査指摘）
-
-#### [MEDIUM-001] `bg-brand-500 text-white` — WCAG AA コントラスト比不足（全プライマリボタン）
-
-- **該当ファイル・行番号**:
-  - `app/page.tsx`:125
-  - `app/auth/login/page.tsx`:79
-  - `app/auth/signup/page.tsx`:117
-  - `app/case/[id]/page.tsx`:277, 295, 325, 433, 508
-- **内容**: amber-500 + white のコントラスト比は WCAG AA（4.5:1）未達。
-- **修正案**: `bg-brand-500` → `bg-brand-700` に変更する（amber-700 は十分なコントラスト比を持つ）。
-
----
-
----
-
 ## 対応済み
 
 | PR | 内容 |
@@ -153,3 +129,7 @@
 | PR #18 (MEDIUM-001) | プライマリボタンを brand-700/800 に変更（WCAG AA コントラスト対応） |
 | PR #18 (IMP-001)  | 自動スクロールをメッセージ存在時のみ発火するよう修正 |
 | PR #17 (コパ指摘) | 無効 ESLint ルール名削除・フッター著作権年を動的生成に変更 |
+| PR #19 (FEAT-002 Phase 1) | プロフィールアイコン設定・弁護人 AI カスタム指示 |
+| PR #19 (MEDIUM-001) | avatars バケットに file_size_limit・allowed_mime_types を設定 |
+| PR #19 (LOW-001) | avatar アップロード時の magic bytes 検証を実装（Content-Type 偽装対策） |
+| PR #19 (LOW-002) | `defenseCustomInstruction` の型検証を追加（typeof !== "string" チェック） |
