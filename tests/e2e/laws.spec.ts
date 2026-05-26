@@ -119,20 +119,19 @@ test('CRITICAL-L03: 改定案の提出と全員合意', async ({ browser }) => {
 
     // A が改定案を提出
     await pageA.reload();
-    const proposalBtn = pageA.locator('button').filter({ hasText: '改定案を提出' }).first();
-    if (await proposalBtn.isVisible({ timeout: 5_000 })) {
-      await proposalBtn.click();
-      const proposalInput = pageA.locator('textarea').filter({ hasText: '' }).first();
-      if (await proposalInput.isVisible()) {
-        await proposalInput.fill('改定後の新条文');
-        const submitBtn = pageA.locator('button').filter({ hasText: '提出' }).first();
-        await submitBtn.click();
-      }
-    }
+    const proposalBtn = pageA.locator('button').filter({ hasText: '改定案を提出する' }).first();
+    await expect(proposalBtn).toBeVisible({ timeout: 5_000 });
+    await proposalBtn.click();
+    const proposalInput = pageA.locator('textarea').first();
+    await expect(proposalInput).toBeVisible({ timeout: 3_000 });
+    await proposalInput.fill('改定後の新条文');
+    const submitBtn = pageA.locator('button').filter({ hasText: '改定案を提出' }).first();
+    await submitBtn.click();
+    await pageA.waitForTimeout(500);
 
     // B が投票（賛成）
     await pageB.goto(lawUrl);
-    const voteBtn = pageB.locator('button').filter({ hasText: '賛成' }).first();
+    const voteBtn = pageB.locator('button').filter({ hasText: '賛成する' }).first();
     await expect(voteBtn).toBeVisible({ timeout: 5_000 });
     await voteBtn.click();
 
@@ -183,30 +182,25 @@ test('CRITICAL-L04: オーナー権の移譲', async ({ browser }) => {
 
     // A がオーナー権を B に移譲
     await pageA.reload();
-    const transferBtn = pageA.locator('button').filter({ hasText: /移譲|オーナー/ }).first();
-    if (await transferBtn.isVisible({ timeout: 5_000 })) {
-      await transferBtn.click();
-      await pageA.waitForTimeout(500);
-      // モーダルで B を選択
-      const radioBtn = pageA.locator('input[type="radio"]').first();
-      if (await radioBtn.isVisible()) {
-        await radioBtn.click();
-        await pageA.waitForTimeout(300);
-        // 移譲ボタンをクリック（enabled になったことを確認）
-        const submitBtn = pageA.locator('button:has-text("移譲する")').last();
-        if (await submitBtn.isEnabled({ timeout: 5_000 })) {
-          await submitBtn.click();
-          await pageA.waitForTimeout(1_000);
-        }
-      }
-    }
+    const transferBtn = pageA.locator('button').filter({ hasText: '権限を移譲' }).first();
+    await expect(transferBtn).toBeVisible({ timeout: 5_000 });
+    await transferBtn.click();
+    await pageA.waitForTimeout(500);
+    // モーダルで B を選択
+    const radioBtn = pageA.locator('input[type="radio"]').first();
+    await expect(radioBtn).toBeVisible({ timeout: 3_000 });
+    await radioBtn.click();
+    await pageA.waitForTimeout(300);
+    // 移譲ボタンをクリック
+    const submitBtn = pageA.locator('button:has-text("移譲する")').last();
+    await expect(submitBtn).toBeEnabled({ timeout: 3_000 });
+    await submitBtn.click();
+    await pageA.waitForTimeout(1_000);
 
-    // B 側でオーナーになったことを確認
-    await pageB.reload();
-    const ownerText = pageB.locator('text=/オーナー/');
-    if (await ownerText.isVisible({ timeout: 5_000 })) {
-      // 成功
-    }
+    // B 側でオーナーになったことを確認（オーナーバッジが表示される）
+    await pageB.goto(lawUrl);
+    const ownerBadge = pageB.locator('span').filter({ hasText: 'オーナー' }).first();
+    await expect(ownerBadge).toBeVisible({ timeout: 5_000 });
   } finally {
     await ctxA.close();
     await ctxB.close();
