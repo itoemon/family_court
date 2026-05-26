@@ -80,7 +80,7 @@ export async function POST(req: NextRequest) {
   const admin = createAdminClient();
 
   // アプリ層の重複チェック（DB UNIQUE 制約との二重防衛）
-  const { data: existing } = await admin
+  const { data: existing, error: existingError } = await admin
     .from("friend_requests")
     .select("id")
     .or(
@@ -88,6 +88,11 @@ export async function POST(req: NextRequest) {
     )
     .in("status", ["pending", "accepted"])
     .limit(1);
+
+  if (existingError) {
+    console.error("[friends/requests] duplicate check failed:", existingError);
+    return NextResponse.json({ error: "リクエストの送信に失敗しました" }, { status: 500 });
+  }
 
   if (existing && existing.length > 0) {
     return NextResponse.json({ error: "既にリクエスト済みまたはフレンドです" }, { status: 409 });

@@ -67,21 +67,17 @@ FEAT-003（法律作成機能）の前提となるユーザー間のつながり
 
 ---
 
-## LOW-001. Magic bytes 検証（app/api/profile/avatar/route.ts）
+## LOW-001. `anon` ロールへの不要な SELECT 権限削除（supabase/migrations/20260526000002_feat002_phase2_friends.sql）
 
-- ファイル先頭 12 バイトを読んで JPEG / PNG / WebP のシグネチャを照合する
-- 不一致なら 400 を返す
-- シグネチャ:
-  - JPEG: `FF D8 FF`
-  - PNG: `89 50 4E 47 0D 0A 1A 0A`
-  - WebP: `52 49 46 46 ?? ?? ?? ?? 57 45 42 50`（バイト 8〜11 が `WEBP`）
+- `GRANT SELECT ON public.friend_requests TO anon` を削除する
+- `REVOKE ALL ON FUNCTION search_users(text, uuid) FROM PUBLIC` を追加し、service_role のみに限定する
 
 ---
 
-## LOW-002. `defenseCustomInstruction` 型検証（app/api/profile/route.ts）
+## LOW-002. FK 違反（23503）を 500 ではなく 400 で返す（app/api/friends/requests/route.ts）
 
-- `defenseCustomInstruction !== undefined` の分岐内先頭で型チェックを追加する
-- `typeof defenseCustomInstruction !== "string" && defenseCustomInstruction !== null` なら 400 を返す
+- `insertError.code === "23503"` を個別ハンドルして 400 を返す
+- 存在しない `receiver_id` を送った場合のクライアントエラーを正しく区別する
 
 ---
 

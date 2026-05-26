@@ -26,6 +26,11 @@ export default async function FriendsPage() {
       .order("created_at", { ascending: false }),
   ]);
 
+  if (friendsResult.error || requestsResult.error) {
+    console.error("[friends] fetch failed:", friendsResult.error ?? requestsResult.error);
+    throw new Error("フレンド情報の取得に失敗しました");
+  }
+
   const friendRequests = friendsResult.data ?? [];
   const incomingRequests = requestsResult.data ?? [];
 
@@ -38,10 +43,14 @@ export default async function FriendsPage() {
 
   const profileMap = new Map<string, { id: string; display_name: string; avatar_url: string | null }>();
   if (allIds.length > 0) {
-    const { data: profiles } = await admin
+    const { data: profiles, error: profilesError } = await admin
       .from("profiles")
       .select("id, display_name, avatar_url")
       .in("id", allIds);
+    if (profilesError) {
+      console.error("[friends] profiles fetch failed:", profilesError);
+      throw new Error("プロフィール情報の取得に失敗しました");
+    }
     for (const p of profiles ?? []) {
       profileMap.set(p.id, p);
     }

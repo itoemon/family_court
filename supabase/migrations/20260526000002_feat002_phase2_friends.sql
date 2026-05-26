@@ -48,7 +48,7 @@ BEGIN
   WHERE
     p.id <> current_uid
     AND (
-      p.display_name ILIKE query || '%'
+      p.display_name ILIKE replace(replace(query, '\', '\\'), '%', '\%') || '%' ESCAPE '\'
       OR u.email = query
     )
     AND NOT EXISTS (
@@ -64,4 +64,6 @@ BEGIN
 END;
 $$;
 
+-- PUBLIC への暗黙的 EXECUTE を剥奪し service_role のみに限定
+REVOKE ALL ON FUNCTION search_users(text, uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION search_users(text, uuid) TO service_role;
