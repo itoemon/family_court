@@ -5,7 +5,7 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string; invId: string }> }
 ) {
-  const { invId } = await params;
+  const { id: lawId, invId } = await params;
 
   const supabase = await createSessionClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -29,6 +29,7 @@ export async function PATCH(
     .from("law_invitations")
     .select("id, law_id, invitee_id, status")
     .eq("id", invId)
+    .eq("law_id", lawId)
     .maybeSingle();
 
   if (!invitation) return NextResponse.json({ error: "招待が見つかりません" }, { status: 404 });

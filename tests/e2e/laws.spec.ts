@@ -35,7 +35,7 @@ test('CRITICAL-L01: 法律を作成できる', async ({ page }) => {
   await expect(page.locator('h1, h2').filter({ hasText: 'テスト法律1' })).toBeVisible();
 });
 
-// CRITICAL-L02: オーナーがフレンドを招待でき、招待対象が承認できる
+// CRITICAL-L02: オーナーがフレンドを招待でき、招待対象が/lawsページで承認できる（FIX-1修正対応）
 test('CRITICAL-L02: フレンド招待と承認', async ({ browser }) => {
   const emailA = process.env.E2E_TEST_EMAIL_A ?? '';
   const emailB = process.env.E2E_TEST_EMAIL_B ?? '';
@@ -64,16 +64,15 @@ test('CRITICAL-L02: フレンド招待と承認', async ({ browser }) => {
       await pageA.waitForSelector('text=招待しました', { timeout: 5_000 });
     }
 
-    // ユーザー B がログインして同じ法律 URL にアクセス
+    // ユーザー B がログインして /laws ページにアクセス（FIX-1: 招待受信UIは/lawsページに表示）
     await loginAs(pageB, emailB, passB);
-    await pageB.goto(lawUrl);
+    await pageB.goto('/laws');
 
-    // 招待ステータスを確認（pending invitation）
+    // pending招待セクションで「承認」ボタンを確認・クリック
     const acceptBtn = pageB.locator('button').filter({ hasText: '承認' }).first();
-    if (await acceptBtn.isVisible({ timeout: 5_000 })) {
-      await acceptBtn.click();
-      await pageB.waitForTimeout(1_000);
-    }
+    await expect(acceptBtn).toBeVisible({ timeout: 5_000 });
+    await acceptBtn.click();
+    await pageB.waitForTimeout(1_000);
 
     // A 側でリロードしてメンバー表示を確認
     await pageA.reload();
@@ -113,13 +112,12 @@ test('CRITICAL-L03: 改定案の提出と全員合意', async ({ browser }) => {
       }
     }
 
-    // B がログインして承認
+    // B がログインして承認（/laws ページの pending 招待セクションから）
     await loginAs(pageB, emailB, passB);
-    await pageB.goto(lawUrl);
+    await pageB.goto('/laws');
     const acceptBtn = pageB.locator('button').filter({ hasText: '承認' }).first();
-    if (await acceptBtn.isVisible({ timeout: 5_000 })) {
-      await acceptBtn.click();
-    }
+    await expect(acceptBtn).toBeVisible({ timeout: 5_000 });
+    await acceptBtn.click();
 
     // A が改定案を提出
     await pageA.reload();
@@ -135,26 +133,22 @@ test('CRITICAL-L03: 改定案の提出と全員合意', async ({ browser }) => {
     }
 
     // B が投票（賛成）
-    await pageB.reload();
+    await pageB.goto(lawUrl);
     const voteBtn = pageB.locator('button').filter({ hasText: '賛成' }).first();
-    if (await voteBtn.isVisible({ timeout: 5_000 })) {
-      await voteBtn.click();
-    }
+    await expect(voteBtn).toBeVisible({ timeout: 5_000 });
+    await voteBtn.click();
 
     // 条文が更新されたことを確認
     await pageA.reload();
     await pageA.waitForTimeout(1_000);
-    const article = pageA.locator('text=改定後の新条文');
-    if (await article.isVisible({ timeout: 5_000 })) {
-      // 成功
-    }
+    await expect(pageA.locator('text=改定後の新条文')).toBeVisible({ timeout: 5_000 });
   } finally {
     await ctxA.close();
     await ctxB.close();
   }
 });
 
-// CRITICAL-L04: オーナーが他メンバーにオーナー権を移譲できる
+// CRITICAL-L04: オーナーが他メンバーにオーナー権を移譲できる（FIX-1修正対応）
 test('CRITICAL-L04: オーナー権の移譲', async ({ browser }) => {
   const emailA = process.env.E2E_TEST_EMAIL_A ?? '';
   const emailB = process.env.E2E_TEST_EMAIL_B ?? '';
@@ -179,27 +173,35 @@ test('CRITICAL-L04: オーナー権の移譲', async ({ browser }) => {
       const inviteBtn = pageA.locator('button:has-text("招待")').first();
       if (await inviteBtn.isVisible()) {
         await inviteBtn.click();
+        await pageA.waitForSelector('text=招待しました', { timeout: 5_000 });
       }
     }
 
-    // B がログインして承認
+    // B がログインして /laws ページで承認（/laws の pending 招待セクションから）
     await loginAs(pageB, emailB, passB);
-    await pageB.goto(lawUrl);
+    await pageB.goto('/laws');
     const acceptBtn = pageB.locator('button').filter({ hasText: '承認' }).first();
-    if (await acceptBtn.isVisible({ timeout: 5_000 })) {
-      await acceptBtn.click();
-    }
+    await expect(acceptBtn).toBeVisible({ timeout: 5_000 });
+    await acceptBtn.click();
+    await pageB.waitForTimeout(1_000);
 
-    // A がオーナー権を B に移譲（UI の存在を確認してから）
+    // A がオーナー権を B に移譲
     await pageA.reload();
     const transferBtn = pageA.locator('button').filter({ hasText: /移譲|オーナー/ }).first();
     if (await transferBtn.isVisible({ timeout: 5_000 })) {
       await transferBtn.click();
       await pageA.waitForTimeout(500);
-      // モーダルで B を選択して移譲（実装に応じて）
-      const selectBtn = pageA.locator('button').filter({ hasText: '移譲' }).last();
-      if (await selectBtn.isVisible()) {
-        await selectBtn.click();
+      // モーダルで B を選択
+      const radioBtn = pageA.locator('input[type="radio"]').first();
+      if (await radioBtn.isVisible()) {
+        await radioBtn.click();
+        await pageA.waitForTimeout(300);
+        // 移譲ボタンをクリック（enabled になったことを確認）
+        const submitBtn = pageA.locator('button:has-text("移譲する")').last();
+        if (await submitBtn.isEnabled({ timeout: 5_000 })) {
+          await submitBtn.click();
+          await pageA.waitForTimeout(1_000);
+        }
       }
     }
 

@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { createSessionClient, createAdminClient } from "@/lib/supabase/server";
+import PendingInvitations from "./_components/PendingInvitations";
 
 export default async function LawsPage() {
   const supabase = await createSessionClient();
@@ -27,6 +28,46 @@ export default async function LawsPage() {
   let ownerNames = new Map<string, string>();
   const memberCounts = new Map<string, number>();
   let proposalSet = new Set<string>();
+
+  const { data: rawPendingInvitations } = await admin
+    .from("law_invitations")
+    .select("id, law_id")
+    .eq("invitee_id", user.id)
+    .eq("status", "pending");
+
+  const pendingInvitations: {
+    id: string;
+    lawId: string;
+    lawName: string;
+    ownerName: string;
+  }[] = [];
+
+  if ((rawPendingInvitations ?? []).length > 0) {
+    const invLawIds = rawPendingInvitations!.map(i => i.law_id);
+    const { data: invLaws } = await admin
+      .from("laws")
+      .select("id, name, owner_id")
+      .in("id", invLawIds);
+
+    const invOwnerIds = [...new Set((invLaws ?? []).map(l => l.owner_id))];
+    const { data: invOwnerProfiles } = invOwnerIds.length > 0
+      ? await admin.from("profiles").select("id, display_name").in("id", invOwnerIds)
+      : { data: [] };
+
+    const invLawMap = new Map((invLaws ?? []).map(l => [l.id, l]));
+    const invOwnerMap = new Map((invOwnerProfiles ?? []).map(p => [p.id, p.display_name]));
+
+    for (const inv of rawPendingInvitations!) {
+      const law = invLawMap.get(inv.law_id);
+      if (!law) continue;
+      pendingInvitations.push({
+        id: inv.id,
+        lawId: inv.law_id,
+        lawName: law.name,
+        ownerName: invOwnerMap.get(law.owner_id) ?? "",
+      });
+    }
+  }
 
   if (lawIds.length > 0) {
     const [lawsResult, memberCountResult, proposalResult] = await Promise.all([
@@ -68,6 +109,8 @@ export default async function LawsPage() {
             法律を作る
           </Link>
         </div>
+
+        <PendingInvitations invitations={pendingInvitations} />
 
         {laws.length === 0 ? (
           <div className="text-center py-16 text-stone-400">
