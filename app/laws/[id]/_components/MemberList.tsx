@@ -43,7 +43,7 @@ export default function MemberList({ lawId, currentUserId, isOwner, ownerId, mem
 
   return (
     <div className="bg-white border border-stone-200 rounded-xl p-6 space-y-4">
-      <h2 className="font-semibold text-stone-800">メンバー ({members.length}人)</h2>
+      <h2 className="font-semibold text-stone-800">メンバー {members.length}人</h2>
 
       <ul className="space-y-3">
         {members.map(member => {

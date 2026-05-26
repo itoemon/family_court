@@ -4,6 +4,7 @@ import ArticleSection from "./_components/ArticleSection";
 import MemberList from "./_components/MemberList";
 import InvitePanel from "./_components/InvitePanel";
 import ProposalPanel from "./_components/ProposalPanel";
+import InvitationAccept from "./_components/InvitationAccept";
 
 export default async function LawDetailPage({
   params,
@@ -32,7 +33,34 @@ export default async function LawDetailPage({
     .eq("law_id", lawId);
 
   const isMember = (members ?? []).some(m => m.user_id === user.id);
-  if (!isMember) redirect("/laws");
+  if (!isMember) {
+    const { data: invitation } = await admin
+      .from("law_invitations")
+      .select("id")
+      .eq("law_id", lawId)
+      .eq("invitee_id", user.id)
+      .eq("status", "pending")
+      .maybeSingle();
+
+    if (!invitation) redirect("/laws");
+
+    return (
+      <main className="min-h-screen bg-stone-50">
+        <div className="max-w-xl mx-auto px-4 py-10 space-y-4">
+          <div>
+            <h1 className="text-2xl font-bold text-stone-800">{law.name}</h1>
+            <p className="text-stone-500 text-sm mt-1">この法律に招待されています</p>
+          </div>
+          <div className="bg-stone-50 rounded-lg p-4">
+            <p className="text-stone-700 text-sm whitespace-pre-wrap leading-relaxed line-clamp-6">
+              {law.article}
+            </p>
+          </div>
+          <InvitationAccept lawId={lawId} invitationId={invitation.id} />
+        </div>
+      </main>
+    );
+  }
 
   const memberIds = (members ?? []).map(m => m.user_id);
   const { data: profiles } = await admin
