@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
-interface SearchResult {
+interface Friend {
   id: string;
   display_name: string;
   avatar_url: string | null;
@@ -18,8 +18,8 @@ interface Props {
 export default function InvitePanel({ lawId, existingMemberIds, pendingInviteeIds }: Props) {
   const router = useRouter();
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<SearchResult[]>([]);
-  const [searching, setSearching] = useState(false);
+  const [allFriends, setAllFriends] = useState<Friend[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [inviting, setInviting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -27,23 +27,19 @@ export default function InvitePanel({ lawId, existingMemberIds, pendingInviteeId
   const memberSet = new Set(existingMemberIds);
   const pendingSet = new Set(pendingInviteeIds);
 
-  async function handleSearch(e: React.FormEvent) {
-    e.preventDefault();
-    if (!query.trim()) return;
-    setError(null);
-    setSuccess(null);
-    setSearching(true);
-    try {
-      const res = await fetch(`/api/users/search?q=${encodeURIComponent(query.trim())}`);
-      const data = await res.json();
-      if (!res.ok) { setError(data.error ?? "検索に失敗しました"); return; }
-      setResults(data);
-    } catch {
-      setError("検索に失敗しました");
-    } finally {
-      setSearching(false);
-    }
-  }
+  useEffect(() => {
+    fetch("/api/friends")
+      .then(r => r.json())
+      .then((data: { friend: Friend }[]) => {
+        setAllFriends(data.map(d => d.friend));
+      })
+      .catch(() => setLoadError("フレンド一覧の取得に失敗しました"));
+  }, []);
+
+  const trimmed = query.trim().toLowerCase();
+  const results = trimmed
+    ? allFriends.filter(f => f.display_name.toLowerCase().includes(trimmed))
+    : allFriends;
 
   async function handleInvite(userId: string, displayName: string) {
     setError(null);
@@ -70,24 +66,19 @@ export default function InvitePanel({ lawId, existingMemberIds, pendingInviteeId
     <div className="bg-white border border-stone-200 rounded-xl p-6 space-y-4">
       <h2 className="font-semibold text-stone-800">フレンドを招待</h2>
 
-      <form onSubmit={handleSearch} className="flex gap-2">
+      {loadError ? (
+        <p className="text-sm text-red-600">{loadError}</p>
+      ) : (
         <input
           type="text"
           value={query}
-          onChange={e => setQuery(e.target.value)}
-          placeholder="表示名またはメールアドレス"
-          className="flex-1 border border-stone-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-stone-400"
+          onChange={e => { setQuery(e.target.value); setError(null); setSuccess(null); }}
+          placeholder="表示名で絞り込む"
+          className="w-full border border-stone-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-stone-400"
         />
-        <button
-          type="submit"
-          disabled={searching}
-          className="px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 disabled:opacity-50"
-        >
-          {searching ? "検索中..." : "検索"}
-        </button>
-      </form>
+      )}
 
-      {results.length > 0 && (
+      {!loadError && results.length > 0 && (
         <ul className="space-y-2">
           {results.map(r => {
             const isMember = memberSet.has(r.id);
@@ -121,6 +112,10 @@ export default function InvitePanel({ lawId, existingMemberIds, pendingInviteeId
             );
           })}
         </ul>
+      )}
+
+      {!loadError && allFriends.length === 0 && (
+        <p className="text-sm text-stone-400">招待できるフレンドがいません</p>
       )}
 
       {error && <p className="text-sm text-red-600">{error}</p>}
