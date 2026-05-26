@@ -99,17 +99,27 @@
 
 ---
 
-## 既知の問題・要確認事項
+## 既知の問題・要確認事項（修正済み含む）
 
-### InvitePanel の招待検索が機能しない可能性（HIGH）
+### [解決済み] InvitePanel の招待検索（commit: 11e471e）
 
-**症状**: InvitePanel は `/api/users/search` を使ってフレンドを検索しているが、この API が呼び出す `search_users` SQL 関数は `NOT EXISTS (friend_requests WHERE status IN ('pending','accepted'))` でフレンドを除外する設計になっている。結果として、既にフレンドであるユーザーは検索結果に表示されない。
+`/api/users/search` が既存フレンドを除外する問題。`/api/friends` + ローカルフィルタに変更済み。
 
-**影響**: フレンドを検索しても 0 件が返るため、InvitePanel から招待ができない状態になっている可能性がある。なお、招待 API 自体（`POST /api/laws/[id]/invitations`）はフレンド確認を行っており、非フレンドを招待しようとすると 409 を返す設計。
+### [解決済み] CRITICAL-L02: 招待承認 UI の欠落（commit: 202e618）
 
-**推奨修正**: InvitePanel の検索を `GET /api/friends` に変更し、クライアント側でテキストフィルタを掛ける（フレンド数が少ない前提であれば全件取得 → ローカル絞り込みで十分）。`search_users` 関数の変更は不要。
+**症状**: 招待された非メンバーが `/laws/[id]` にアクセスすると `/laws` へリダイレクトされ、承認ボタンが表示されなかった。
 
-**なぜこの実装になったか**: 設計書 design.md が「既存の `/api/users/search` を使ったフレンド検索 UI」と記載していたため、その指示に従い実装した。handoff では「検索 API を変更しない」と明記されていた。設計書の誤りである可能性が高いため、リードへのフィードバックを推奨する。
+**修正内容**:
+- `app/laws/[id]/page.tsx`: 非メンバーアクセス時に pending 招待の有無を確認。招待があれば承認 UI（InvitationAccept コンポーネント）を表示。招待がない場合のみ `/laws` へリダイレクト。
+- `app/laws/[id]/_components/InvitationAccept.tsx`: 招待承認/拒否 UI（新規）。承認後は `router.refresh()` で同ページをメンバーとして再レンダリング。
+
+### [解決済み] CRITICAL-L04: オーナー移譲ボタンが disabled（commit: 202e618 の間接修正）
+
+**根本原因**: L02 未修正により招待者がメンバーに追加されず、OwnerTransferModal の `candidates.length === 0` でボタンが disabled だった。L02 修正により間接解決。
+
+### [解決済み] MemberList テキストフォーマット（commit: 202e618）
+
+「メンバー (X人)」→「メンバー X人」。E2E テスト正規表現 `/メンバー\s+\d+人/` にマッチするよう修正。
 
 ---
 
