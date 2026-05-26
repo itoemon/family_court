@@ -4,7 +4,25 @@
 
 ## 今回のタスク
 
-FEAT-003（法律作成機能）を実装する。
+FEAT-003（法律作成機能）テスト不合格の修正。
+
+**修正内容（2件）:**
+
+### FIX-1: 招待受信 UI の追加（最重要・L02 失敗原因）
+
+`app/laws/page.tsx` に、ログインユーザー宛の pending 招待を表示し、承認/拒否できるセクションを追加する。
+
+- `law_invitations` から `invitee_id = user.id AND status = 'pending'` のレコードを取得
+- 法律名（`laws.name`）と招待者名（`laws.owner_id` → `profiles.display_name`）を表示
+- 承認ボタン → `PATCH /api/laws/[id]/invitations/[invId]` に `{ "action": "accepted" }` を送信
+- 拒否ボタン → 同 API に `{ "action": "rejected" }` を送信
+- 操作後にページをリフレッシュ（`router.refresh()`）
+- サーバーコンポーネントで取得 + クライアントコンポーネントで操作 に分離すること
+
+### FIX-2: OwnerTransferModal ボタンの disabled 解除（L04 失敗原因）
+
+FIX-1 で User B がメンバーになれば L04 は連鎖解消の見込みだが、`OwnerTransferModal` の disabled 条件も確認する。
+`disabled={loading || candidates.length === 0}` は正しい（メンバーがいないときは移譲不可）。修正不要の場合は FIX-1 のみで対応。
 
 ---
 
