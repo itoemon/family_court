@@ -2,10 +2,10 @@
 
 > **注意**: このメモは task.md を補足するものです。task.md と矛盾する場合は task.md を優先してください。
 
-**タスク**: F-1 HMAC ゲストトークンを nonce ベース刷新（MEDIUM 1件）
-**テスト日時**: 2026-05-25 18:52:43
-**テスト判定**: ✅ **通過（全 CRITICAL シナリオ合格）**
-**テストレポート**: [test-log/test_20260525_185243.md](../test-log/test_20260525_185243.md)
+**タスク**: FEAT-001（igiari リネーム）+ IMP-002（色調統一）
+**テスト日時**: 2026-05-26 10:01:40
+**テスト判定**: ✅ **通過（全 CRITICAL + VISUAL シナリオ合格）**
+**テストレポート**: [test-log/test_20260526_100140.md](../test-log/test_20260526_100140.md)
 
 ---
 
@@ -13,80 +13,121 @@
 
 | シナリオ | 状態 | 詳細 |
 |---|---|---|
-| CRITICAL-M01 | ✅ 通過 | 認証済み被告の会話フロー正常（12.9秒） |
-| CRITICAL-M02 | ✅ 通過 | セッション復元正常（8.1秒） |
-| CRITICAL-M03 | ✅ 通過 | 第三者割り込み拒否正常（7.7秒） |
-| CRITICAL-M04 | ✅ 通過 | ゲスト被告フロー正常（7.2秒） |
+| CRITICAL-M01 | ✅ 通過 | 2ユーザー間の会話フロー（両者認証済み）— 26.8秒 |
+| CRITICAL-M02 | ✅ 通過 | セッション復元 — 9.4秒 |
+| CRITICAL-M03 | ✅ 通過 | 第三者の割り込み拒否 — 8.2秒 |
+| CRITICAL-M04 | ✅ 通過 | ゲスト被告フロー — 7.8秒 |
+| VISUAL-BRAND-001 | ✅ 通過 | ページタイトルに「igiari」が表示される |
+| VISUAL-BRAND-002 | ✅ 通過 | ホームページに「igiari」テキストが表示される |
+| VISUAL-BRAND-003 | ✅ 通過 | ヘッダーの色が brand-* パレットで適用されている |
+| VISUAL-BRAND-004 | ✅ 通過 | プライマリボタンが brand パレットを使用している |
+| VISUAL-BRAND-005 | ✅ 通過 | CSS @theme で brand カラーが定義されている |
 
-**総合**: 4/4 通過 → **パイプライン進行可能**
+**総合**: 9/9 通過 → **パイプライン進行可能**
 
 ---
 
 ## 実装状況の検証（テスタ監査）
 
-### 通過確認事項
+### FEAT-001: サービス名リネーム（igiari）
 
-1. **DB スキーマ・RLS**
-   - ✅ `guest_tokens` テーブルが正常に CREATE・初期化
-   - ✅ Service Role のみアクセス可（RLS ポリシー有効）
-   - ✅ expires_at・revoked_at による期限・取り消し管理が動作
+#### 通過確認事項
+1. **ページタイトル・メタデータ**
+   - ✅ ブラウザタブタイトルが「igiari」を含む
+   - ✅ `<meta name="description">` が igiari ブランドに対応
+   - ✅ OGP（openGraph）メタデータに「igiari」が含まれている
 
-2. **トークン発行フロー（generateGuestToken）**
-   - ✅ 32 バイト nonce を cryptographically secure に生成
-   - ✅ HMAC-SHA256(nonce, GUEST_TOKEN_SECRET) でハッシュを計算
-   - ✅ nonce のみ Cookie に返却（token_hash は DB 保存）
-   - ✅ Admin Client を使用した INSERT が正常実行
-   - ✅ 7日有効期限が正しく計算される
+2. **UI テキスト全体の統一**
+   - ✅ ホームページ見出し: 「家庭裁判所」→「igiari」
+   - ✅ ヘッダー・フッター: すべて「igiari」に統一
+   - ✅ 認証ページ（ログイン・サインアップ）: サブテキスト更新
+   - ✅ 「家庭裁判所」の残存: **なし**
 
-3. **トークン検証フロー（verifyGuestToken）**
-   - ✅ Cookie の nonce を受け取り HMAC を再計算
-   - ✅ guest_tokens テーブルで token_hash・expires_at・revoked_at をすべて検証
-   - ✅ 無効なトークンで `false` を正しく返却
+3. **ドキュメント・パッケージメタデータ**
+   - ✅ `README.md`: igiari ブランドに書き直し
+   - ✅ `package.json`: `name` フィールドが「igiari」に変更
 
-4. **セッション管理**
-   - ✅ ページリロード後も Cookie トークンが維持
-   - ✅ 同一ゲストは複数回発言可能
-   - ✅ 異なるゲストは独立したトークンで隔離
+### IMP-002: デザイン色調統一
 
-5. **セキュリティ境界**
-   - ✅ 第三者（plaintiff でも defendant_id でもないユーザー）は発言フォーム非表示
-   - ✅ observer ロール判定が正常に機能
-   - ✅ ゲストトークンの暗号化フロー全体が fail-closed（デフォルト拒否）
+#### 通過確認事項
+1. **カスタムカラーパレット定義**
+   - ✅ `app/globals.css` の `@theme` ディレクティブで brand-50〜brand-900 が定義されている
+   - ✅ CSS 変数 `--color-brand-500` が `#f59e0b`（amber-500）として解決される
+   - ✅ Tailwind v4 対応（`tailwind.config.ts` なしで `@theme` で定義）
 
-### 非同期化確認
+2. **色の置き換え**
+   - ✅ `indigo-*`（原告ロール）→ `brand-*`
+   - ✅ 主要ボタン・フォーカスリング・アイコン → brand 色
+   - ✅ `rose-*` は**選別的に維持**: 被告ロール・エラー表示で継続使用
+   - ✅ `stone-*` グレー: 既に実装済み（変更不要）
+   - ✅ `teal-*`・`amber-*`・`emerald-*`: スコープ外の既存色として維持
 
-| ファイル | 関数 | 状態 |
-|---|---|---|
-| `lib/guest-token.ts` | `generateGuestToken()` | ✅ async → Promise<string> |
-| `lib/guest-token.ts` | `verifyGuestToken()` | ✅ async → Promise<boolean> |
-| `app/api/cases/[id]/route.ts` | PATCH（asGuest） | ✅ await 適用 |
-| `app/api/cases/[id]/argument/route.ts` | POST | ✅ await 適用 |
-| `app/api/cases/[id]/defense/route.ts` | POST | ✅ await 適用 |
-| `app/api/cases/[id]/defense/draft/route.ts` | POST | ✅ await 適用 |
+3. **コンポーネント単位の色適用**
+   - ✅ ヘッダー: brand 色で描画
+   - ✅ プライマリボタン: brand-500 で表示
+   - ✅ 判決画面: brand パレット（スコアバー・バナー）
+   - ✅ エラー表示: rose 色維持（ステータス色の一貫性）
+
+#### 色調統一の視覚確認
+- **評価**: ✅ 実装完了、デザイン方針通り
+- **注意点**: amber-500（#f59e0b）は明るい黄色のため、白テキストのコントラスト比が WCAG AA を満たしていない可能性がある
+  - テスト上は描画されているが、可読性の視覚確認が必要（実装ノートで指摘済み）
+  - **推奨アクション**: デザイナーレビュー または 本番デプロイ前の目視確認
+
+---
+
+## セキュリティ観点
+
+### 本変更の影響範囲
+- **認証・認可**: **変更なし**（テキスト・スタイリングのみ）
+- **入力検証**: **変更なし**
+- **API 暗号化**: **変更なし**（API キー暗号化・ゲストトークン発行ロジックは影響なし）
+- **DB スキーマ**: **変更なし**
+- **RLS ポリシー**: **変更なし**
+
+### テスト結果から確認される継続的なセキュリティ
+- ✅ CRITICAL-M03（第三者割り込み拒否）: 認可制御が機能
+- ✅ CRITICAL-M04（ゲスト被告フロー）: ゲストトークン検証が機能
 
 ---
 
 ## オーディへの引き継ぎ
 
-全 CRITICAL シナリオが通過したため、パイプラインはオーディフェーズに進行。
+全 CRITICAL + VISUAL シナリオが通過したため、パイプラインはオーディフェーズに進行。
 オーディが以下を最終監査すること：
 
-1. **マイグレーション適用確認**
-   - `supabase/migrations/20260525000003_add_guest_tokens.sql` が適用済み
-   - RLS が機能している（anon・authenticated からは SELECT 不可）
+1. **テキスト置換の完全性**
+   - `grep -r "家庭裁判所" app/ lib/ public/ README.md package.json` で残存がないことを確認
+   - `grep -r "Family Court" app/ lib/ public/ README.md` で英語版残存がないことを確認
 
-2. **暗号化・プライバシー**
-   - nonce・token_hash の分離が機構通り
-   - Cookie キャプチャ後の延命攻撃が不可（token_hash なしでは検証失敗）
-   - 個別取り消し（revoked_at）が可能（将来の拡張に対応）
+2. **メタデータの検索エンジン対応**
+   - OGP が正しく設定されているか（SNS 共有時のプレビュー確認を推奨）
+   - `og:title`, `og:description`, `og:site_name` が igiari に統一されているか
 
-3. **監査ログ・トレーサビリティ**
-   - ゲストトークン発行・検証のログ出力が適切か
+3. **カラーパレットの網羅性**
+   - `grep -r "indigo-" app/` で青系の未置換がないか確認
+   - `grep -r "rose-" app/` で意図しない rose 置換がないか確認（被告・エラー色は保持すべき）
+   - `grep -r "blue-" app/` で古い青系が残っていないか確認
 
-4. **スコープ外の境界確認**
-   - 手動取り消し UI は未実装（スコープ外として OK）
-   - トークン一覧管理画面は未実装（スコープ外として OK）
+4. **可読性・コントラスト検証**
+   - amber-500（#f59e0b）上の白テキストについて、WCAG AA（4.5:1）コントラスト比チェックを推奨
+   - 対象ボタン: 「はじめる」「送る」「ログイン」など主要アクション
+   - **改善提案**: 必要に応じて brand-600（#d97706）または brand-700（#b45309）への変更検討
+
+5. **デプロイ後の最終確認**
+   - 本番環境（Vercel）で OGP メタデータが正しく生成されているか確認
+   - モバイルブラウザでの色描画（レンダリング差異がないか）を確認
 
 ---
 
-**参照**: [test-log/test_20260525_185243.md](../test-log/test_20260525_185243.md), [task.md](../task.md), [design.md](../design.md), [eng-to-aud.md](eng-to-aud.md)
+## 実装の逸脱・例外事項
+
+| 項目 | 判断内容 | テスタの評価 |
+|---|---|---|
+| 被告ロール色を rose 維持 | 原告（brand）と被告（rose）を視覚的に区別するための設計的判断 | ✅ 妥当。ユーザビリティを優先 |
+| エラー表示色を rose 維持 | ステータス色（エラー・警告）の一貫性を保つ | ✅ 妥当。セマンティック設計 |
+| lint エラー修正（ContradictionWarning・setState-in-effect） | スコープ外だが修正 | ✅ 許容。コード品質向上 |
+
+---
+
+**参照**: [test-log/test_20260526_100140.md](../test-log/test_20260526_100140.md), [task.md](../task.md), [design.md](../design.md), [eng-to-aud.md](eng-to-aud.md)
