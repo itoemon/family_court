@@ -57,7 +57,6 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
   const roleParam = searchParams.get("role") as Role | null;
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (roleParam === "plaintiff") setMyRole("plaintiff");
   }, [roleParam]);
 
@@ -88,7 +87,6 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
 
   useEffect(() => {
     if (!caseId) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchCase();
     const interval = setInterval(fetchCase, 2000);
     return () => clearInterval(interval);
@@ -96,7 +94,6 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
 
   useEffect(() => {
     if (caseData?.phase === "judging" && !requestingVerdict) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setRequestingVerdict(true);
       fetch(`/api/cases/${caseId}/verdict`, { method: "POST" })
         .then(() => fetchCase())
@@ -105,6 +102,8 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
   }, [caseData?.phase, caseId, fetchCase, requestingVerdict]);
 
   useEffect(() => {
+    const count = (caseData?.arguments?.length ?? 0) + (caseData?.judgeMessages?.length ?? 0);
+    if (count === 0) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [caseData?.arguments?.length, caseData?.judgeMessages?.length]);
 
@@ -273,7 +272,7 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
               <p className="text-xs font-semibold text-stone-400 uppercase tracking-wider mb-4">参加方法を選んでください</p>
               <button
                 onClick={() => setJoinMode("login")}
-                className="w-full bg-brand-500 hover:bg-brand-600 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
+                className="w-full bg-brand-700 hover:bg-brand-800 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
               >
                 アカウントでログインして参加
               </button>
@@ -291,7 +290,7 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
               <button
                 onClick={handleJoinAsAccount}
                 disabled={loading}
-                className="w-full bg-brand-500 hover:bg-brand-600 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
+                className="w-full bg-brand-700 hover:bg-brand-800 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
               >
                 {loading ? "参加中..." : "ログインして参加する"}
               </button>
@@ -321,7 +320,7 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full bg-brand-500 hover:bg-brand-600 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
+                className="w-full bg-brand-700 hover:bg-brand-800 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
               >
                 {loading ? "参加中..." : "ゲストで参加する"}
               </button>
@@ -429,7 +428,7 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
                 <p className="text-stone-500 text-sm mb-4">相手の参加を待っています...</p>
                 <button
                   onClick={copyShareLink}
-                  className="bg-brand-500 hover:bg-brand-600 text-white font-semibold px-6 py-2.5 rounded-xl text-sm transition-colors"
+                  className="bg-brand-700 hover:bg-brand-800 text-white font-semibold px-6 py-2.5 rounded-xl text-sm transition-colors"
                 >
                   {copied ? "✓ コピー済み" : "招待リンクをコピー"}
                 </button>
@@ -504,7 +503,7 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
                 <button
                   type="submit"
                   disabled={loading || !argumentText.trim()}
-                  className={`w-full font-semibold py-2.5 rounded-xl transition-colors text-sm text-white disabled:bg-stone-200 disabled:text-stone-400 ${myRole === "plaintiff" ? "bg-brand-500 hover:bg-brand-600" : "bg-rose-400 hover:bg-rose-300"}`}
+                  className={`w-full font-semibold py-2.5 rounded-xl transition-colors text-sm text-white disabled:bg-stone-200 disabled:text-stone-400 ${myRole === "plaintiff" ? "bg-brand-700 hover:bg-brand-800" : "bg-rose-400 hover:bg-rose-300"}`}
                 >
                   {loading ? "送信中..." : "送る"}
                 </button>
