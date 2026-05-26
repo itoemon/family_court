@@ -47,7 +47,7 @@ async function resolveAuth(req: NextRequest, id: string) {
 async function resolveApiKey(plaintiffId: string, admin: ReturnType<typeof createAdminClient>) {
   const { data: plaintiffProfile } = await admin
     .from("profiles")
-    .select("api_key_encrypted")
+    .select("api_key_encrypted, defense_custom_instruction")
     .eq("id", plaintiffId)
     .single();
 
@@ -57,7 +57,10 @@ async function resolveApiKey(plaintiffId: string, admin: ReturnType<typeof creat
   }
 
   try {
-    return { apiKey: decryptApiKey(plaintiffProfile.api_key_encrypted) } as const;
+    return {
+      apiKey: decryptApiKey(plaintiffProfile.api_key_encrypted),
+      customInstruction: (plaintiffProfile.defense_custom_instruction as string | null) ?? null,
+    } as const;
   } catch (err) {
     console.error("[defense] api key decryption failed:", err);
     return { error: "APIキーの復号に失敗しました", status: 500 } as const;
@@ -120,7 +123,7 @@ export async function POST(
   if ("error" in keyResult) {
     return NextResponse.json({ error: keyResult.error }, { status: keyResult.status });
   }
-  const { apiKey } = keyResult;
+  const { apiKey, customInstruction } = keyResult;
 
   const body = await req.json();
   const content: string = body.content ?? "";
@@ -168,6 +171,7 @@ export async function POST(
         dialogHistory,
         defenseHistory: defenseHistoryForAI,
         userRole,
+        customInstruction,
       },
       apiKey
     );

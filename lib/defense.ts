@@ -6,6 +6,7 @@ export interface DefenseParams {
   dialogHistory: { role: "plaintiff" | "defendant"; content: string }[];
   defenseHistory: { role: "user" | "assistant"; content: string }[];
   userRole: "plaintiff" | "defendant";
+  customInstruction?: string | null;
 }
 
 function getUserRoleLabel(userRole: "plaintiff" | "defendant"): string {
@@ -16,11 +17,11 @@ export async function generateDefenseResponse(
   params: DefenseParams,
   apiKey: string
 ): Promise<string> {
-  const { topic, dialogHistory, defenseHistory, userRole } = params;
+  const { topic, dialogHistory, defenseHistory, userRole, customInstruction } = params;
   const client = new Anthropic({ apiKey });
   const userRoleLabel = getUserRoleLabel(userRole);
 
-  const systemPrompt = `あなたは話し合いの場で${userRoleLabel}を支援する弁護人AIです。
+  const basePrompt = `あなたは話し合いの場で${userRoleLabel}を支援する弁護人AIです。
 あなたの役割は、ユーザーの気持ちや主張をていねいに引き出し、整理することです。
 
 <rules>
@@ -39,7 +40,10 @@ ${dialogHistory.length > 0
   ? dialogHistory.map((a, i) => `[${i + 1}] ${a.role === userRole ? "あなた" : "相手"}: ${escapeXml(truncate(a.content, 500))}`).join("\n")
   : "（まだ発言はありません）"}
 </dialog_history>
-</case_context>`.trim();
+</case_context>`;
+
+  const systemPrompt = (basePrompt
+    + (customInstruction ? `\n\n追加指示:\n${escapeXml(truncate(customInstruction, 200))}` : "")).trim();
 
   const apiMessages: Anthropic.MessageParam[] = defenseHistory.map((m) => ({
     role: m.role as "user" | "assistant",
@@ -60,7 +64,7 @@ export async function generateDraft(
   params: DefenseParams,
   apiKey: string
 ): Promise<string> {
-  const { topic, dialogHistory, defenseHistory, userRole } = params;
+  const { topic, dialogHistory, defenseHistory, userRole, customInstruction } = params;
   const client = new Anthropic({ apiKey });
   const userRoleLabel = getUserRoleLabel(userRole);
 
@@ -85,9 +89,14 @@ ${defenseHistory.map((m) => `${m.role === "user" ? "あなた" : "弁護人AI"}:
 - あなたの主張と気持ちが伝わる内容にする
 - 発言文のみを出力する（前置きや説明は不要）`;
 
+  const systemPrompt = customInstruction
+    ? `追加指示:\n${escapeXml(truncate(customInstruction, 200))}`
+    : undefined;
+
   const response = await client.messages.create({
     model: "claude-haiku-4-5-20251001",
     max_tokens: 256,
+    ...(systemPrompt ? { system: systemPrompt } : {}),
     messages: [{ role: "user", content: prompt }],
   });
 

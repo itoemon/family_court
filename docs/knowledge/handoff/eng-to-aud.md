@@ -2,7 +2,7 @@
 
 > **注意**: このメモは task.md を補足するものです。task.md と矛盾する場合は task.md を優先してください。
 
-**タスク**: FEAT-001（igiari リネーム）+ IMP-002（色調統一）
+**タスク**: FEAT-002 Phase 1（プロフィールアイコン設定・弁護人AIカスタム指示）
 **日時**: 2026-05-26
 
 ---
@@ -11,73 +11,71 @@
 
 | ファイル | 種別 | 内容 |
 |---|---|---|
-| `app/globals.css` | 変更 | `@theme` ブロックで brand-50〜brand-900 を定義 |
-| `app/layout.tsx` | 変更 | metadata.title / description を igiari ブランドに更新、openGraph 追加 |
-| `app/components/Header.tsx` | 変更 | 「家庭裁判所」→「igiari」 |
-| `app/components/Footer.tsx` | 変更 | 「家庭裁判所」→「igiari」 |
-| `app/page.tsx` | 変更 | 見出し「家庭裁判所」→「igiari」、rose→brand（ボタン・フォーカス・アイコン背景） |
-| `app/auth/login/page.tsx` | 変更 | サブテキスト更新、rose→brand（ボタン・フォーカス・アイコン・リンク） |
-| `app/auth/signup/page.tsx` | 変更 | rose→brand（ボタン・フォーカス・アイコン・リンク） |
-| `app/profile/page.tsx` | 変更 | rose→brand（ボタン・フォーカス・アイコン）。エラー色は維持 |
-| `app/case/[id]/page.tsx` | 変更 | indigo→brand（原告・参加画面）、rose→brand（待機中招待ボタン）、pre-existing lint 修正 |
-| `app/case/[id]/verdict/page.tsx` | 変更 | indigo→brand（原告判決バナー・スコアバー・バブル） |
-| `README.md` | 変更 | igiari ブランドに合わせて書き直し |
-| `package.json` | 変更 | `name` を `igiari` に変更 |
+| `supabase/migrations/20260526000001_feat002_phase1_profiles.sql` | 新規 | `profiles` に `avatar_url` / `defense_custom_instruction` 追加。`avatars` バケット作成・RLS ポリシー設定 |
+| `lib/types.ts` | 変更 | `Profile` インターフェースを追加 |
+| `lib/defense.ts` | 変更 | `DefenseParams` に `customInstruction?: string \| null` を追加。両関数のシステムプロンプトへの付加ロジックを実装 |
+| `app/api/cases/[id]/defense/route.ts` | 変更 | `resolveApiKey` が `defense_custom_instruction` も取得するよう拡張。`generateDefenseResponse` に渡す |
+| `app/api/cases/[id]/defense/draft/route.ts` | 変更 | profiles クエリに `defense_custom_instruction` を追加。`generateDraft` に渡す |
+| `app/api/profile/avatar/route.ts` | 新規 | アバターアップロード API Route（POST） |
+| `app/api/profile/route.ts` | 変更 | PATCH に `defenseCustomInstruction` フィールドを追加。`displayName` の更新を optional に変更 |
+| `app/profile/page.tsx` | 変更 | アバター表示・アップロード UI + カスタム指示 UI を追加 |
+| `next.config.ts` | 変更 | `images.remotePatterns` に `*.supabase.co` を追加（`next/image` で Supabase Storage 画像を表示するため） |
 
 ---
 
 ## 実装上の判断・設計書からの逸脱
 
-### G-1: サービス名リネーム
+### G-1: アバターアップロード
 
-- 設計書の対象ファイルをすべて修正した。
-- `app/layout.tsx` に `openGraph` フィールドを追加（設計書の metadata サンプルに含まれていたため追加）。
-- キャッチコピーは「大切な人とおだやかに話し合える場所 — AI 裁判官が判決を下す」とした（「温かみ・裁判形式」「対立感を煽らない」要件を両立する文言）。
-- `package-lock.json` の `name` フィールドは変更していない（`npm install` 実行時に自動更新される）。
+- **キャッシュバスター付加**: `profiles.avatar_url` に保存する URL に `?t={timestamp}` を付与している（設計書では「オプション扱い」だが、再アップロード後のブラウザキャッシュ問題を防ぐため採用）。
+- **`next/image` 使用**: ESLint の `no-img-element` 警告を解消するため `<img>` ではなく `next/image` を使用。`next.config.ts` に `*.supabase.co` の remotePatterns を追加した（設計書には記載なし）。
+- **旧ファイル削除の失敗は非致命的**: 旧拡張子ファイルの削除失敗（`storage.remove` のエラー）はキャッチして無視し、アップロード処理を継続する。Storage に不要ファイルが残る場合があるが、機能の正常動作は保たれる。
+- **サイズ検証**: サーバー側では `file.size` プロパティで 2MB チェック（`arrayBuffer()` より前）。`ArrayBuffer` への変換はアップロード直前のみ行う。
 
-### G-2: 色調統一
+### G-2: 弁護人AIカスタム指示
 
-- Tailwind v4 + `tailwind.config.ts` なしの構成を確認。`app/globals.css` の `@theme` にブランドパレットを定義した。
-- `gray-*` は実コードに存在せず（すでに `stone-*` へ移行済み）。変更不要。
-- `blue-*` も実コードに存在せず。代わりに `indigo-*`（原告ロール・参加画面）が使われていたため、これを `brand-*` へ置換した。
-- `rose-*` は複数の用途で使われていた。以下のように扱いを分けた:
-  - **変更した箇所**: 主要アクションボタン（ホーム・ログイン・サインアップ・プロフィール画面）、フォームフォーカスリング、一次リンク → `brand-*` へ置換
-  - **維持した箇所**: 被告ロール（対話バブル・チップ・送信ボタン）— 原告（brand 色）と被告（rose 色）を視覚的に区別するための設計的判断。エラー表示（ErrorBanner・フォームエラー段落）— ステータス色として機能するため維持。
-- `teal-*`（弁護人AI タブ・チャット）、`amber-*`（審議中スピナー・矛盾警告）、`emerald-*`（保存成功メッセージ）は今回スコープ外の既存色として変更しなかった。
-
-### 付随修正（スコープ外だが触れたファイルのクリーンアップ）
-
-`app/case/[id]/page.tsx` に pre-existing lint エラーが 2 件あった:
-1. `ContradictionWarning` 型が import されていたが未使用 → 削除
-2. `react-hooks/set-state-in-effect` 警告（`useEffect` 内で `fetchDefenseMessages()` を直接呼び出している）→ このファイルで既に使われているパターン（`// eslint-disable-next-line`）で抑制
+- **`generateDraft` はシステムプロンプトなしの設計だった**: 既存の `generateDraft` は system パラメータを使っていなかった。`customInstruction` がある場合のみ `system` に「追加指示:」ラベル付きで設定する実装とした。`customInstruction` が null/undefined の場合は従来通りシステムプロンプトなし。
+- **`display_name` の optional 化**: 既存の PATCH `/api/profile` は `displayName` を常に `updates` に含めていた。カスタム指示のみ更新する呼び出しでも `displayName` が必要になる問題を解消するため、`displayName` が `undefined` の場合はスキップするよう修正した。後方互換あり（既存 UI の displayName+apiKey 保存は変わらず動作する）。
 
 ---
 
 ## テスタ・オーディへの注意点
 
-### 重点確認ポイント
+### 事前確認（デプロイ前必須）
 
-1. **`brand-*` クラスの描画確認**: `@theme` ディレクティブで定義した CSS 変数が正しく Tailwind クラスとして認識されているか。ブラウザ DevTools で `--color-brand-500` が解決されているか確認すること。
+1. **Supabase migration の適用**: `supabase/migrations/20260526000001_feat002_phase1_profiles.sql` を本番 Supabase に適用してから動作確認すること。migration 未適用の場合、アバター API と `defense_custom_instruction` の保存が 500 エラーになる。
+2. **`avatars` バケットの存在**: migration の `INSERT INTO storage.buckets` が実行されているか Supabase ダッシュボードで確認すること。バケットが存在しないとアップロードが 500 になる。
 
-2. **被告バブルと原告バブルの色区別**: 裁判ルーム（`/case/[id]`）で原告（amber系）と被告（rose系）のバブルが視覚的に区別できること。
+### 重点確認ポイント（G-1: アバター）
 
-3. **エラー表示の維持**: フォームエラー（login・signup・profile・ケース画面）の `rose-*` スタイルが意図通り表示されること。`ErrorBanner` のスタイルが維持されていること。
+1. **アップロード正常系**: JPEG / PNG / WebP を 2MB 以下でアップロードし、プロフィール画面のアイコンが更新されること。
+2. **拡張子変更時の旧ファイル削除**: `.jpg` をアップロード後に `.png` を再アップロードしたとき、Storage に `{user_id}/avatar.jpg` が残らないこと。
+3. **クライアント側バリデーション**: 2MB 超のファイルや対応外 MIME（例: GIF、SVG）を選択したとき、サーバーへのリクエストを送らずにエラーメッセージが表示されること。
+4. **サーバー側バリデーション**: クライアント側バリデーションを迂回して不正なファイルを POST した場合に 400 が返ること。
+5. **他ユーザーのパスへの書き込み**: 認証済みユーザーが `{他人のuser_id}/avatar.png` を Storage に直接アップロードしようとした場合に RLS で拒否されること（API Route 経由ではサーバー側で user.id を使うため問題なし。Storage 直接アクセスの場合の二重防御確認）。
+6. **fallback 動作**: `avatar_url` が null のとき、頭文字の丸アイコン（表示名の 1 文字目）が表示されること。
 
-4. **`igiari` 表記の網羅性**: UI 上・メタタグ（ブラウザのタブタイトル・OGP）で「家庭裁判所」が残っていないこと。`docs/agents/tester.md` の E2E テストが `toHaveTitle(/家庭裁判所/)` を参照している可能性があるため、テストコードの更新要否を確認すること。
+### 重点確認ポイント（G-2: カスタム指示）
 
-5. **白テキスト on brand-500**: プライマリボタン（`bg-brand-500 text-white`）の可読性。amber-500（#f59e0b）は明るい黄色のため、白テキストとのコントラスト比が低い可能性がある。視覚確認を推奨。
+1. **保存正常系**: テキストエリアに入力して「AIへの指示を保存」ボタンを押すと DB に保存され、再読み込み後も入力値が復元されること。
+2. **文字数カウンター**: 残り文字数がリアルタイムで更新されること。200 文字入力時に残り 0 表示になること。`maxLength={200}` により 201 文字以上入力できないこと。
+3. **空欄での保存**: 空欄で保存すると `defense_custom_instruction` が `null` になり、弁護人AI のプロンプトに付加されないこと。
+4. **AI 連携**: `defense_custom_instruction` を設定したユーザーが原告のケースで弁護人チャット / 回答案生成を実行したとき、AI の応答に指示の影響が出ること（ブラックボックステストで確認）。
+5. **200 文字超のサーバー側拒否**: DB に直接書き込もうとした場合は CHECK 制約で弾かれること。API 経由の 200 文字超リクエストは 400 が返ること。
 
 ### セキュリティ観点
 
-本変更はテキストとスタイリングのみ。認証・認可・入力検証・API ロジックへの影響なし。
+- `defense_custom_instruction` はプロンプトに埋め込む際に `escapeXml(truncate(..., 200))` で二重にサニタイズされている。プロンプトインジェクションを試みる文字列（XML タグ、改行を使った指示の上書き等）が入力された場合の挙動を確認すること。
+- アバター API は `createSessionClient().auth.getUser()` で認証し、アップロードパスを `{認証済み user_id}/avatar.{ext}` に固定している。他ユーザーの ID でパスを偽装することはできない。
 
 ---
 
-## 未実装・スコープ外
+## 未実装・スコープ外にしたこと
 
 | 項目 | 理由 |
 |---|---|
-| ロゴ画像・ファビコンの新規作成 | task.md でスコープ外 |
-| ドメイン取得・Supabase プロジェクト名変更 | task.md でスコープ外 |
-| `package-lock.json` の `name` 更新 | `npm install` 後に自動反映 |
-| `tests/e2e/` の pre-existing lint エラー | 書き込み権限外（@typescript-eslint/no-explicit-any 12 件） |
+| ヘッダーへのアバター表示 | task.md でスコープ外 |
+| アイコントリミング・リサイズ UI | task.md でスコープ外 |
+| 被告側のカスタム指示 | task.md でスコープ外 |
+| 指示のプリセット選択 UI | task.md でスコープ外 |
+| フレンド機能（FEAT-002 Phase 2） | task.md でスコープ外（別 PR） |
