@@ -99,6 +99,40 @@
 
 ---
 
+## 今回の修正内容（監査不合格対応 commit: 0063fa0）
+
+### [解決済み] HIGH-001: /laws ページに pending 招待セクションが存在しない
+
+**症状**: 招待通知の受信 UI が `/laws/[id]` にしかなく、URL を知らなければ到達不能。
+
+**修正**:
+- `app/laws/_components/PendingInvitations.tsx` を新規作成（Client Component）
+  - `invitee_id = user.id AND status = 'pending'` の招待を表示
+  - 承認ボタン → `PATCH /api/laws/[id]/invitations/[invId]` に `{ status: "accepted" }`
+  - 拒否ボタン → 同 API に `{ status: "rejected" }`
+  - 操作後に `router.refresh()` でページ更新
+- `app/laws/page.tsx` に招待データ取得ロジックと `<PendingInvitations>` レンダリングを追加
+  - 法律一覧の上部（ヘッダーの直下）に「届いた招待」セクションを配置
+  - 招待が 0 件の場合はコンポーネント自体が `null` を返す
+
+**注意**: `/laws/[id]/page.tsx` の非メンバー向け InvitationAccept は**そのまま残している**（直リンクアクセスへの対応）。
+
+### [解決済み] MEDIUM-002: PATCH invitations ルートに lawId バリデーションが不足
+
+**修正**: `app/api/laws/[id]/invitations/[invId]/route.ts` に `.eq("law_id", lawId)` を追加。
+異なる法律の invId が指定されても招待が見つからず 404 を返す。
+
+### [解決済み] HIGH-001/MEDIUM-001: E2E テストが soft assertion のため不合格を検出できない
+
+**修正内容**:
+- L02 (lines 72-76): `if (isVisible)` → `await expect().toBeVisible()`
+- L03 (lines 119-122): 同上 + `goto(lawUrl)` → `goto('/laws')` に変更（pending 招待は /laws に表示されるため）
+- L03 投票フロー (lines 139-141): `if (isVisible)` → `await expect().toBeVisible()`、`pageB.reload()` → `pageB.goto(lawUrl)` に変更（承認後 B は /laws にいるので投票前に法律詳細へ遷移が必要）
+- L03 条文確認 (lines 147-150): `if (isVisible) { // 成功 }` → `await expect().toBeVisible()`
+- L04 (lines 189-193): `if (isVisible)` → `await expect().toBeVisible()`
+
+---
+
 ## 既知の問題・要確認事項（修正済み含む）
 
 ### [解決済み] InvitePanel の招待検索（commit: 11e471e）
