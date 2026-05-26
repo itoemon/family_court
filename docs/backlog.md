@@ -45,6 +45,21 @@
  (由来: audit_20260526_142833.md)
   ```typescript (由来: audit_20260526_142833.md)
 
+### [LOW-001] `package.json` の `name` フィールド変更が変更ログ未記載（`package.json:2`、`package-lock.json:4`） (由来: audit_20260526_152517.md)
+ (由来: audit_20260526_152517.md)
+- **内容**: `git diff main...HEAD` にて `package-lock.json` の `name` フィールドが `"family_court"` から `"igiari"` へ変更されている。`package.json` の現在値も `"igiari"` である（2行目）。しかし eng-to-aud.md の「変更ファイル一覧」では `package.json` の変更理由を `@upstash/*` 依存追加のみと説明しており、`name` フィールドの変更への言及がない。意図的なプロジェクト名変更であれば問題ないが、本監査ではその意図を文書から確認できない。エンドユーザーへの直接影響はないものの、Vercel のプロジェクト名・CI 設定と乖離した場合にデプロイのトレーサビリティが失われる。 (由来: audit_20260526_152517.md)
+- **修正案**: 変更が意図的であれば eng-to-aud.md の変更ファイル一覧に `package.json — name フィールドを igiari へ変更` を追記する。意図的でない場合は `"name": "family_court"` に戻す。 (由来: audit_20260526_152517.md)
+ (由来: audit_20260526_152517.md)
+--- (由来: audit_20260526_152517.md)
+ (由来: audit_20260526_152517.md)
+### [LOW-002] `@upstash/core-analytics` が本番依存ツリーに混入（`package-lock.json`） (由来: audit_20260526_152517.md)
+ (由来: audit_20260526_152517.md)
+- **内容**: `analytics: false` を明示設定しているにもかかわらず、`@upstash/ratelimit@2.0.8` の推移的依存として `@upstash/core-analytics@0.0.10` が `node_modules` に含まれる（`package-lock.json` に `node_modules/@upstash/core-analytics` エントリあり）。このパッケージがモジュール初期化時にアウトバウンド接続を行わないことをコードレベルでは確認できない。`ratelimit.limit(user.id)` は毎リクエストごとに `user.id`（UUID）を渡すため、万一 `analytics: false` が完全に機能していない場合、ユーザー識別子が Upstash のサードパーティサーバーへ送信されうる。本アプリは夫婦・家族の話し合いというプライバシー高感度なドメインであるため、ユーザー識別子の外部送信リスクは軽視できない。 (由来: audit_20260526_152517.md)
+- **修正案**: `@upstash/core-analytics@0.0.10` の GitHub リポジトリ（upstash/core-analytics）でソースを確認し、`analytics: false` 時にアウトバウンド接続が発生しないことを検証する。または `npm run build` 後に `grep -r "core-analytics" .next/server/` を実行し、analytics 呼び出しがサーバーバンドルに含まれないことを確認する。 (由来: audit_20260526_152517.md)
+ (由来: audit_20260526_152517.md)
+--- (由来: audit_20260526_152517.md)
+ (由来: audit_20260526_152517.md)
+
 ---
 
 #### [FEAT-003] 法律作成機能

@@ -2,114 +2,70 @@
 
 ## タスク概要
 
-FEAT-002 Phase 2（フレンド機能）と LOW-001/002（入力検証補強）を同一 PR で実装する。
+MEDIUM-001: `GET /api/users/search` に Upstash Redis + `@upstash/ratelimit` を用いて `user.id` 単位のレートリミット（1分間30リクエスト）を追加する。
 
-- FEAT-002 Phase 2: DB テーブル新設・API Routes 5 本・`/friends` ページ新設・ヘッダーナビ修正
-- LOW-001: `app/api/profile/avatar/route.ts` に magic bytes 検証を追加
-- LOW-002: `app/api/profile/route.ts` の `defenseCustomInstruction` に型チェックを追加
-
-LOW-001/002 は FEAT-002 と独立しており、先行して実装・確認できる。
+変更ファイルは `app/api/users/search/route.ts` 1 ファイルのみ。DB 変更・新規ファイル作成なし。
 
 ---
 
 ## 実装順序
 
-### Phase A: LOW（先行推奨・独立タスク）
+1. パッケージインストール: `npm install @upstash/ratelimit @upstash/redis`
+2. `.env.local` に `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` を追加（ダイチから値を受け取ること）
+3. `app/api/users/search/route.ts` を修正:
+   - モジュールスコープで `Ratelimit` インスタンスを初期化
+   - セッション確認直後・クエリパラメータ検証の前にレートリミットチェックを挿入
+   - 制限超過時に `X-RateLimit-*` ヘッダー付きで 429 を返す
 
-1. **LOW-001**: `app/api/profile/avatar/route.ts` の MIME 検証直後（またはその前）に magic bytes チェックを挿入
-2. **LOW-002**: `app/api/profile/route.ts` の `defenseCustomInstruction !== undefined` 分岐先頭に型チェックを追加
-
-### Phase B: FEAT-002 Phase 2
-
-3. **DB migration**: `friend_requests` テーブル作成（`supabase/migrations/` に追加）
-4. **DB migration**: `search_users` PostgreSQL 関数を同じまたは別 migration ファイルで作成
-5. **lib/types.ts**: `FriendRequest`・`FriendProfile`・`FriendListItem`・`IncomingRequest` 型を追加
-6. **API Routes**: 以下の順で実装する（依存なし、並行可）
-   - `app/api/users/search/route.ts`（GET）
-   - `app/api/friends/route.ts`（GET）
-   - `app/api/friends/[id]/route.ts`（DELETE）
-   - `app/api/friends/requests/route.ts`（GET, POST）
-   - `app/api/friends/requests/[id]/route.ts`（PATCH）
-7. **`/friends` ページ**: `app/friends/page.tsx` と `_components/` 3 ファイルを作成
-8. **ヘッダー修正**: 既存の Header コンポーネントに「フレンド」リンクを追加
-
-**順序の根拠**: 型定義（5）が固まってから API（6）とページ（7）を実装することで型エラーの連鎖を防ぐ。DB migration（3・4）は API テスト前に適用が必要なので最優先。
+実装量が少ないため並行タスクなし。上から順に進める。
 
 ---
 
 ## 判断根拠
 
-### なぜ拒否時にレコードを削除するか（更新ではなく）
+### なぜ Route Handler 内で実装するか（Middleware でなく）
 
-task.md に「`rejected` に更新する（または削除）」と両案が示されているが、削除を採用した。理由: UNIQUE INDEX が `(LEAST, GREATEST)` で張られているため、`rejected` レコードを残すと同一ペアからの再送が 409 で永続的にブロックされる。拒否 = 縁切りではなく「今回は断る」という文脈で再送を許容するのが UX 上自然なため削除を選んだ。
+task.md に「`app/api/users/search/route.ts` 内で適用する」と明記されているため。
 
-### なぜ UNIQUE INDEX を `LEAST/GREATEST` で構成するか
+Middleware でのレートリミットも選択肢としてはありうる（全エッジで動くため低レイテンシ）が、今回は対象エンドポイントが 1 つのみで、将来的に他エンドポイントへの拡張がスコープ外のため、Route Handler 内の局所実装が保守性の観点で適切。
 
-フレンド関係は双方向（A→B と B→A は同じ関係）。通常の `(sender_id, receiver_id)` UNIQUE では A が B にリクエストを送っている最中に B が A にリクエストを送れてしまう。`LEAST(a, b), GREATEST(a, b)` でペアをソートすることで両方向を同一キーとして扱い、重複を DB レベルで防ぐ。
+### なぜ slidingWindow アルゴリズムか（fixedWindow でなく）
 
-### なぜユーザー検索に SECURITY DEFINER 関数を使うか
+`fixedWindow` は窓の境界（毎分0秒）でリセットが走るため、境界前後に連続リクエストを集中させると事実上2倍のリクエストを短時間に通せる。`slidingWindow` は常に「直近1分間」で計算するためこの問題がない。ユーザー列挙攻撃の抑制が目的なので、突発的な急増を防ぐ slidingWindow が適切。
 
-`auth.users` テーブルはデフォルト SQL クエリから参照できない。`supabase.auth.admin.getUserByEmail()` で 1 件ずつ検索する方法もあるが、display_name との複合検索・除外フィルタ・LIMIT を一度の DB ラウンドトリップで済ませるには SQL 関数が適切。`SECURITY DEFINER` で `auth.users` にアクセスしつつ、`SET search_path = public` で検索パスを固定することでスキーマ漏洩リスクを抑える。
+### なぜ `user.id` を識別子にするか（IP でなく）
 
-### なぜ検索方式を debounce でなく送信ボタンにするか
+このエンドポイントは認証必須のため、認証後に確定する `user.id` で識別するのが正確。IP は NAT・プロキシ・VPN で複数ユーザーが共有するため、無関係なユーザーを誤ってブロックするリスクがある。task.md 記載の方針と一致。
 
-debounce は UI の応答性を高めるが、IME 変換中に意図しない検索が走りやすく、日本語入力環境（ターゲットユーザー）では誤検索が多くなる。送信ボタン方式は実装がシンプルで、「検索した」というユーザーの意図が明確。
+### なぜ環境変数未設定時のフォールバックを設けないか
 
-### なぜ DELETE /api/friends/[id] の `[id]` をフレンドの profile id ではなく request_id にするか
-
-フレンド一覧取得（GET /api/friends）時に `request_id` を返すため、クライアントは削除操作に別途 request_id を検索する必要がない。また、request_id は一意なので「自分が関与しているか」の認可チェックが 1 クエリで完結する（`sender_id = me OR receiver_id = me` の確認）。
+`Redis.fromEnv()` が環境変数未設定でエラーをスローするのは本番設定漏れの早期検出に有用。「設定なしでも動く」フォールバックはレートリミットを無効化する抜け穴になるため採用しない。開発環境では `.env.local` への設定を必須とする。
 
 ---
 
 ## 注意事項（実装前に必ず確認）
 
-### Next.js App Router の動作確認
+### `@upstash/ratelimit` の `reset` 値の単位
 
-AGENTS.md の指示通り、Route Handler・Server Component の API は `node_modules/next/dist/docs/` で確認すること。特に動的ルート `[id]` の params 取得方法はバージョンによって異なる可能性がある。
+`limit()` の戻り値 `reset` は **Unix epoch milliseconds**（ミリ秒）。
+`X-RateLimit-Reset` ヘッダーの慣例は**秒**のため、必ず `Math.ceil(reset / 1000)` で変換すること。ミリ秒のまま返すとクライアントが誤ったタイムスタンプを受け取る。
 
-### profiles.avatar_url の存在確認
+### Ratelimit インスタンスのスコープ
 
-`search_users` 関数・`FriendProfile` 型・各 API レスポンスが `avatar_url` を参照する。`profiles.avatar_url` が FEAT-002 Phase 1（PR #19）で追加済みであることをスキーマ（`supabase/schema.sql` または migration 履歴）で確認してから実装すること。
+`new Ratelimit(...)` と `Redis.fromEnv()` はモジュールスコープ（関数外）で初期化すること。Route Handler 関数内で毎リクエスト生成するとコネクション確立コストが発生し、性能劣化とリソースリークの原因になる。
 
-### `/friends` ページの middleware 除外確認
+### AGENTS.md の確認
 
-`middleware.ts` が未認証ユーザーを `/auth/login` にリダイレクトする保護パスの設定を確認する。`/friends` が保護対象に含まれていない場合は追加が必要。Server Component 内の `createSessionClient()` 確認と二重になるが、environment.md の保護方針に揃えること。
+Route Handler の実装前に AGENTS.md の指示通り `node_modules/next/dist/docs/` を確認し、`NextResponse.json()` のシグネチャが想定通りかを確認すること。特にヘッダーの渡し方（第2引数の `headers` オブジェクト）はバージョン依存の可能性がある。
 
-### フレンド一覧取得クエリの実装
+### テスト環境
 
-`friend_requests` テーブルから「自分が sender または receiver で status = accepted」のレコードを取得し、相手側のプロフィールを JOIN して返す。クエリ例:
-
-```sql
-SELECT
-  fr.id AS request_id,
-  p.id, p.display_name, p.avatar_url
-FROM friend_requests fr
-JOIN profiles p ON p.id = CASE
-  WHEN fr.sender_id = {me} THEN fr.receiver_id
-  ELSE fr.sender_id
-END
-WHERE (fr.sender_id = {me} OR fr.receiver_id = {me})
-  AND fr.status = 'accepted';
-```
-
-Supabase JS クライアントでの JOIN 記法は複雑なため、`supabase.rpc()` で SQL 関数化することも検討する。
-
-### PATCH /api/friends/requests/[id] の認可チェック
-
-`accept` 操作は必ず「自分が `receiver_id`」のリクエストのみ許可する。`sender_id` 側が自分のリクエストを強制承認できないよう、UPDATE 前に `receiver_id = me` を検証する。`createAdminClient()` は RLS をバイパスするため、このチェックをコードで忘れると誰でも任意のリクエストを承認できる穴になる。
+既存の E2E テスト（`test/` 配下）でこのエンドポイントを叩いているものがある場合、Upstash Redis の接続が必要になる。テスト実行前に環境変数が設定されているか確認すること。設定がない場合は Redis クライアントの初期化でエラーになる。
 
 ---
 
-## 未解決事項（実装時に判断が必要）
+## 未解決事項
 
-### 1. ヘッダーコンポーネントのパス
+### Upstash Redis インスタンスの用意
 
-`app/_components/Header.tsx` が実際のパスかどうか確認すること。プロジェクト内のヘッダーコンポーネントを grep して特定してから修正する。
-
-### 2. search_users 関数の migration ファイル分割
-
-`friend_requests` テーブル作成と `search_users` 関数作成は同一 migration ファイルか別ファイルか、プロジェクトの migration 命名規則に従って判断する。
-
-### 3. フレンド一覧の空状態 UI
-
-フレンドがゼロ件のとき・受信リクエストがゼロ件のとき・検索結果がゼロ件のとき、それぞれの空状態メッセージを設ける。task.md に文言指定はないため実装者が決定してよい。既存の空状態パターン（他ページ）があれば揃えること。
+Upstash のアカウント作成とデータベース作成はダイチ側の作業。`UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` の値が揃い次第、`.env.local` と Vercel 環境変数に設定して実装を進める。値が揃う前でも実装自体は進められる（接続テストのみ後回し）。
