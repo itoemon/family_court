@@ -55,14 +55,13 @@ test('CRITICAL-L02: フレンド招待と承認', async ({ browser }) => {
     // ユーザー A がユーザー B を招待（/api/friends ベースのフィルタ）
     await pageA.waitForSelector('input[placeholder="表示名で絞り込む"]', { timeout: 5_000 });
     const searchInput = pageA.locator('input[placeholder="表示名で絞り込む"]');
-    // B のメールアドレスまたは表示名で検索（表示名が不明なため試行錯誤）
-    await searchInput.fill('e2e_user_b');
+    // フィルタなし（全フレンド表示）で招待ボタンを探す
+    await searchInput.fill('');
     await pageA.waitForTimeout(500);
     const inviteBtn = pageA.locator('button:has-text("招待")').first();
-    if (await inviteBtn.isVisible()) {
-      await inviteBtn.click();
-      await pageA.waitForSelector('text=招待しました', { timeout: 5_000 });
-    }
+    await expect(inviteBtn).toBeVisible({ timeout: 5_000 });
+    await inviteBtn.click();
+    await pageA.waitForSelector('text=招待しました', { timeout: 5_000 });
 
     // ユーザー B がログインして /laws ページにアクセス（FIX-1: 招待受信UIは/lawsページに表示）
     await loginAs(pageB, emailB, passB);
@@ -103,14 +102,13 @@ test('CRITICAL-L03: 改定案の提出と全員合意', async ({ browser }) => {
 
     // A が B を招待
     const searchInput = pageA.locator('input[placeholder="表示名で絞り込む"]');
-    if (await searchInput.isVisible({ timeout: 5_000 })) {
-      await searchInput.fill('e2e_user_b');
-      await pageA.waitForTimeout(500);
-      const inviteBtn = pageA.locator('button:has-text("招待")').first();
-      if (await inviteBtn.isVisible()) {
-        await inviteBtn.click();
-      }
-    }
+    await expect(searchInput).toBeVisible({ timeout: 5_000 });
+    await searchInput.fill('');
+    await pageA.waitForTimeout(500);
+    const inviteBtn = pageA.locator('button:has-text("招待")').first();
+    await expect(inviteBtn).toBeVisible({ timeout: 5_000 });
+    await inviteBtn.click();
+    await pageA.waitForTimeout(500);
 
     // B がログインして承認（/laws ページの pending 招待セクションから）
     await loginAs(pageB, emailB, passB);
@@ -167,15 +165,13 @@ test('CRITICAL-L04: オーナー権の移譲', async ({ browser }) => {
 
     // A が B を招待
     const searchInput = pageA.locator('input[placeholder="表示名で絞り込む"]');
-    if (await searchInput.isVisible({ timeout: 5_000 })) {
-      await searchInput.fill('e2e_user_b');
-      await pageA.waitForTimeout(500);
-      const inviteBtn = pageA.locator('button:has-text("招待")').first();
-      if (await inviteBtn.isVisible()) {
-        await inviteBtn.click();
-        await pageA.waitForSelector('text=招待しました', { timeout: 5_000 });
-      }
-    }
+    await expect(searchInput).toBeVisible({ timeout: 5_000 });
+    await searchInput.fill('');
+    await pageA.waitForTimeout(500);
+    const inviteBtn = pageA.locator('button:has-text("招待")').first();
+    await expect(inviteBtn).toBeVisible({ timeout: 5_000 });
+    await inviteBtn.click();
+    await pageA.waitForSelector('text=招待しました', { timeout: 5_000 });
 
     // B がログインして /laws ページで承認（/laws の pending 招待セクションから）
     await loginAs(pageB, emailB, passB);
