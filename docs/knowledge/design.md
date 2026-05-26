@@ -2,164 +2,610 @@
 
 ## 概要（変更の目的・背景）
 
-`GET /api/users/search` は認証済みユーザーなら無制限に呼び出せる。`display_name ILIKE 'q%'` の前方一致検索を `q=a`, `q=b`, ..., `q=aa` と網羅的に実行することで、全登録ユーザーの `display_name`・`id`・`avatar_url` を体系的に列挙できる（MEDIUM-001）。
+FEAT-003「法律作成機能」を実装する。ユーザーが独自のルールセット（法律）を作成し、フレンド間で施行・改定できる仕組みを提供する。法律の改定・削除は全メンバーの合意制とすることで、一方的なルール変更を防ぎ、関係者全員の合意形成を促す。
 
-本設計では Upstash Redis + `@upstash/ratelimit` を用いて `user.id` 単位のレートリミットを実装し、プライバシーリスクを低減する。
-
----
-
-## API 仕様（変更・追加するエンドポイントのリクエスト/レスポンス定義）
-
-### GET /api/users/search（変更）
-
-- 認証: 必須（セッション）
-- クエリパラメータ: `q`（1〜100 文字の文字列、必須）
-- **レートリミット: `user.id` 単位で 1 分間に最大 30 リクエストまで**
-- Response 200:
-  ```json
-  [
-    { "id": "uuid", "display_name": "string", "avatar_url": "string | null" }
-  ]
-  ```
-- Error レスポンス:
-
-| ステータス | 条件 | レスポンスボディ |
-|---|---|---|
-| 400 | `q` 欠如または不正 | `{ "error": "..." }` |
-| 401 | 未認証 | `{ "error": "Unauthorized" }` |
-| 429 | レートリミット超過 | `{ "error": "Too Many Requests" }` |
-
-- **429 レスポンスヘッダー**:
-  ```
-  X-RateLimit-Limit:     30
-  X-RateLimit-Remaining: 0
-  X-RateLimit-Reset:     <Unix epoch seconds>
-  Retry-After:           <残り秒数>
-  ```
-
-既存の 200/400/401 の挙動は変更しない。変更箇所は認証確認直後にレートリミットチェックを挿入する一点のみ。
+FEAT-002 Phase 2（フレンド機能）が前提となるが、PR #20 でマージ済みであることを git 履歴から確認している。
 
 ---
 
-## データモデル（DB スキーマ・型定義の変更）
+## API 仕様
 
-DB スキーマの変更なし。
+### 基本方針
 
-### 環境変数の追加
-
-| 変数名 | 必須 | 用途 |
-|---|---|---|
-| `UPSTASH_REDIS_REST_URL` | ✅ | Upstash Redis の REST エンドポイント |
-| `UPSTASH_REDIS_REST_TOKEN` | ✅ | Upstash Redis の認証トークン |
-
-`NEXT_PUBLIC_` 接頭辞なし（サーバー専用）。Vercel のプロジェクト設定にも同様に登録が必要（ダイチ側作業）。
+- 全エンドポイントで認証必須（`createSessionClient()` でユーザー確認）
+- 書き込みはすべて `createAdminClient()` を使用（environment.md の規則に従う）
+- 認可はアプリケーション層で行う（RLS に委ねない）
 
 ---
 
-## コンポーネント設計（新設・変更するファイルの責務と仕様）
+### GET /api/laws
 
-### 変更ファイル
+自分がメンバーの法律一覧を返す。
 
-```
-app/
-  api/
-    users/
-      search/
-        route.ts   ← レートリミット処理を追加（変更）
-```
-
-新設ファイルなし。
-
-### app/api/users/search/route.ts の変更仕様
-
-**処理フロー（変更後）**:
-
-```
-1. セッション確認（createSessionClient）
-   → 未認証なら 401
-
-2. レートリミットチェック（Upstash Redis）
-   → 制限超過なら 429（X-RateLimit-* ヘッダー付き）
-
-3. クエリパラメータ検証（q の存在・長さ）
-   → 不正なら 400
-
-4. search_users RPC 呼び出し
-   → 結果を 200 で返す
+**レスポンス**
+```json
+[
+  {
+    "id": "uuid",
+    "name": "法律名",
+    "article": "条文テキスト",
+    "owner_id": "uuid",
+    "owner_name": "表示名",
+    "member_count": 3,
+    "has_active_proposal": true,
+    "created_at": "ISO8601"
+  }
+]
 ```
 
-**レートリミッターの初期化**（モジュールスコープで 1 度だけ生成）:
+---
 
-```typescript
-// アルゴリズム: slidingWindow（固定窓と比べてリセット直後の急増を防ぐ）
-// 識別子: user.id（IP は NAT・プロキシで共有されるため不適切）
-const ratelimit = new Ratelimit({
-  redis: Redis.fromEnv(),
-  limiter: Ratelimit.slidingWindow(30, "1 m"),
-  analytics: false,  // Upstash の使用量分析は不要
-});
-```
+### POST /api/laws
 
-**429 返却時のヘッダー生成**:
+法律を新規作成する。作成者がオーナー兼メンバーになる。
 
-`@upstash/ratelimit` の `limit()` は `{ success, limit, remaining, reset }` を返す。`reset` は Unix epoch milliseconds であるため、秒換算して `X-RateLimit-Reset` と `Retry-After` に使用する。
-
-```typescript
-const { success, limit, remaining, reset } = await ratelimit.limit(userId);
-if (!success) {
-  const resetSec = Math.ceil(reset / 1000);
-  const retryAfter = Math.max(0, resetSec - Math.floor(Date.now() / 1000));
-  return NextResponse.json(
-    { error: "Too Many Requests" },
-    {
-      status: 429,
-      headers: {
-        "X-RateLimit-Limit":     String(limit),
-        "X-RateLimit-Remaining": String(remaining),
-        "X-RateLimit-Reset":     String(resetSec),
-        "Retry-After":           String(retryAfter),
-      },
-    }
-  );
+**リクエスト**
+```json
+{
+  "name": "法律名（必須・最大100文字）",
+  "article": "条文（必須・最大2000文字）"
 }
 ```
 
-### パッケージ追加
+**レスポンス**
+```json
+{ "id": "uuid" }
+```
+
+**エラー**
+| ステータス | 条件 |
+|-----------|------|
+| 400 | name または article が空、文字数超過 |
+| 401 | 未認証 |
+
+---
+
+### GET /api/laws/[id]
+
+法律の詳細を返す。メンバーのみアクセス可。
+
+**レスポンス**
+```json
+{
+  "id": "uuid",
+  "name": "法律名",
+  "article": "条文",
+  "owner_id": "uuid",
+  "members": [
+    { "user_id": "uuid", "display_name": "名前", "avatar_url": "url", "joined_at": "ISO8601" }
+  ],
+  "pending_invitations": [
+    { "id": "uuid", "invitee_id": "uuid", "invitee_name": "名前" }
+  ],
+  "active_proposal": {
+    "id": "uuid",
+    "proposal_type": "amendment | deletion",
+    "proposed_by": "uuid",
+    "proposed_article": "文字列 | null",
+    "created_at": "ISO8601",
+    "votes": [
+      { "user_id": "uuid", "approved": true, "voted_at": "ISO8601" }
+    ]
+  }
+}
+```
+
+`active_proposal` は提案がない場合 `null`。
+
+**エラー**
+| ステータス | 条件 |
+|-----------|------|
+| 401 | 未認証 |
+| 403 | メンバーでない |
+| 404 | 法律が存在しない |
+
+---
+
+### POST /api/laws/[id]/invitations
+
+フレンドをメンバーに招待する（オーナーのみ）。
+
+**リクエスト**
+```json
+{ "invitee_id": "uuid" }
+```
+
+**レスポンス**
+```json
+{ "id": "uuid" }
+```
+
+**エラー**
+| ステータス | 条件 |
+|-----------|------|
+| 400 | invitee_id が UUID 形式でない |
+| 403 | 呼び出し元がオーナーでない |
+| 404 | invitee_id のユーザーが存在しない |
+| 409 | フレンドでない / すでにメンバー / 招待済み（pending） |
+
+---
+
+### PATCH /api/laws/[id]/invitations/[invId]
+
+招待を承認または拒否する（招待対象本人のみ）。
+
+**リクエスト**
+```json
+{ "status": "accepted | rejected" }
+```
+
+承認時は `law_members` にレコードを追加する。
+
+**エラー**
+| ステータス | 条件 |
+|-----------|------|
+| 400 | status が不正値 |
+| 403 | 招待の invitee_id が自分でない |
+| 404 | 招待が存在しない |
+| 409 | すでに処理済みの招待 |
+
+---
+
+### DELETE /api/laws/[id]/members/me
+
+自分が退会する（オーナー以外のメンバーのみ）。
+
+退会処理の順序：
+1. `law_proposal_votes` から自分の投票を削除（進行中の提案がある場合）
+2. `law_members` からレコードを削除
+3. 進行中の提案があれば合意チェック → 合意達成時は提案を実行
+
+**エラー**
+| ステータス | 条件 |
+|-----------|------|
+| 403 | オーナーが退会しようとしている（先に移譲が必要） |
+| 404 | メンバーでない |
+
+---
+
+### PATCH /api/laws/[id]/owner
+
+オーナー権を移譲する（現オーナーのみ）。
+
+**リクエスト**
+```json
+{ "new_owner_id": "uuid" }
+```
+
+new_owner_id は現在のメンバーである必要がある。移譲後、前オーナーは一般メンバーになる（`law_members` のレコードは保持）。
+
+**エラー**
+| ステータス | 条件 |
+|-----------|------|
+| 403 | 呼び出し元がオーナーでない |
+| 409 | new_owner_id がメンバーでない |
+
+---
+
+### POST /api/laws/[id]/proposals
+
+改定案または削除提案を作成する。
+
+**リクエスト**
+```json
+{
+  "proposal_type": "amendment | deletion",
+  "proposed_article": "改定後条文（amendment 時は必須・最大2000文字）"
+}
+```
+
+**認可**
+- `amendment`: メンバーなら誰でも可
+- `deletion`: オーナーのみ
+
+**エラー**
+| ステータス | 条件 |
+|-----------|------|
+| 400 | proposal_type が不正 / amendment 時に proposed_article が空または超過 |
+| 403 | メンバーでない / deletion なのに非オーナー |
+| 409 | 既に進行中の提案が存在する |
+
+---
+
+### DELETE /api/laws/[id]/proposals/[propId]
+
+提案を取り下げる（オーナーのみ）。関連する `law_proposal_votes` は CASCADE 削除。
+
+**エラー**
+| ステータス | 条件 |
+|-----------|------|
+| 403 | オーナーでない |
+| 404 | 提案が存在しない |
+
+---
+
+### POST /api/laws/[id]/proposals/[propId]/votes
+
+提案に投票する（メンバーのみ）。同一メンバーが再投票した場合は上書きする（UPSERT）。
+
+**リクエスト**
+```json
+{ "approved": true }
+```
+
+**合意チェックロジック（投票後に毎回実行）**
 
 ```
-@upstash/ratelimit   # レートリミット実装
-@upstash/redis       # Upstash Redis REST クライアント（@upstash/ratelimit の peer dependency）
+全メンバーの承認票数 = 全メンバー数 → 合意成立
+  amendment の場合: laws.article = proposed_article, laws.updated_at = now(), 提案を削除
+  deletion  の場合: laws レコードを削除（CASCADE で全関連テーブル削除）
+```
+
+**エラー**
+| ステータス | 条件 |
+|-----------|------|
+| 403 | メンバーでない |
+| 404 | 提案が存在しない |
+
+---
+
+## データモデル
+
+### 新設テーブル
+
+```sql
+-- 法律本体
+CREATE TABLE public.laws (
+  id          uuid         DEFAULT gen_random_uuid() PRIMARY KEY,
+  name        varchar(100) NOT NULL,
+  article     text         NOT NULL,
+  owner_id    uuid         NOT NULL REFERENCES public.profiles(id) ON DELETE RESTRICT,
+  created_at  timestamptz  DEFAULT now() NOT NULL,
+  updated_at  timestamptz  DEFAULT now() NOT NULL,
+  CONSTRAINT laws_name_not_empty    CHECK (char_length(name) >= 1),
+  CONSTRAINT laws_article_max_len   CHECK (char_length(article) <= 2000)
+);
+
+-- メンバー（オーナーを含む全参加者）
+CREATE TABLE public.law_members (
+  id        uuid        DEFAULT gen_random_uuid() PRIMARY KEY,
+  law_id    uuid        NOT NULL REFERENCES public.laws(id)    ON DELETE CASCADE,
+  user_id   uuid        NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  joined_at timestamptz DEFAULT now() NOT NULL,
+  UNIQUE(law_id, user_id)
+);
+
+-- 招待（pending / accepted / rejected）
+CREATE TABLE public.law_invitations (
+  id         uuid        DEFAULT gen_random_uuid() PRIMARY KEY,
+  law_id     uuid        NOT NULL REFERENCES public.laws(id)    ON DELETE CASCADE,
+  invitee_id uuid        NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  status     varchar(10) NOT NULL DEFAULT 'pending',
+  invited_at timestamptz DEFAULT now() NOT NULL,
+  CONSTRAINT law_invitations_status CHECK (status IN ('pending', 'accepted', 'rejected')),
+  UNIQUE(law_id, invitee_id)
+);
+
+-- 提案（改定案 / 削除提案。1法律につき同時に1件のみ）
+CREATE TABLE public.law_proposals (
+  id               uuid        DEFAULT gen_random_uuid() PRIMARY KEY,
+  law_id           uuid        NOT NULL REFERENCES public.laws(id)    ON DELETE CASCADE,
+  proposal_type    varchar(10) NOT NULL,
+  proposed_by      uuid        NOT NULL REFERENCES public.profiles(id) ON DELETE RESTRICT,
+  proposed_article text,                    -- deletion 時は NULL
+  created_at       timestamptz DEFAULT now() NOT NULL,
+  CONSTRAINT law_proposals_type CHECK (proposal_type IN ('amendment', 'deletion')),
+  CONSTRAINT law_proposals_article_required
+    CHECK (proposal_type != 'amendment' OR (proposed_article IS NOT NULL AND char_length(proposed_article) <= 2000)),
+  UNIQUE(law_id)   -- 同時に1件の提案のみ許可
+);
+
+-- 提案への投票
+CREATE TABLE public.law_proposal_votes (
+  id          uuid        DEFAULT gen_random_uuid() PRIMARY KEY,
+  proposal_id uuid        NOT NULL REFERENCES public.law_proposals(id) ON DELETE CASCADE,
+  user_id     uuid        NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  approved    boolean     NOT NULL,
+  voted_at    timestamptz DEFAULT now() NOT NULL,
+  UNIQUE(proposal_id, user_id)
+);
+```
+
+### インデックス
+
+```sql
+CREATE INDEX ON public.law_members(user_id);           -- /api/laws 一覧取得
+CREATE INDEX ON public.law_invitations(invitee_id);    -- 招待通知取得
+CREATE INDEX ON public.law_proposal_votes(proposal_id); -- 合意チェック
+```
+
+### 既存テーブルへの影響
+
+変更なし。`friend_requests` テーブル（FEAT-002）は招待時のフレンド確認にのみ参照する（JOIN のみ、書き込みなし）。
+
+### 型定義（TypeScript）
+
+`lib/types.ts` に以下を追加する。
+
+```typescript
+export type ProposalType = 'amendment' | 'deletion';
+export type InvitationStatus = 'pending' | 'accepted' | 'rejected';
+
+export interface Law {
+  id: string;
+  name: string;
+  article: string;
+  owner_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LawMember {
+  id: string;
+  law_id: string;
+  user_id: string;
+  joined_at: string;
+}
+
+export interface LawInvitation {
+  id: string;
+  law_id: string;
+  invitee_id: string;
+  status: InvitationStatus;
+  invited_at: string;
+}
+
+export interface LawProposal {
+  id: string;
+  law_id: string;
+  proposal_type: ProposalType;
+  proposed_by: string;
+  proposed_article: string | null;
+  created_at: string;
+}
+
+export interface LawProposalVote {
+  id: string;
+  proposal_id: string;
+  user_id: string;
+  approved: boolean;
+  voted_at: string;
+}
 ```
 
 ---
 
-## セキュリティ設計（認証・認可・入力検証の方針）
+## コンポーネント設計
 
-### レートリミット識別子の選定
+### ファイル構成
 
-| 識別子 | メリット | デメリット |
-|---|---|---|
-| `user.id`（採用） | 認証済みユーザーを正確に識別できる。NAT・VPN・プロキシの影響を受けない | 複数デバイスで共有される（意図通り） |
-| IP アドレス | 実装が簡単 | NAT 環境で複数ユーザーが同一 IP を共有し、無関係ユーザーに影響が出る |
+```
+app/
+  laws/
+    page.tsx                      # Server Component: 法律一覧
+    new/
+      page.tsx                    # Server Component: フォームページ
+      _components/
+        LawForm.tsx               # Client Component: 作成フォーム
+    [id]/
+      page.tsx                    # Server Component: 法律詳細
+      _components/
+        ArticleSection.tsx        # 条文・メタ情報表示
+        MemberList.tsx            # メンバー一覧・退会・移譲ボタン (Client)
+        InvitePanel.tsx           # フレンド検索・招待 (Client, オーナーのみ表示)
+        ProposalPanel.tsx         # 提案表示・投票・取り下げ (Client)
+        OwnerTransferModal.tsx    # オーナー移譲選択モーダル (Client)
 
-本エンドポイントは認証必須のため `user.id` が適切。task.md 記載の通り。
+api/
+  laws/
+    route.ts                      # GET, POST
+    [id]/
+      route.ts                    # GET
+      invitations/
+        route.ts                  # POST
+        [invId]/
+          route.ts                # PATCH
+      members/
+        me/
+          route.ts                # DELETE
+      owner/
+        route.ts                  # PATCH
+      proposals/
+        route.ts                  # POST
+        [propId]/
+          route.ts                # DELETE
+          votes/
+            route.ts              # POST
+```
 
-### Redis キーの構造
+### 各コンポーネントの責務
 
-`@upstash/ratelimit` がデフォルトで `{prefix}:{identifier}` 形式でキーを管理する。デフォルトプレフィックスは `@upstash/ratelimit`。明示的な名前空間設定は不要（エンドポイントが 1 つのため）。
+**`app/laws/page.tsx`（Server Component）**
+- `createSessionClient()` でセッション取得 → 未認証時は redirect
+- `law_members` JOIN `laws` JOIN `profiles（owner）` で一覧取得
+- 有効な提案の有無をバッジ表示
+- 作成ボタンを `/laws/new` へリンク
 
-### 環境変数未設定時の挙動
+**`app/laws/new/_components/LawForm.tsx`（Client Component）**
+- name（max 100）・article（max 2000）の controlled input
+- 文字数カウンター表示
+- POST /api/laws → 成功時 `router.push('/laws/[id]')`
+- クライアント側でも文字数チェック（UX 向上のため）
 
-`Redis.fromEnv()` は `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` が未設定の場合にエラーをスローする。これは本番環境での設定漏れを早期検出するため**意図した挙動**とし、フォールバック（レートリミットなしで通過）は設けない。開発環境では `.env.local` に設定すること。
+**`app/laws/[id]/page.tsx`（Server Component）**
+- `createSessionClient()` で認証確認
+- `law_members` でメンバー確認 → 非メンバーは 403 相当にリダイレクト
+- 法律詳細・メンバー・招待・提案・投票をまとめて取得
+- ArticleSection, MemberList, InvitePanel（オーナーのみ）, ProposalPanel をレンダリング
+
+**`InvitePanel.tsx`（Client Component）**
+- 既存の `/api/users/search` を使ったフレンド検索 UI（`q` 入力）
+- 検索結果のうち、既存メンバー・招待済みを除外する（API 側でフィルタ）
+- POST /api/laws/[id]/invitations
+
+**`ProposalPanel.tsx`（Client Component）**
+- 現在の提案（amendment / deletion）と投票状況を表示
+- 「賛成」ボタン → POST /api/laws/[id]/proposals/[propId]/votes `{ approved: true }`
+- オーナーの「取り下げ」ボタン → DELETE /api/laws/[id]/proposals/[propId]
+- 合意成立時のレスポンスを受け取ったら `router.refresh()` で画面更新
+- 提案なし + メンバーの場合: 「改定案を提出する」ボタン
+- 提案なし + オーナーの場合: 上記に加え「削除を提案する」ボタン
+
+**`MemberList.tsx`（Client Component）**
+- メンバー一覧（アバター・表示名・参加日時）
+- 自分の行（非オーナー）に「退会する」ボタン → DELETE /api/laws/[id]/members/me
+- オーナーの行（自分がオーナー時）に「オーナー権を移譲」ボタン → `OwnerTransferModal` を開く
+
+**`OwnerTransferModal.tsx`（Client Component）**
+- 現メンバー一覧から移譲先を選択
+- PATCH /api/laws/[id]/owner → 成功時に `router.refresh()`
+
+### middleware.ts 変更
+
+`/laws` および `/laws/**` を認証保護対象パスに追加する（現状の保護パスリストを確認の上追記）。
+
+---
+
+## セキュリティ設計
+
+### 認証・認可
+
+| 操作 | 認可条件 |
+|------|---------|
+| 法律一覧取得 | 認証済み（自分がメンバーの法律のみ返す） |
+| 法律作成 | 認証済み |
+| 法律詳細取得 | 認証済み + メンバー |
+| 招待作成 | 認証済み + オーナー + 対象がフレンド |
+| 招待承認/拒否 | 認証済み + invitee_id が自分 |
+| 退会 | 認証済み + メンバー + オーナーでない |
+| オーナー移譲 | 認証済み + 現オーナー + 移譲先がメンバー |
+| 改定案作成 | 認証済み + メンバー |
+| 削除提案作成 | 認証済み + オーナー |
+| 提案取り下げ | 認証済み + オーナー |
+| 投票 | 認証済み + メンバー |
+
+### 入力検証
+
+- name: 空文字禁止、最大 100 文字（アプリ層 + DB CHECK 制約）
+- article / proposed_article: 空文字禁止、最大 2000 文字（アプリ層 + DB CHECK 制約）
+- proposal_type: `'amendment' | 'deletion'` の列挙チェック（アプリ層 + DB CHECK 制約）
+- invitee_id / new_owner_id: UUID v4 形式を正規表現でチェック
+
+### RLS ポリシー
+
+全テーブルで RLS 有効。書き込みは API Route の `createAdminClient()` 経由で行い、RLS をバイパスする。Server Component からの読み取りは `createSessionClient()` を使用し、以下のポリシーで保護する。
+
+```sql
+ALTER TABLE public.laws             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.law_members      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.law_invitations  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.law_proposals    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.law_proposal_votes ENABLE ROW LEVEL SECURITY;
+
+-- laws: 自分がメンバーの法律のみ
+CREATE POLICY laws_select_member ON public.laws FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.law_members
+      WHERE law_id = laws.id AND user_id = auth.uid()
+    )
+  );
+
+-- law_members: 同じ法律のメンバーなら閲覧可
+CREATE POLICY law_members_select ON public.law_members FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.law_members lm2
+      WHERE lm2.law_id = law_members.law_id AND lm2.user_id = auth.uid()
+    )
+  );
+
+-- law_invitations: 招待対象本人またはオーナーのみ
+CREATE POLICY law_invitations_select ON public.law_invitations FOR SELECT
+  USING (
+    invitee_id = auth.uid()
+    OR EXISTS (
+      SELECT 1 FROM public.laws
+      WHERE laws.id = law_invitations.law_id AND laws.owner_id = auth.uid()
+    )
+  );
+
+-- law_proposals: メンバーのみ
+CREATE POLICY law_proposals_select ON public.law_proposals FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.law_members
+      WHERE law_id = law_proposals.law_id AND user_id = auth.uid()
+    )
+  );
+
+-- law_proposal_votes: メンバーのみ
+CREATE POLICY law_proposal_votes_select ON public.law_proposal_votes FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.law_proposals lp
+      JOIN public.law_members lm ON lm.law_id = lp.law_id
+      WHERE lp.id = law_proposal_votes.proposal_id AND lm.user_id = auth.uid()
+    )
+  );
+```
+
+`anon` ロールへの GRANT は付与しない（LOW-001 の教訓を踏まえ、最小権限の原則を徹底）。
+
+### フレンド確認ロジック（招待時）
+
+```typescript
+// friend_requests テーブルを参照（FEAT-002 の成果物）
+const { data: friendship } = await adminClient
+  .from('friend_requests')
+  .select('id')
+  .or(
+    `and(sender_id.eq.${ownerId},receiver_id.eq.${inviteeId}),` +
+    `and(sender_id.eq.${inviteeId},receiver_id.eq.${ownerId})`
+  )
+  .eq('status', 'accepted')
+  .maybeSingle();
+
+if (!friendship) {
+  return Response.json({ error: 'フレンドではありません' }, { status: 409 });
+}
+```
 
 ---
 
 ## 制約・前提条件
 
-1. **Upstash Redis インスタンスの事前作成**: Upstash コンソールでデータベースを作成し、REST URL とトークンを取得する作業はダイチ側の作業。ビルドは環境変数が設定された状態を前提に実装する。
+### 機能上の制約
 
-2. **Vercel 環境変数の設定**: `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` を Vercel プロジェクトの Environment Variables に追加する必要がある。Production・Preview・Development の全環境に設定すること（ダイチ側作業）。
+**オーナーは退会不可**
+アプリ層で `owner_id = user_id` の場合に DELETE /api/laws/[id]/members/me を 403 で弾く。UI でも退会ボタンをオーナーには表示しない。オーナー権の移譲後に退会できる旨をメッセージで案内する。
 
-3. **既存テストへの影響**: レートリミットチェックは `user.id` を Redis に送信するため、テスト環境で Upstash Redis に接続できない場合はテストが失敗する。テストでは環境変数をスタブするか、テスト専用の Upstash 無料インスタンスを使用すること。
+**同時提案の排他制御**
+`law_proposals` の `UNIQUE(law_id)` 制約で DB レベルで保証する。アプリ層では PostgreSQL エラーコード `23505`（unique violation）を 409 でハンドルする。
 
-4. **スコープ外**: 他エンドポイントへのレートリミット適用・IP 単位レートリミット・Upstash Redis 以外の実装は今回対象外（task.md 記載の通り）。
+**合意チェックの競合リスク**
+複数メンバーが同時に最後の承認票を投じた場合、両リクエストで合意チェックが実行される。家族・カップルという少人数・低頻度の利用を前提とし、現時点はアプリ層チェックで対応する。将来的にユーザー数が増える場合は PostgreSQL 関数（`FOR UPDATE` ロック付き）による原子的チェックへの移行を検討すること。
+
+**退会後の合意自動チェック**
+メンバーが退会すると、残存メンバーだけで全員承認済みになるケースがある（例: 3人中2人承認済みの状態で1人退会）。退会処理の中で合意チェックを実行し、成立していれば提案を実行する。
+
+**提案者退会後の扱い**
+`law_proposals.proposed_by` は `ON DELETE RESTRICT` とする。プロフィール削除は制限されるが、法律からの退会（`law_members` からの削除）は可能なため、提案者が退会した場合でも提案は残存する。オーナーが取り下げられる。
+
+**deletion 時の proposed_article**
+`proposal_type = 'deletion'` のとき `proposed_article` は NULL を許容する。DB の CHECK 制約で `amendment` 時のみ必須とする。
+
+### 前提条件
+
+- FEAT-002 Phase 2（`friend_requests` テーブル、フレンド機能）が稼働済みであること
+- `profiles` テーブルに `display_name`・`avatar_url` カラムが存在すること
+- `middleware.ts` に `/laws` および `/laws/**` の保護が追加されること
+- Supabase Storage は使用しない（法律はテキストデータのみ）
+
+### スコープ外（今回実装しない）
+
+- 改定案の複数同時提出
+- メール通知（招待・合意成立の通知）
+- 部分改定 UI（条文の一部のみ変更するインターフェース）
+- 法律の公開 Hub（FEAT-004）
+- 法律コメント・チャット機能

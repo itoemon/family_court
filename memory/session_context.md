@@ -12,57 +12,59 @@ metadata:
 
 ---
 
-## 最終更新: 2026-05-26（Stop フック自動更新 セッション 23 終了）
+## 最終更新: 2026-05-26（Stop フック自動更新 セッション 995e3434 終了）
 
 ### 現在のブランチ・PR 状態
 
-- ブランチ: `feature/20260526-135838`（FEAT-002 Phase 2 実装・テスト・監査 すべて完了）
-- **HEAD は `5ba467b`**（docs(handoff): オーディ引き継ぎメモ更新）
-- 未コミット変更あり: `docs/backlog.md`, `docs/knowledge/design.md`, `docs/knowledge/handoff/arch-to-eng.md`, `docs/knowledge/handoff/test-to-aud.md`, `docs/knowledge/task.md`, `memory/session_context.md`
-- 未追跡ファイルあり: `docs/knowledge/audit-log/audit_20260526_142833.md`, `docs/knowledge/test-log/test_20260526_141641.md`, `tests/e2e/feat002_friends.spec.ts`
-- **PR 未作成**（次セッションで作成）
+- ブランチ: `feature/20260526-172950`（FEAT-003 バグ修正ブランチ）
+- HEAD: `dcdc3e8` — `docs(FEAT-003): 監査レポート追加・修正指示を task.md に記載`
+- **未コミット（staged / unstaged / untracked）**:
+  - `app/api/laws/[id]/invitations/[invId]/route.ts`（**staged** — index 変更済み）
+  - `app/laws/page.tsx`（unstaged 差分あり）
+  - `app/laws/_components/`（untracked — 新規ディレクトリ）
+  - `docs/knowledge/handoff/test-to-aud.md`（unstaged 差分あり）
+  - `memory/session_context.md`（unstaged 差分あり）
+  - `tests/e2e/laws.spec.ts`（unstaged 差分あり）
+  - `scripts/check_tables.js`（untracked）
 
-### 直近セッションでやったこと（2026-05-26 セッション 18〜21）
+### 直近セッションでやったこと（2026-05-26 セッション 995e3434）
 
-- **FEAT-002 Phase 2 実装完了**（`3152720`）:
-  - フレンド機能 API・UI（検索・リクエスト送受信・承認/拒否/削除・一覧）
-  - migration: `20260526000002_feat002_phase2_friends.sql`
-- **FEAT-002 Phase 2 テスト完了**:
-  - CRITICAL-M01〜M04・FEAT-002 フレンド機能 5/5: 全通過
-  - テストレポート: `docs/knowledge/test-log/test_20260526_141641.md`
-- **FEAT-002 Phase 2 オーディ完了**（セッション 21）:
-  - 監査レポート: `docs/knowledge/audit-log/audit_20260526_142833.md`
-  - **判定: ✅ 通過**（HIGH 0件 / MEDIUM 1件 / LOW 2件 = 計 3件）
+- セッション引き継ぎファイルの更新のみ（リードによる定期更新）
+- **HIGH-001 修正が進行中の可能性が高い**:
+  - `app/laws/page.tsx`（unstaged 変更）・`app/laws/_components/`（新規 untracked）・`app/api/laws/[id]/invitations/[invId]/route.ts`（staged）が存在
+  - これらはエンジニアによる HIGH-001（`/laws/page.tsx` に pending 招待セクション追加）の実装途中と推定
+- HEAD コミットは前セッションから変化なし（dcdc3e8 のまま）
 
-### オーディ指摘サマリー（audit_20260526_142833.md）
+### オーディ所見サマリ（前回監査 audit_20260526_171952）
 
-| ID | 重大度 | 内容 |
-|---|---|---|
-| MEDIUM-001 | MEDIUM | `GET /api/users/search` に rate limiting なし → display_name を前方一致で全列挙可能 |
-| LOW-001 | LOW | `anon` ロールへの不要な SELECT 権限付与（migration:29）— RLS で保護中だが最小権限違反 |
-| LOW-002 | LOW | 存在しない receiver_id に対し FK 違反（23503）が未ハンドルで 500 返却（requests/route.ts:102-107）|
+| 重要度 | ID | 内容 |
+|--------|----|----|
+| HIGH | HIGH-001 | `/laws/page.tsx` に pending 招待セクションが存在しない。招待を受けたユーザーが通常ナビから招待を発見できない。task.md の FIX-1 は `/laws/page.tsx` を実装場所に指定していたが、実装は `/laws/[id]/page.tsx` にのみ追加された |
+| MEDIUM | MEDIUM-001 | L02/L03/L04 の critical アサーションが `if (await btn.isVisible())` で偽陽性。条件分岐を外して unconditional assertion に変更が必要 |
+| MEDIUM | MEDIUM-002 | `PATCH /api/laws/[id]/invitations/[invId]` で URL の `[id]`（lawId）が検証に未使用（path confusion 状態） |
+| LOW | LOW-001 | URL パラメータ（lawId/propId/invId）の UUID バリデーション未実施 |
 
-- 通過条件（HIGH=0 / 合計≤5）満たすためパイプライン進行可能
-- **MEDIUM-001 の rate limiting は FEAT-003 実装前に対処を推奨**
+### 次のアクション（優先順）
+
+1. **未コミット変更を確認**: `app/laws/page.tsx` と `app/laws/_components/` の内容を見て HIGH-001 実装の完了度を判断
+2. 実装完了なら → **コミット + テスタで E2E 再テスト**
+3. 未完了・未着手なら → **エンジニア起動**（`./scripts/agents.sh engineer`）して HIGH-001 修正を依頼
+4. テスト全通過後 → **オーディで再監査**（MEDIUM-001/002 も確認）
+5. **全通過後 PR 作成** → `main` へ
+
+### FEAT-003 実装状況
+
+- **全 Step 実装・コミット完了** ✅
+- **Supabase マイグレーション適用済み** ✅
+- **E2E テスト: CRITICAL 8/8 通過（ただし偽陽性あり）** ⚠️
+- **オーディ監査: ❌ 不合格**（HIGH-001 修正がビルドに指示済み・実装確認が必要）
 
 ### 決定事項（引き継ぎ）
 
-- FEAT-002 Phase 2 スコープ（H-1〜H-4）は実装・テスト・監査すべて完了
-- **LOW-001/002 はこの PR（`feature/20260526-135838`）に直接修正してから PR 作成**（セッション 23 決定）
-- **MEDIUM-001（rate limiting / Upstash Redis）は次 PR に先送り**（外部依存を別議論にしたい）
-- **推奨タスク順**:
-  1. LOW-001/002 修正 → コミット → PR 作成 ← **今ここ**
-  2. PR マージ後 → FEAT-003（法律作成機能）— XL
-  3. FEAT-004（法案 Hub）— L
-  4. MON-001（クレジット制）— ユーザーが増えてから
-
-### 次のアクション
-
-1. **LOW-001 修正**: migration で `anon` への不要な SELECT GRANT を剥奪
-2. **LOW-002 修正**: `requests/route.ts:102-107` で FK エラー(23503) → 400 を返すよう修正
-3. 未追跡ファイルをコミットに含め **PR 作成**（ブランチ `feature/20260526-135838` → main）
-   - MEDIUM-001 対応は PR description に「次 PR で対処予定」と記載
-4. PR マージ後 → ブランチ削除（ローカル・リモート両方）→ FEAT-003 着手
+- 招待承認 UI の配置について: task.md は `/laws/page.tsx` に pending 招待セクションを置くよう指定していた（設計通りの実装が必要）
+- `/laws/[id]/page.tsx` の非メンバー分岐にも承認 UI は残す（詳細ページから直接承認できる UX として有効）
+- FEAT-002（Phase 1 / Phase 2）・LOW-001/002・MEDIUM-001 すべて完了・マージ済み
+- Upstash Redis は無料枠（1日 10,000 コマンド）で十分（env vars なし時は skip fallthrough）
 
 ### 覚えておくべき判断・経緯
 
@@ -75,11 +77,13 @@ metadata:
 - `brand-500` は使わない（WCAG AA 非対応）。プライマリは `brand-700/800` に統一済み
 - `avatars` バケット制限は migration で設定済み（magic bytes 検証は API Route 側でも実施）
 - アバター削除は magic bytes 検証より先に実行する（URL に `?t=` キャッシュバスターを含めない）
-- FEAT-003 の「フレンド依存」は招待制で回避可能（フレンド機能は FEAT-004 の方が必要性高い）
 - `search_users` 関数は `SECURITY DEFINER` で定義（`auth.users` JOIN のため）
 - `friend_requests` の UNIQUE INDEX は `(LEAST(a,b), GREATEST(a,b))` で双方向重複をブロック
 - 拒否（rejected）はレコード削除で処理（再送を許容するため）
-- `anon` ロールへの不要な SELECT 権限（LOW-001）は修正可能だが、RLS で現状保護されているため緊急度低
+- Upstash レートリミットは env vars なし時は `skip`（制限なし）で fallthrough する設計
+- FEAT-003 の法律 API では退会処理は「投票削除 → メンバー削除 → 合意チェック」の順序を厳守
+- InvitePanel は `/api/friends` で取得した一覧をローカルフィルタして招待済みを除外する設計（`/api/users/search` は使わない）
+- 招待承認 UI は `/laws/[id]/page.tsx` の非メンバー分岐内に加え、`/laws/page.tsx` にも pending 招待セクションを設置（HIGH-001 修正後）
 
 ### マージ済み PR（累計）
 
@@ -91,3 +95,5 @@ metadata:
 - PR #17: FEAT-001 igiari リネーム + IMP-002 色調統一（コパ指摘対応込み）
 - PR #18: LOW-001/002 + MEDIUM-001 + IMP-001 品質・アクセシビリティ修正
 - PR #19: FEAT-002-p1 プロフィールアイコン + 弁護人AIカスタム指示 ✅ 本番 DB 適用済み
+- PR #20: FEAT-002-p2 フレンド機能 + LOW-001/002 修正 ✅
+- PR #21: MEDIUM-001 `/api/users/search` レートリミット（Upstash Redis）✅

@@ -60,6 +60,30 @@
 --- (由来: audit_20260526_152517.md)
  (由来: audit_20260526_152517.md)
 
+### [MEDIUM-001] Server Component の読み取りに createAdminClient() を使用（app/laws/page.tsx、app/laws/[id]/page.tsx） (由来: audit_20260526_200752.md)
+ (由来: audit_20260526_200752.md)
+- **内容**: `app/laws/page.tsx` および `app/laws/[id]/page.tsx` は、認証確認後のすべての DB 読み取りに `createAdminClient()` を使用している。`design.md` の「Server Component からの読み取りは `createSessionClient()` を使用し、以下のポリシーで保護する」という仕様に反する。`createAdminClient()` は RLS をバイパスするため、SELECT ポリシー（`laws_select_member`、`law_invitations_select` 等）が適用されない。現状は各クエリにアプリ層フィルタ（`.eq("invitee_id", user.id)`、メンバーシップ確認後の `.in("id", lawIds)` 等）が正しく付与されており、データ漏洩は発生していない。しかし RLS による二重防御が機能せず、将来の開発者がアプリ層フィルタを誤って削除・省略した場合に即座にデータが露出するリスクがある。 (由来: audit_20260526_200752.md)
+- **影響範囲**: エンドユーザーへの直接影響は現時点でなし。ただし防御の単一障害点化により、メンテナンス時の誤実装がデータ漏洩に直結する。 (由来: audit_20260526_200752.md)
+- **修正案**: Server Component 内の DB 読み取りを `createSessionClient()` に切り替える。`laws/page.tsx` の `createAdminClient()` 呼び出し（line 13）を削除し、`createSessionClient()` の戻り値を用いてデータ取得に使う。`laws/[id]/page.tsx` も同様（line 20）。RLS ポリシーが SELECT を invitee 本人・メンバーのみに制限しているため、フィルタを省略しても安全な読み取りになる。 (由来: audit_20260526_200752.md)
+ (由来: audit_20260526_200752.md)
+--- (由来: audit_20260526_200752.md)
+-- (由来: audit_20260526_200752.md)
+### [LOW-001] URL パスパラメータの UUID バリデーション未実施（継続指摘） (由来: audit_20260526_200752.md)
+ (由来: audit_20260526_200752.md)
+- **内容**: 全 API ルートの `lawId`、`invId`、`propId` がリクエスト URL から取得した生の文字列のまま Supabase クエリの `.eq("id", ...)` に渡されている。招待 POST (`app/api/laws/[id]/invitations/route.ts:5`) の `invitee_id`・オーナー移譲 PATCH (`app/api/laws/[id]/owner/route.ts:5`) の `new_owner_id` はリクエストボディで UUID 形式を検証しているが、パスパラメータ側の検証は行われていない。Supabase は UUID 型カラムへの非 UUID 値を PostgreSQL エラーとして返すため、現時点で実際のデータ操作は発生しないが、エラーレスポンスの形式が不統一になる（PostgreSQL エラーが 500 として漏洩する可能性）。 (由来: audit_20260526_200752.md)
+- **影響範囲**: 悪意ある入力者が不正な文字列を渡した場合に Supabase エラーログが汚染される。データ漏洩・改ざんの直接リスクは低い。 (由来: audit_20260526_200752.md)
+- **修正案**: 各ルートの先頭で `UUID_REGEX.test(lawId)` 等のチェックを追加し、不正な場合は 400 を返す。`invitations/route.ts` に定義済みの `UUID_REGEX` を共通ユーティリティとして `lib/utils.ts` 等に移動して使い回す。 (由来: audit_20260526_200752.md)
+ (由来: audit_20260526_200752.md)
+--- (由来: audit_20260526_200752.md)
+-- (由来: audit_20260526_200752.md)
+### [LOW-002] PendingInvitations.tsx で HTTP レスポンスステータスを検査していない（app/laws/_components/PendingInvitations.tsx:29-36） (由来: audit_20260526_200752.md)
+ (由来: audit_20260526_200752.md)
+- **内容**: `respond` 関数内で `fetch(...)` の戻り値 (`Response`) を検査せず、常に `router.refresh()` を実行している。API が 403・404・500 を返した場合でもリフレッシュが走り、ユーザーはエラーメッセージを受け取れない。ページリフレッシュ後は招待が残ったまま表示されるため誤操作防止にはなるが、「なぜ消えないのか」が伝わらず連打を誘発する可能性がある。セキュリティ上の直接影響はないが、失敗時の招待重複クリックがサーバー側に余分なリクエストを送る。 (由来: audit_20260526_200752.md)
+- **影響範囲**: エンドユーザーへの UX 劣化。サーバー側の状態変化は発生しない（PATCH の冪等性により安全）。 (由来: audit_20260526_200752.md)
+- **修正案**: `const res = await fetch(...)` → `if (!res.ok) { /* エラーメッセージを state にセット */ return; }` を追加し、承認/拒否失敗時にインライン警告を表示する。 (由来: audit_20260526_200752.md)
+ (由来: audit_20260526_200752.md)
+--- (由来: audit_20260526_200752.md)
+
 ---
 
 #### [FEAT-003] 法律作成機能
