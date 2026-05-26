@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
-import { Case, Role, Argument, JudgeMessage, ContradictionWarning, DefenseMessage } from "@/lib/types";
+import { Case, Role, Argument, JudgeMessage, DefenseMessage } from "@/lib/types";
 import JudgeMessageBubble from "@/app/components/JudgeMessageBubble";
 import ContradictionWarningBubble from "@/app/components/ContradictionWarningBubble";
 import DefenseChat from "@/app/components/DefenseChat";
@@ -199,6 +199,7 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
 
   useEffect(() => {
     if (!caseId) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchDefenseMessages();
   }, [caseId, fetchDefenseMessages]);
 
@@ -257,7 +258,7 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
       <main className="min-h-screen bg-stone-50 flex flex-col items-center justify-center p-6">
         <div className="w-full max-w-md">
           <div className="text-center mb-8">
-            <div className="inline-flex items-center justify-center w-14 h-14 bg-indigo-100 rounded-2xl mb-4 text-2xl">⚖️</div>
+            <div className="inline-flex items-center justify-center w-14 h-14 bg-brand-100 rounded-2xl mb-4 text-2xl">⚖️</div>
             <h1 className="text-2xl font-bold text-stone-800">話し合いに招待されています</h1>
             <p className="mt-2 text-stone-500 text-sm">あなたの意見を聞かせてください</p>
           </div>
@@ -273,7 +274,7 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
               <p className="text-xs font-semibold text-stone-400 uppercase tracking-wider mb-4">参加方法を選んでください</p>
               <button
                 onClick={() => setJoinMode("login")}
-                className="w-full bg-indigo-400 hover:bg-indigo-300 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
+                className="w-full bg-brand-500 hover:bg-brand-600 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
               >
                 アカウントでログインして参加
               </button>
@@ -291,13 +292,13 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
               <button
                 onClick={handleJoinAsAccount}
                 disabled={loading}
-                className="w-full bg-indigo-400 hover:bg-indigo-300 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
+                className="w-full bg-brand-500 hover:bg-brand-600 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
               >
                 {loading ? "参加中..." : "ログインして参加する"}
               </button>
               <p className="text-center text-xs text-stone-400">
                 アカウントをお持ちでない方は
-                <Link href={`/auth/signup`} className="text-indigo-400 font-semibold ml-1">新規登録</Link>
+                <Link href={`/auth/signup`} className="text-brand-600 font-semibold ml-1">新規登録</Link>
               </p>
               {error && <p className="text-rose-500 text-sm">{error}</p>}
               <button onClick={() => setJoinMode("choose")} className="w-full text-stone-400 text-xs py-1">← 戻る</button>
@@ -314,14 +315,14 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
                   onChange={(e) => setJoinName(e.target.value)}
                   placeholder="例：はなこ"
                   required
-                  className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-transparent transition text-sm"
+                  className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-transparent transition text-sm"
                 />
               </div>
               {error && <p className="text-rose-500 text-sm">{error}</p>}
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full bg-indigo-400 hover:bg-indigo-300 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
+                className="w-full bg-brand-500 hover:bg-brand-600 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
               >
                 {loading ? "参加中..." : "ゲストで参加する"}
               </button>
@@ -392,7 +393,7 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
             onClick={() => setActiveView("dialog")}
             className={`flex-1 py-2 rounded-xl text-sm font-medium transition-colors ${
               activeView === "dialog"
-                ? "bg-indigo-100 text-indigo-700"
+                ? "bg-brand-100 text-brand-700"
                 : "bg-white text-stone-400 border border-stone-200"
             }`}
           >
@@ -429,7 +430,7 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
                 <p className="text-stone-500 text-sm mb-4">相手の参加を待っています...</p>
                 <button
                   onClick={copyShareLink}
-                  className="bg-rose-400 hover:bg-rose-300 text-white font-semibold px-6 py-2.5 rounded-xl text-sm transition-colors"
+                  className="bg-brand-500 hover:bg-brand-600 text-white font-semibold px-6 py-2.5 rounded-xl text-sm transition-colors"
                 >
                   {copied ? "✓ コピー済み" : "招待リンクをコピー"}
                 </button>
@@ -449,13 +450,13 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
               return (
                 <div key={arg.id}>
                   <div className={`flex flex-col ${isPlaintiff ? "items-start" : "items-end"}`}>
-                    <p className={`text-xs mb-1 px-1 ${isPlaintiff ? "text-indigo-400" : "text-rose-400"}`}>
+                    <p className={`text-xs mb-1 px-1 ${isPlaintiff ? "text-brand-600" : "text-rose-400"}`}>
                       {name}
                       <span className="text-stone-300 ml-1.5">
                         {PHASE_LABELS[arg.phase]}{arg.phase === "argument" && ` ${arg.round}回目`}
                       </span>
                     </p>
-                    <div className={`max-w-sm rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap shadow-sm ${isPlaintiff ? "bg-indigo-50 text-indigo-900 rounded-tl-sm" : "bg-rose-50 text-rose-900 rounded-tr-sm"}`}>
+                    <div className={`max-w-sm rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap shadow-sm ${isPlaintiff ? "bg-brand-50 text-brand-900 rounded-tl-sm" : "bg-rose-50 text-rose-900 rounded-tr-sm"}`}>
                       {arg.content}
                     </div>
                   </div>
@@ -486,7 +487,7 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
               <form onSubmit={handleSubmitArgument} className="max-w-2xl mx-auto px-4 py-4 space-y-2">
                 <p className="text-xs text-stone-400">
                   あなたの番です
-                  <span className={`ml-1.5 font-semibold ${myRole === "plaintiff" ? "text-indigo-400" : "text-rose-400"}`}>
+                  <span className={`ml-1.5 font-semibold ${myRole === "plaintiff" ? "text-brand-600" : "text-rose-400"}`}>
                     （{PHASE_LABELS[caseData.phase]}）
                   </span>
                 </p>
@@ -504,7 +505,7 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
                 <button
                   type="submit"
                   disabled={loading || !argumentText.trim()}
-                  className={`w-full font-semibold py-2.5 rounded-xl transition-colors text-sm text-white disabled:bg-stone-200 disabled:text-stone-400 ${myRole === "plaintiff" ? "bg-indigo-400 hover:bg-indigo-300" : "bg-rose-400 hover:bg-rose-300"}`}
+                  className={`w-full font-semibold py-2.5 rounded-xl transition-colors text-sm text-white disabled:bg-stone-200 disabled:text-stone-400 ${myRole === "plaintiff" ? "bg-brand-500 hover:bg-brand-600" : "bg-rose-400 hover:bg-rose-300"}`}
                 >
                   {loading ? "送信中..." : "送る"}
                 </button>
@@ -541,8 +542,8 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
 function PlayerChip({ name, role, isActive, isMe }: { name: string; role: Role; isActive: boolean; isMe: boolean }) {
   const isPlaintiff = role === "plaintiff";
   return (
-    <div className={`flex-1 rounded-xl px-3 py-2 border transition-all ${isActive ? isPlaintiff ? "bg-indigo-50 border-indigo-200 ring-1 ring-indigo-300" : "bg-rose-50 border-rose-200 ring-1 ring-rose-300" : "bg-white border-stone-100"}`}>
-      <p className={`text-xs font-medium ${isPlaintiff ? "text-indigo-400" : "text-rose-400"}`}>
+    <div className={`flex-1 rounded-xl px-3 py-2 border transition-all ${isActive ? isPlaintiff ? "bg-brand-50 border-brand-200 ring-1 ring-brand-300" : "bg-rose-50 border-rose-200 ring-1 ring-rose-300" : "bg-white border-stone-100"}`}>
+      <p className={`text-xs font-medium ${isPlaintiff ? "text-brand-600" : "text-rose-400"}`}>
         {ROLE_LABELS[role]}{isMe && <span className="text-stone-300 ml-1">（あなた）</span>}
       </p>
       <p className="text-stone-700 text-sm font-semibold">{name}</p>

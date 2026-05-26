@@ -79,7 +79,7 @@ export default function ProfilePage() {
     <main className="min-h-screen bg-stone-50 flex flex-col items-center justify-center p-6">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 bg-rose-100 rounded-2xl mb-4 text-2xl">
+          <div className="inline-flex items-center justify-center w-14 h-14 bg-brand-100 rounded-2xl mb-4 text-2xl">
             👤
           </div>
           <h1 className="text-2xl font-bold text-stone-800">プロフィール</h1>
@@ -96,7 +96,7 @@ export default function ProfilePage() {
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
                 required
-                className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 focus:outline-none focus:ring-2 focus:ring-rose-300 focus:border-transparent transition text-sm"
+                className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-transparent transition text-sm"
               />
             </div>
 
@@ -109,7 +109,7 @@ export default function ProfilePage() {
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 placeholder={hasApiKey ? "登録済み（変更する場合のみ入力）" : "sk-ant-... を入力"}
-                className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-rose-300 focus:border-transparent transition text-sm"
+                className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-transparent transition text-sm"
               />
               <p className="text-xs text-stone-400 mt-1.5">
                 話し合いのAI裁判官に使用されます。キーはサーバーで暗号化して保存します。
@@ -126,7 +126,7 @@ export default function ProfilePage() {
             <button
               type="submit"
               disabled={saving}
-              className="w-full bg-rose-400 hover:bg-rose-300 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
+              className="w-full bg-brand-500 hover:bg-brand-600 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
             >
               {saving ? "保存中..." : "保存する"}
             </button>

@@ -59,10 +59,10 @@ export default function Home() {
 
         {/* Header */}
         <div className="text-center mb-10">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-rose-100 rounded-2xl mb-4 text-3xl">
+          <div className="inline-flex items-center justify-center w-16 h-16 bg-brand-100 rounded-2xl mb-4 text-3xl">
             ⚖️
           </div>
-          <h1 className="text-3xl font-bold text-stone-800 tracking-tight">家庭裁判所</h1>
+          <h1 className="text-3xl font-bold text-stone-800 tracking-tight">igiari</h1>
           <p className="mt-2 text-stone-500 text-sm">大切な人と、おだやかに話し合うための場所</p>
         </div>
 
@@ -93,7 +93,7 @@ export default function Home() {
               onChange={(e) => setTopic(e.target.value)}
               placeholder="例：今晩の夕食はラーメンかカレーか"
               maxLength={200}
-              className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-rose-300 focus:border-transparent transition text-sm"
+              className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-transparent transition text-sm"
             />
             <p className="text-right text-xs text-stone-400 mt-0.5">{topic.length}/200</p>
           </div>
@@ -105,7 +105,7 @@ export default function Home() {
             <select
               value={maxRounds}
               onChange={(e) => setMaxRounds(Number(e.target.value))}
-              className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-700 focus:outline-none focus:ring-2 focus:ring-rose-300 focus:border-transparent transition text-sm"
+              className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-700 focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-transparent transition text-sm"
             >
               <option value={2}>2回（さらっと）</option>
               <option value={3}>3回（ちょうどよく）</option>
@@ -122,7 +122,7 @@ export default function Home() {
           <button
             onClick={handleCreate}
             disabled={loading || !topic.trim()}
-            className="w-full bg-rose-400 hover:bg-rose-300 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
+            className="w-full bg-brand-500 hover:bg-brand-600 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
           >
             {loading ? "準備中..." : "はじめる"}
           </button>

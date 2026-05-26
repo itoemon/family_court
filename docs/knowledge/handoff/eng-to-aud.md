@@ -1,9 +1,9 @@
-# ビルド → オーディ 引き継ぎメモ（パイプライン毎に上書きされる）
+# ビルド → テスタ・オーディ 引き継ぎメモ（パイプライン毎に上書きされる）
 
 > **注意**: このメモは task.md を補足するものです。task.md と矛盾する場合は task.md を優先してください。
 
-**タスク**: F-1 HMAC ゲストトークンを nonce ベースに刷新（MEDIUM 1件）
-**日時**: 2026-05-25
+**タスク**: FEAT-001（igiari リネーム）+ IMP-002（色調統一）
+**日時**: 2026-05-26
 
 ---
 
@@ -11,60 +11,65 @@
 
 | ファイル | 種別 | 内容 |
 |---|---|---|
-| `supabase/migrations/20260525000003_add_guest_tokens.sql` | 新設 | guest_tokens テーブルの DDL |
-| `lib/guest-token.ts` | 変更 | 同期→非同期、nonce ベースの generateGuestToken / verifyGuestToken に刷新 |
-| `app/api/cases/[id]/route.ts` | 変更 | GET・PATCH の verifyGuestToken / generateGuestToken を await に変更 |
-| `app/api/cases/[id]/argument/route.ts` | 変更 | verifyGuestToken を await に変更 |
-| `app/api/cases/[id]/defense/route.ts` | 変更 | verifyGuestToken を await に変更 |
-| `app/api/cases/[id]/defense/draft/route.ts` | 変更 | verifyGuestToken を await に変更（設計書に記載なかったが型エラー解消のため修正） |
+| `app/globals.css` | 変更 | `@theme` ブロックで brand-50〜brand-900 を定義 |
+| `app/layout.tsx` | 変更 | metadata.title / description を igiari ブランドに更新、openGraph 追加 |
+| `app/components/Header.tsx` | 変更 | 「家庭裁判所」→「igiari」 |
+| `app/components/Footer.tsx` | 変更 | 「家庭裁判所」→「igiari」 |
+| `app/page.tsx` | 変更 | 見出し「家庭裁判所」→「igiari」、rose→brand（ボタン・フォーカス・アイコン背景） |
+| `app/auth/login/page.tsx` | 変更 | サブテキスト更新、rose→brand（ボタン・フォーカス・アイコン・リンク） |
+| `app/auth/signup/page.tsx` | 変更 | rose→brand（ボタン・フォーカス・アイコン・リンク） |
+| `app/profile/page.tsx` | 変更 | rose→brand（ボタン・フォーカス・アイコン）。エラー色は維持 |
+| `app/case/[id]/page.tsx` | 変更 | indigo→brand（原告・参加画面）、rose→brand（待機中招待ボタン）、pre-existing lint 修正 |
+| `app/case/[id]/verdict/page.tsx` | 変更 | indigo→brand（原告判決バナー・スコアバー・バブル） |
+| `README.md` | 変更 | igiari ブランドに合わせて書き直し |
+| `package.json` | 変更 | `name` を `igiari` に変更 |
 
 ---
 
-## 実装上の判断・変更点
+## 実装上の判断・設計書からの逸脱
 
-### `app/api/cases/[id]/defense/draft/route.ts` — 設計書未記載だが修正
+### G-1: サービス名リネーム
 
-task.md・設計書・handoff の「影響ファイル」に `draft/route.ts` の記載がなかったが、`verifyGuestToken` を `await` しない場合 `Promise<boolean>` がそのまま評価され常に truthy になる（`tsc --noEmit` でエラー検出）。設計書の意図に従い `await` を追加した。オーディは意図との整合性を確認すること。
+- 設計書の対象ファイルをすべて修正した。
+- `app/layout.tsx` に `openGraph` フィールドを追加（設計書の metadata サンプルに含まれていたため追加）。
+- キャッチコピーは「大切な人とおだやかに話し合える場所 — AI 裁判官が判決を下す」とした（「温かみ・裁判形式」「対立感を煽らない」要件を両立する文言）。
+- `package-lock.json` の `name` フィールドは変更していない（`npm install` 実行時に自動更新される）。
 
-### `expires_at` の計算をアプリ側で行った件
+### G-2: 色調統一
 
-設計書は「DB 側の `DEFAULT now() + INTERVAL '7 days'` を使う」と記載しているが、arch-to-eng.md で「Supabase JS Client では INSERT 時に SQL 式を直接渡せないため、アプリ側で ISO 文字列として計算する」と説明があり、その方針に従った。`new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()` をアプリ側で生成して INSERT する。マイグレーション SQL に `DEFAULT` 句は設けていない（値を必ず明示することで整合性を保つ）。
+- Tailwind v4 + `tailwind.config.ts` なしの構成を確認。`app/globals.css` の `@theme` にブランドパレットを定義した。
+- `gray-*` は実コードに存在せず（すでに `stone-*` へ移行済み）。変更不要。
+- `blue-*` も実コードに存在せず。代わりに `indigo-*`（原告ロール・参加画面）が使われていたため、これを `brand-*` へ置換した。
+- `rose-*` は複数の用途で使われていた。以下のように扱いを分けた:
+  - **変更した箇所**: 主要アクションボタン（ホーム・ログイン・サインアップ・プロフィール画面）、フォームフォーカスリング、一次リンク → `brand-*` へ置換
+  - **維持した箇所**: 被告ロール（対話バブル・チップ・送信ボタン）— 原告（brand 色）と被告（rose 色）を視覚的に区別するための設計的判断。エラー表示（ErrorBanner・フォームエラー段落）— ステータス色として機能するため維持。
+- `teal-*`（弁護人AI タブ・チャット）、`amber-*`（審議中スピナー・矛盾警告）、`emerald-*`（保存成功メッセージ）は今回スコープ外の既存色として変更しなかった。
 
-### `join/route.ts` が存在しない件
+### 付随修正（スコープ外だが触れたファイルのクリーンアップ）
 
-task.md に `app/api/cases/[id]/join/route.ts` が影響ファイルとして記載されているが、当該ファイルは存在しない。ゲスト参加のトークン発行ロジックは `app/api/cases/[id]/route.ts` の PATCH ハンドラ内に統合されているため、そちらで対応した。
+`app/case/[id]/page.tsx` に pre-existing lint エラーが 2 件あった:
+1. `ContradictionWarning` 型が import されていたが未使用 → 削除
+2. `react-hooks/set-state-in-effect` 警告（`useEffect` 内で `fetchDefenseMessages()` を直接呼び出している）→ このファイルで既に使われているパターン（`// eslint-disable-next-line`）で抑制
 
 ---
 
-## オーディへの注意点
+## テスタ・オーディへの注意点
 
 ### 重点確認ポイント
 
-1. **マイグレーション適用確認**
-   - `supabase db push` または `supabase migration apply` で `guest_tokens` テーブルが作成されること。
-   - RLS が有効で、anon・authenticated ロールから直接 SELECT できないこと（ポリシーなし = Service Role のみ通過）。
+1. **`brand-*` クラスの描画確認**: `@theme` ディレクティブで定義した CSS 変数が正しく Tailwind クラスとして認識されているか。ブラウザ DevTools で `--color-brand-500` が解決されているか確認すること。
 
-2. **トークン発行フロー**
-   - ゲストとして参加すると `guest_tokens` テーブルにレコードが INSERT されること。
-   - Cookie に nonce のみが格納され、`token_hash` はテーブルにのみ保存されること（Cookie 値と `token_hash` が異なることを確認）。
+2. **被告バブルと原告バブルの色区別**: 裁判ルーム（`/case/[id]`）で原告（amber系）と被告（rose系）のバブルが視覚的に区別できること。
 
-3. **トークン検証フロー**
-   - 同じゲストが次のターンで発言・閲覧できること（`verifyGuestToken` が `true` を返す）。
-   - `expires_at` を過去日時に書き換えたレコードで `verifyGuestToken` が `false` を返すこと。
-   - `revoked_at` に値を入れたレコードで `verifyGuestToken` が `false` を返すこと。
+3. **エラー表示の維持**: フォームエラー（login・signup・profile・ケース画面）の `rose-*` スタイルが意図通り表示されること。`ErrorBanner` のスタイルが維持されていること。
 
-4. **既存セッションへの影響**
-   - マイグレーション適用後、旧方式（決定論的 HMAC）の Cookie を持つゲストは全員ログアウト状態になる（DB にレコードが存在しないため）。本番適用はトラフィックが少ない時間帯に推奨。
+4. **`igiari` 表記の網羅性**: UI 上・メタタグ（ブラウザのタブタイトル・OGP）で「家庭裁判所」が残っていないこと。`docs/agents/tester.md` の E2E テストが `toHaveTitle(/家庭裁判所/)` を参照している可能性があるため、テストコードの更新要否を確認すること。
 
-5. **`draft/route.ts` の await 追加**
-   - `defense/draft` エンドポイントでゲストトークン検証が正しく機能すること（`await` 追加後に false 判定が正常に動くこと）。
-
-6. **`tsc --noEmit` がエラーなしで通ること**（実装時確認済み）
+5. **白テキスト on brand-500**: プライマリボタン（`bg-brand-500 text-white`）の可読性。amber-500（#f59e0b）は明るい黄色のため、白テキストとのコントラスト比が低い可能性がある。視覚確認を推奨。
 
 ### セキュリティ観点
 
-- Cookie には nonce の平文のみ（64 桁 hex）が格納される。`token_hash` は DB にのみ存在し、Cookie からの偽造・延命が不可能になっていること。
-- `verifyGuestToken` は `token_hash`・`case_id`・`expires_at`・`revoked_at` の 4 条件 AND で検証している。いずれか不一致で `false`（fail-closed）。
+本変更はテキストとスタイリングのみ。認証・認可・入力検証・API ロジックへの影響なし。
 
 ---
 
@@ -72,7 +77,7 @@ task.md に `app/api/cases/[id]/join/route.ts` が影響ファイルとして記
 
 | 項目 | 理由 |
 |---|---|
-| ゲストトークンの手動取り消し UI | task.md にスコープ外と明記 |
-| トークン一覧管理画面 | task.md にスコープ外と明記 |
-| 期限切れレコードの定期クリーンアップ | スコープ外。`guest_tokens` は蓄積し続ける。Supabase pg_cron 等で別途対応が必要 |
-| 他のトークン種別への応用 | スコープ外 |
+| ロゴ画像・ファビコンの新規作成 | task.md でスコープ外 |
+| ドメイン取得・Supabase プロジェクト名変更 | task.md でスコープ外 |
+| `package-lock.json` の `name` 更新 | `npm install` 後に自動反映 |
+| `tests/e2e/` の pre-existing lint エラー | 書き込み権限外（@typescript-eslint/no-explicit-any 12 件） |
