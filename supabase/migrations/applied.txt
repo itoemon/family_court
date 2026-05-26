@@ -2,3 +2,4 @@
 20260525000003_add_guest_tokens.sql
 20260526000000_guest_tokens_unique_hash.sql
 20260526000001_feat002_phase1_profiles.sql
+20260526000003_feat003_laws.sql
