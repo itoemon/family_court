@@ -4,25 +4,62 @@
 
 ## 今回のタスク
 
-FEAT-003（法律作成機能）テスト不合格の修正。
+FEAT-003（法律作成機能）監査不合格の修正。
 
-**修正内容（2件）:**
+**修正内容（3件）:**
 
-### FIX-1: 招待受信 UI の追加（最重要・L02 失敗原因）
+### FIX-A: `/laws/page.tsx` に pending 招待セクションを追加（HIGH-001 対応・最重要）
 
-`app/laws/page.tsx` に、ログインユーザー宛の pending 招待を表示し、承認/拒否できるセクションを追加する。
+`app/laws/page.tsx` の Server Component 部分に以下を追加する。
+前回のエンジニアが `/laws/[id]/page.tsx` に実装したが、ユーザーはその URL を知らなければ到達不能。本来の実装先は `/laws/page.tsx`。
 
+実装仕様:
 - `law_invitations` から `invitee_id = user.id AND status = 'pending'` のレコードを取得
-- 法律名（`laws.name`）と招待者名（`laws.owner_id` → `profiles.display_name`）を表示
-- 承認ボタン → `PATCH /api/laws/[id]/invitations/[invId]` に `{ "action": "accepted" }` を送信
-- 拒否ボタン → 同 API に `{ "action": "rejected" }` を送信
-- 操作後にページをリフレッシュ（`router.refresh()`）
-- サーバーコンポーネントで取得 + クライアントコンポーネントで操作 に分離すること
+- 関連する `laws.name` と、`laws.owner_id` → `profiles.display_name` を取得して表示
+- 「届いた招待」セクションを法律一覧の上部に配置する
+- 承認・拒否ボタンは `app/laws/_components/PendingInvitations.tsx` として切り出す（Client Component）
+- 承認ボタン → `PATCH /api/laws/[id]/invitations/[invId]` に `{ "status": "accepted" }` を送信
+- 拒否ボタン → 同 API に `{ "status": "rejected" }` を送信
+- 操作後に `router.refresh()` でページをリフレッシュ
 
-### FIX-2: OwnerTransferModal ボタンの disabled 解除（L04 失敗原因）
+`app/laws/[id]/page.tsx` の非メンバー処理は**そのまま残す**（直リンクからのアクセスにも対応するため）。
 
-FIX-1 で User B がメンバーになれば L04 は連鎖解消の見込みだが、`OwnerTransferModal` の disabled 条件も確認する。
-`disabled={loading || candidates.length === 0}` は正しい（メンバーがいないときは移譲不可）。修正不要の場合は FIX-1 のみで対応。
+### FIX-B: E2E テストの assertion を hard assertion に修正（HIGH-001/MEDIUM-001 対応）
+
+`tests/e2e/laws.spec.ts` の以下の `if (await xxx.isVisible(...))` 条件分岐を `await expect(xxx).toBeVisible(...)` に変更する。
+
+| 行 | テスト | 修正内容 |
+|----|--------|---------|
+| 72–76 | L02 | `if (await acceptBtn.isVisible(...))` → `await expect(acceptBtn).toBeVisible(...)` |
+| 119–122 | L03 | 同様 |
+| 139–141 | L03 | 同様 |
+| 147–151 | L03 | 同様 |
+| 189–193 | L04 | 同様 |
+
+テストは FIX-A の実装後に `/laws` ページで招待ボタンを探すよう修正すること。
+
+### FIX-C: PATCH invitations ルートに lawId バリデーションを追加（MEDIUM-002 対応）
+
+`app/api/laws/[id]/invitations/[invId]/route.ts:10` を修正する。
+
+```typescript
+// 変更前
+const { invId } = await params;
+
+// 変更後
+const { id: lawId, invId } = await params;
+```
+
+そして招待の検索クエリに `.eq("law_id", lawId)` を追加する。
+
+```typescript
+const { data: invitation } = await admin
+  .from("law_invitations")
+  .select("id, law_id, invitee_id, status")
+  .eq("id", invId)
+  .eq("law_id", lawId)  // この行を追加
+  .maybeSingle();
+```
 
 ---
 
