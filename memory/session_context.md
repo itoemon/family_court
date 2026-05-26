@@ -12,57 +12,52 @@ metadata:
 
 ---
 
-## 最終更新: 2026-05-26（Stop フック自動更新 セッション 23 終了）
+## 最終更新: 2026-05-26（Stop フック自動更新 セッション 34 終了）
 
 ### 現在のブランチ・PR 状態
 
-- ブランチ: `feature/20260526-135838`（FEAT-002 Phase 2 実装・テスト・監査 すべて完了）
-- **HEAD は `5ba467b`**（docs(handoff): オーディ引き継ぎメモ更新）
-- 未コミット変更あり: `docs/backlog.md`, `docs/knowledge/design.md`, `docs/knowledge/handoff/arch-to-eng.md`, `docs/knowledge/handoff/test-to-aud.md`, `docs/knowledge/task.md`, `memory/session_context.md`
-- 未追跡ファイルあり: `docs/knowledge/audit-log/audit_20260526_142833.md`, `docs/knowledge/test-log/test_20260526_141641.md`, `tests/e2e/feat002_friends.spec.ts`
-- **PR 未作成**（次セッションで作成）
+- ブランチ: `feature/20260526-155829`
+- HEAD: `11e471e` — `fix(FEAT-003): InvitePanel を /api/friends ベースのローカルフィルタに変更`
+- **直近マージ PR**:
+  - PR #20: `feat(FEAT-002-p2)` フレンド機能 + LOW-001/002 修正 ✅
+  - PR #21: `fix(MEDIUM-001)` `/api/users/search` にレートリミット追加 ✅
+- **未コミット変更あり**: `docs/knowledge/design.md`（staged）、`arch-to-eng.md`・`task.md`・`session_context.md`（unstaged）
 
-### 直近セッションでやったこと（2026-05-26 セッション 18〜21）
+### 直近セッションでやったこと（2026-05-26 セッション 33-34）
 
-- **FEAT-002 Phase 2 実装完了**（`3152720`）:
-  - フレンド機能 API・UI（検索・リクエスト送受信・承認/拒否/削除・一覧）
-  - migration: `20260526000002_feat002_phase2_friends.sql`
-- **FEAT-002 Phase 2 テスト完了**:
-  - CRITICAL-M01〜M04・FEAT-002 フレンド機能 5/5: 全通過
-  - テストレポート: `docs/knowledge/test-log/test_20260526_141641.md`
-- **FEAT-002 Phase 2 オーディ完了**（セッション 21）:
-  - 監査レポート: `docs/knowledge/audit-log/audit_20260526_142833.md`
-  - **判定: ✅ 通過**（HIGH 0件 / MEDIUM 1件 / LOW 2件 = 計 3件）
+- **FEAT-003（法律作成機能）実装が全 Step 完了・コミット済み**（`235d713`）
+  - Step 1: `supabase/migrations/20260526000003_feat003_laws.sql`（5テーブル・RLS・インデックス）✅
+  - Step 2: `lib/types.ts`（`Law`, `LawMember`, `LawInvitation`, `LawProposal`, `LawProposalVote` 等）✅
+  - Step 3: `app/api/laws/`（9エンドポイント）✅
+  - Step 4: `middleware.ts`（`/laws` 認証保護追加）✅
+  - Step 5: `app/laws/`（`/laws`, `/laws/new`, `/laws/[id]` + 5 Client Components）✅
+  - 追加: `lib/laws/consensus.ts`（合意チェック共通ロジック）✅
+- **FEAT-003 バグ修正**（`11e471e`）: InvitePanel が `/api/users/search` を叩いていたため `/api/friends` ベースのローカルフィルタに変更（フレンド以外を招待できるバグを修正）
+- ドキュメント一式更新済み（`design.md`, `task.md`, `arch-to-eng.md`, `eng-to-aud.md`）
+- **テスト・監査はまだ実施していない**（オーディ未起動）
 
-### オーディ指摘サマリー（audit_20260526_142833.md）
+### FEAT-003 機能要件サマリー
 
-| ID | 重大度 | 内容 |
-|---|---|---|
-| MEDIUM-001 | MEDIUM | `GET /api/users/search` に rate limiting なし → display_name を前方一致で全列挙可能 |
-| LOW-001 | LOW | `anon` ロールへの不要な SELECT 権限付与（migration:29）— RLS で保護中だが最小権限違反 |
-| LOW-002 | LOW | 存在しない receiver_id に対し FK 違反（23503）が未ハンドルで 500 返却（requests/route.ts:102-107）|
-
-- 通過条件（HIGH=0 / 合計≤5）満たすためパイプライン進行可能
-- **MEDIUM-001 の rate limiting は FEAT-003 実装前に対処を推奨**
-
-### 決定事項（引き継ぎ）
-
-- FEAT-002 Phase 2 スコープ（H-1〜H-4）は実装・テスト・監査すべて完了
-- **LOW-001/002 はこの PR（`feature/20260526-135838`）に直接修正してから PR 作成**（セッション 23 決定）
-- **MEDIUM-001（rate limiting / Upstash Redis）は次 PR に先送り**（外部依存を別議論にしたい）
-- **推奨タスク順**:
-  1. LOW-001/002 修正 → コミット → PR 作成 ← **今ここ**
-  2. PR マージ後 → FEAT-003（法律作成機能）— XL
-  3. FEAT-004（法案 Hub）— L
-  4. MON-001（クレジット制）— ユーザーが増えてから
+- L-1: 法律作成（法律名 100 字・条文 2000 字、作成者がオーナー兼メンバー）
+- L-2: メンバー招待（フレンドのみ、承認/拒否）
+- L-3: 改定案提出・全メンバー合意で成立、同時 1 件制限、オーナーが取り下げ可
+- L-4: オーナー権移譲
+- L-5: 退会（オーナー以外自由、合意票も無効化）
+- L-6: 法律削除（全メンバー合意）
 
 ### 次のアクション
 
-1. **LOW-001 修正**: migration で `anon` への不要な SELECT GRANT を剥奪
-2. **LOW-002 修正**: `requests/route.ts:102-107` で FK エラー(23503) → 400 を返すよう修正
-3. 未追跡ファイルをコミットに含め **PR 作成**（ブランチ `feature/20260526-135838` → main）
-   - MEDIUM-001 対応は PR description に「次 PR で対処予定」と記載
-4. PR マージ後 → ブランチ削除（ローカル・リモート両方）→ FEAT-003 着手
+1. **未コミット docs を整理してコミット**（`docs/knowledge/` の staged/unstaged 差分）
+2. **テスタ → オーディ** の正規パイプラインを回す（推奨）、またはスキップして軽量 PR 作成
+3. **PR 作成** → `main` へ
+4. **マージ後**: 本番 DB への migration 適用
+5. 次フィーチャー検討（`docs/backlog.md` 参照）
+
+### 決定事項（引き継ぎ）
+
+- FEAT-002（Phase 1 / Phase 2）・LOW-001/002・MEDIUM-001 すべて完了・マージ済み
+- Upstash Redis は無料枠（1日 10,000 コマンド）で十分（env vars なし時は skip fallthrough）
+- **現在フェーズ: FEAT-003（法律作成機能）— 実装・バグ修正コミット完了、テスト/監査待ち**
 
 ### 覚えておくべき判断・経緯
 
@@ -75,11 +70,12 @@ metadata:
 - `brand-500` は使わない（WCAG AA 非対応）。プライマリは `brand-700/800` に統一済み
 - `avatars` バケット制限は migration で設定済み（magic bytes 検証は API Route 側でも実施）
 - アバター削除は magic bytes 検証より先に実行する（URL に `?t=` キャッシュバスターを含めない）
-- FEAT-003 の「フレンド依存」は招待制で回避可能（フレンド機能は FEAT-004 の方が必要性高い）
 - `search_users` 関数は `SECURITY DEFINER` で定義（`auth.users` JOIN のため）
 - `friend_requests` の UNIQUE INDEX は `(LEAST(a,b), GREATEST(a,b))` で双方向重複をブロック
 - 拒否（rejected）はレコード削除で処理（再送を許容するため）
-- `anon` ロールへの不要な SELECT 権限（LOW-001）は修正可能だが、RLS で現状保護されているため緊急度低
+- Upstash レートリミットは env vars なし時は `skip`（制限なし）で fallthrough する設計
+- FEAT-003 の法律 API では退会処理は「投票削除 → メンバー削除 → 合意チェック」の順序を厳守
+- InvitePanel は `/api/friends` で取得した一覧をローカルフィルタして招待済みを除外する設計（`/api/users/search` は使わない）
 
 ### マージ済み PR（累計）
 
@@ -91,3 +87,5 @@ metadata:
 - PR #17: FEAT-001 igiari リネーム + IMP-002 色調統一（コパ指摘対応込み）
 - PR #18: LOW-001/002 + MEDIUM-001 + IMP-001 品質・アクセシビリティ修正
 - PR #19: FEAT-002-p1 プロフィールアイコン + 弁護人AIカスタム指示 ✅ 本番 DB 適用済み
+- PR #20: FEAT-002-p2 フレンド機能 + LOW-001/002 修正 ✅
+- PR #21: MEDIUM-001 `/api/users/search` レートリミット（Upstash Redis）✅

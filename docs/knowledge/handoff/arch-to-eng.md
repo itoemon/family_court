@@ -2,70 +2,133 @@
 
 ## タスク概要
 
-MEDIUM-001: `GET /api/users/search` に Upstash Redis + `@upstash/ratelimit` を用いて `user.id` 単位のレートリミット（1分間30リクエスト）を追加する。
-
-変更ファイルは `app/api/users/search/route.ts` 1 ファイルのみ。DB 変更・新規ファイル作成なし。
+FEAT-003「法律作成機能」を実装する。詳細は `docs/knowledge/design.md` を参照すること。
 
 ---
 
 ## 実装順序
 
-1. パッケージインストール: `npm install @upstash/ratelimit @upstash/redis`
-2. `.env.local` に `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` を追加（ダイチから値を受け取ること）
-3. `app/api/users/search/route.ts` を修正:
-   - モジュールスコープで `Ratelimit` インスタンスを初期化
-   - セッション確認直後・クエリパラメータ検証の前にレートリミットチェックを挿入
-   - 制限超過時に `X-RateLimit-*` ヘッダー付きで 429 を返す
+以下の順序で進めること。後続ステップは前のステップが完了していないと動作確認ができない。
 
-実装量が少ないため並行タスクなし。上から順に進める。
+### Step 1: DB マイグレーション
 
----
+`supabase/migrations/` に新しいマイグレーションファイルを作成し、5テーブルを追加する。
 
-## 判断根拠
+作成するテーブル（設計書のスキーマを参照）:
+1. `public.laws`
+2. `public.law_members`
+3. `public.law_invitations`
+4. `public.law_proposals`
+5. `public.law_proposal_votes`
 
-### なぜ Route Handler 内で実装するか（Middleware でなく）
+合わせて RLS 有効化と SELECT ポリシーを同じファイルに含めること。インデックスも忘れずに追加する。
 
-task.md に「`app/api/users/search/route.ts` 内で適用する」と明記されているため。
+### Step 2: 型定義の追加
 
-Middleware でのレートリミットも選択肢としてはありうる（全エッジで動くため低レイテンシ）が、今回は対象エンドポイントが 1 つのみで、将来的に他エンドポイントへの拡張がスコープ外のため、Route Handler 内の局所実装が保守性の観点で適切。
+`lib/types.ts` に `Law`, `LawMember`, `LawInvitation`, `LawProposal`, `LawProposalVote` 型と `ProposalType`, `InvitationStatus` を追加する（設計書の型定義セクションを参照）。
 
-### なぜ slidingWindow アルゴリズムか（fixedWindow でなく）
+### Step 3: API Routes の実装
 
-`fixedWindow` は窓の境界（毎分0秒）でリセットが走るため、境界前後に連続リクエストを集中させると事実上2倍のリクエストを短時間に通せる。`slidingWindow` は常に「直近1分間」で計算するためこの問題がない。ユーザー列挙攻撃の抑制が目的なので、突発的な急増を防ぐ slidingWindow が適切。
+設計書の API 仕様に従い、以下の順で実装する。
 
-### なぜ `user.id` を識別子にするか（IP でなく）
+1. `GET /api/laws` + `POST /api/laws`（基本 CRUD）
+2. `GET /api/laws/[id]`（詳細取得、メンバーチェック含む）
+3. 招待系: `POST /api/laws/[id]/invitations`, `PATCH /api/laws/[id]/invitations/[invId]`
+4. 退会: `DELETE /api/laws/[id]/members/me`
+5. オーナー移譲: `PATCH /api/laws/[id]/owner`
+6. 提案: `POST /api/laws/[id]/proposals`, `DELETE /api/laws/[id]/proposals/[propId]`
+7. 投票（合意チェック含む）: `POST /api/laws/[id]/proposals/[propId]/votes`
 
-このエンドポイントは認証必須のため、認証後に確定する `user.id` で識別するのが正確。IP は NAT・プロキシ・VPN で複数ユーザーが共有するため、無関係なユーザーを誤ってブロックするリスクがある。task.md 記載の方針と一致。
+### Step 4: middleware.ts への追加
 
-### なぜ環境変数未設定時のフォールバックを設けないか
+`/laws` と `/laws/**` を認証保護対象パスに追加する。現在の保護パスリストを確認し、プレフィックスマッチの書き方に合わせること（PR #15 で整備済みの書き方を踏襲する）。
 
-`Redis.fromEnv()` が環境変数未設定でエラーをスローするのは本番設定漏れの早期検出に有用。「設定なしでも動く」フォールバックはレートリミットを無効化する抜け穴になるため採用しない。開発環境では `.env.local` への設定を必須とする。
+### Step 5: ページ・コンポーネントの実装
 
----
-
-## 注意事項（実装前に必ず確認）
-
-### `@upstash/ratelimit` の `reset` 値の単位
-
-`limit()` の戻り値 `reset` は **Unix epoch milliseconds**（ミリ秒）。
-`X-RateLimit-Reset` ヘッダーの慣例は**秒**のため、必ず `Math.ceil(reset / 1000)` で変換すること。ミリ秒のまま返すとクライアントが誤ったタイムスタンプを受け取る。
-
-### Ratelimit インスタンスのスコープ
-
-`new Ratelimit(...)` と `Redis.fromEnv()` はモジュールスコープ（関数外）で初期化すること。Route Handler 関数内で毎リクエスト生成するとコネクション確立コストが発生し、性能劣化とリソースリークの原因になる。
-
-### AGENTS.md の確認
-
-Route Handler の実装前に AGENTS.md の指示通り `node_modules/next/dist/docs/` を確認し、`NextResponse.json()` のシグネチャが想定通りかを確認すること。特にヘッダーの渡し方（第2引数の `headers` オブジェクト）はバージョン依存の可能性がある。
-
-### テスト環境
-
-既存の E2E テスト（`test/` 配下）でこのエンドポイントを叩いているものがある場合、Upstash Redis の接続が必要になる。テスト実行前に環境変数が設定されているか確認すること。設定がない場合は Redis クライアントの初期化でエラーになる。
+1. `/laws/page.tsx`（Server Component: 一覧）
+2. `/laws/new/page.tsx` + `LawForm.tsx`（作成フォーム）
+3. `/laws/[id]/page.tsx` + 各 Client Component（詳細）
 
 ---
 
-## 未解決事項
+## 設計判断の理由
 
-### Upstash Redis インスタンスの用意
+### 改定案と削除提案を同一テーブル（`law_proposals`）に統合した理由
 
-Upstash のアカウント作成とデータベース作成はダイチ側の作業。`UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` の値が揃い次第、`.env.local` と Vercel 環境変数に設定して実装を進める。値が揃う前でも実装自体は進められる（接続テストのみ後回し）。
+改定案と削除提案は「全メンバーの合意で実行される」「1法律につき1件のみ」「オーナーが取り下げられる」という点で同じメカニズムを持つ。テーブルを分けると `law_proposal_votes` に相当するテーブルが2本必要になり、合意チェックのロジックも重複する。`proposal_type` フィールドで区別することで、テーブル数と実装量を削減できる。
+
+### `proposed_by` を `ON DELETE RESTRICT` にした理由
+
+提案者がアカウント削除された場合に提案レコードを CASCADE 削除すると、他のメンバーが合意していた提案が消える。アカウント削除は現状スコープ外だが、将来追加された際に予期しないデータ消失が起きないよう RESTRICT を選択した。
+
+### 合意チェックをアプリ層で行う理由
+
+DB トリガーや PostgreSQL 関数でも実装できるが、デバッグが困難になる。家族・カップルという少人数ユースケースでは競合が現実的に発生しないため、可読性を優先してアプリ層で行う。競合リスクについては制約・前提条件セクションに記載している。
+
+### RLS は READ のみ定義し、WRITE はアプリ層で制御する理由
+
+environment.md の設計方針「API Routes での書き込みは必ず `createAdminClient()` を使い、サーバー側コードで本人確認を行う。RLS に認可を委ねない」に準拠する。既存コードとの一貫性を保つため、この方針を FEAT-003 でも踏襲する。
+
+---
+
+## 実装上の注意事項
+
+### 合意チェック後の処理
+
+投票 API（`POST /api/laws/[id]/proposals/[propId]/votes`）の中で合意チェックを行い、成立したら副作用を実行する。
+
+```
+合意チェック:
+  SELECT COUNT(*) FROM law_members WHERE law_id = $lawId  → totalCount
+  SELECT COUNT(*) FROM law_proposal_votes
+    WHERE proposal_id = $propId AND approved = true        → approvedCount
+  合意 = (totalCount > 0 AND totalCount === approvedCount)
+```
+
+合意時の処理:
+- `amendment`: `UPDATE laws SET article = $proposedArticle, updated_at = now() WHERE id = $lawId` → `DELETE FROM law_proposals WHERE id = $propId`（CASCADE で votes も消える）
+- `deletion`: `DELETE FROM laws WHERE id = $lawId`（CASCADE で members / invitations / proposals / votes が全消去）
+
+### 退会時の合意チェック
+
+`DELETE /api/laws/[id]/members/me` の実装:
+1. 進行中の提案があるか確認（`law_proposals WHERE law_id = $lawId`）
+2. あれば `DELETE FROM law_proposal_votes WHERE proposal_id = $propId AND user_id = $userId`
+3. `DELETE FROM law_members WHERE law_id = $lawId AND user_id = $userId`
+4. 提案があった場合は合意チェック → 成立なら適用
+
+Step 2と3の順序を守ること。先にメンバーを削除してから投票を削除すると、合意チェックの分母（メンバー数）が先に変わる。
+
+### 招待のフレンドチェック
+
+`friend_requests` テーブルの `status` カラムに `'accepted'` の値が格納されている前提で実装する（FEAT-002 Phase 2 の実装に依存）。実装前に `friend_requests` テーブルの実際のスキーマを `supabase/` で確認すること。
+
+### 法律一覧取得のクエリ
+
+`law_members` JOIN `laws` JOIN `profiles` で取得し、さらに各法律の `law_proposals` の存在有無（`has_active_proposal`）をサブクエリかカウントで付加する。Supabase クライアントの `select` で複雑なネストが必要になる場合は SQL を直書きすることも検討する。
+
+### 409 エラーの使い分け
+
+| 状況 | エラー内容 |
+|------|-----------|
+| 提案がすでにある（UNIQUE 違反 23505） | 409: 既に進行中の提案があります |
+| フレンドでない | 409: フレンドではありません |
+| すでにメンバー | 409: 既にメンバーです |
+| 招待済み（pending） | 409: 既に招待済みです |
+| 移譲先がメンバーでない | 409: メンバーではありません |
+
+### InvitePanel の検索フィルタリング
+
+既存の `/api/users/search` を流用するが、レスポンスに含まれるユーザーのうち「すでにメンバー」「pending 招待済み」のものは UI 側でフィルタまたは disabled 表示する。フィルタリングは InvitePanel の Client Component 内で行う（検索 API を変更しない）。
+
+---
+
+## 未解決事項・要確認
+
+1. **バックログの `friend_requests` スキーマ**: 実装前に `supabase/migrations/` で `friend_requests` テーブルのカラム名と `status` の値を確認すること。設計書は `status = 'accepted'` と仮定している。
+
+2. **middleware.ts の保護パス書き方**: PR #15 で整備した方式を確認し、それに合わせて `/laws` と `/laws/**` を追加すること。誤った追加は既存の認証フローを壊す可能性がある。
+
+3. **`law_proposals` の `proposed_article` は amendment 時の CHECK**: DB 側の CHECK 制約 `law_proposals_article_required` で保証しているが、アプリ層でも先にバリデーションして 400 を返すこと。DB エラーをそのままユーザーに返さない。
+
+4. **`anon` への GRANT**: マイグレーションに `GRANT SELECT ON public.law_* TO anon;` を書かないこと（backlog LOW-001 の教訓）。`authenticated` ロールのみが必要。
