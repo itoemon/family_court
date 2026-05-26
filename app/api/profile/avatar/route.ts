@@ -11,6 +11,17 @@ const MIME_TO_EXT: Record<AllowedMime, string> = {
   "image/webp": "webp",
 };
 
+function detectMimeFromBytes(buf: ArrayBuffer): string | null {
+  const b = new Uint8Array(buf, 0, 12);
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png";
+  if (
+    b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+    b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50
+  ) return "image/webp";
+  return null;
+}
+
 export async function POST(req: NextRequest) {
   const session = await createSessionClient();
   const { data: { user } } = await session.auth.getUser();
@@ -64,6 +75,11 @@ export async function POST(req: NextRequest) {
   }
 
   const bytes = await file.arrayBuffer();
+
+  const detectedMime = detectMimeFromBytes(bytes);
+  if (detectedMime !== mimeType) {
+    return NextResponse.json({ error: "ファイルの内容が拡張子と一致しません" }, { status: 400 });
+  }
 
   const { error: uploadError } = await admin.storage
     .from("avatars")

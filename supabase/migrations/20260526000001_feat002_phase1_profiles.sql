@@ -8,8 +8,8 @@ ALTER TABLE profiles
   CHECK (defense_custom_instruction IS NULL OR char_length(defense_custom_instruction) <= 200);
 
 -- avatars バケット（public = true: 公開 URL で直接参照可能）
-INSERT INTO storage.buckets (id, name, public)
-VALUES ('avatars', 'avatars', true)
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES ('avatars', 'avatars', true, 2097152, ARRAY['image/jpeg', 'image/png', 'image/webp'])
 ON CONFLICT (id) DO NOTHING;
 
 -- 認証済みユーザーが自分の {user_id}/ 配下にのみアップロード可

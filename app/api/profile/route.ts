@@ -30,6 +30,9 @@ export async function PATCH(req: NextRequest) {
   }
 
   if (defenseCustomInstruction !== undefined) {
+    if (defenseCustomInstruction !== null && typeof defenseCustomInstruction !== "string") {
+      return NextResponse.json({ error: "無効なリクエストです" }, { status: 400 });
+    }
     const instruction = defenseCustomInstruction === "" ? null : defenseCustomInstruction;
     if (instruction !== null && instruction.length > 200) {
       return NextResponse.json(
