@@ -20,6 +20,29 @@
 - **優先度**: 中
 - **依存**: FEAT-004（フレンド機能は法律機能の前提となりうる）
 
+### [MEDIUM-001] avatars バケットにバケットレベルのサイズ・MIME制限が未設定（supabase/migrations/20260526000001_feat002_phase1_profiles.sql:11-13） (由来: audit_20260526_115705.md)
+ (由来: audit_20260526_115705.md)
+- **内容**: `storage.buckets` への INSERT で `file_size_limit` と `allowed_mime_types` を指定していない。Supabase Storage の RLS ポリシーはオブジェクトの「誰がどのパスに書けるか」を制限するが、ファイルのサイズや種別は制限しない。認証済みユーザーが Supabase JS クライアントを直接使ってアップロードリクエストを送ると、API Route のバリデーション（2MB・jpeg/png/webp のみ）を迂回し、任意サイズ・任意形式のファイルを公開バケットに書き込める。`avatars` バケットは `public = true` のため、アップロードされたファイルは誰でも公開 URL でアクセスできる。設計書は「Storage には別途 RLS ポリシーを設定し、直接アクセスへの二重防御とする」と明記しているが、実装ではパス制限のみで種別・サイズの防御が機能していない。 (由来: audit_20260526_115705.md)
+- **修正案**: `INSERT INTO storage.buckets` に `file_size_limit`（2097152 = 2MB）と `allowed_mime_types`（`['image/jpeg', 'image/png', 'image/webp']`）を追加する。 (由来: audit_20260526_115705.md)
+ (由来: audit_20260526_115705.md)
+  ```sql (由来: audit_20260526_115705.md)
+  INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types) (由来: audit_20260526_115705.md)
+-- (由来: audit_20260526_115705.md)
+### [LOW-001] MIME タイプの magic bytes 検証なし（app/api/profile/avatar/route.ts:31-32） (由来: audit_20260526_115705.md)
+ (由来: audit_20260526_115705.md)
+- **内容**: `file.type` はクライアントが multipart リクエストの `Content-Type` ヘッダーに設定した値をそのまま使う。悪意あるクライアントは実体が SVG（スクリプト埋め込み可）・HTML・任意バイナリのファイルに `Content-Type: image/jpeg` ヘッダーを付与してリクエストを送ることができ、MIME allowlist チェック（行 32）を通過してしまう。ただし Supabase Storage はアップロード時に指定した `contentType` でオブジェクトを配信するため、ブラウザは `Content-Type: image/jpeg` で受け取りスクリプトとして実行しない。現状の直接的な実行リスクは低いが、公開バケットに意図しないコンテンツが格納される可能性がある。 (由来: audit_20260526_115705.md)
+- **修正案**: ファイル先頭バイト（magic bytes）でファイル種別を検証する。`arrayBuffer()` の最初の 12 バイトを読んで JPEG（`FF D8 FF`）・PNG（`89 50 4E 47`）・WebP（`52 49 46 46 … 57 45 42 50`）のシグネチャと照合し、不一致なら 400 を返す。MEDIUM-001 の bucket レベル `allowed_mime_types` 制限と組み合わせることで二重防御となる。 (由来: audit_20260526_115705.md)
+ (由来: audit_20260526_115705.md)
+--- (由来: audit_20260526_115705.md)
+ (由来: audit_20260526_115705.md)
+### [LOW-002] `defenseCustomInstruction` フィールドの型検証が未実施（app/api/profile/route.ts:33-34） (由来: audit_20260526_115705.md)
+ (由来: audit_20260526_115705.md)
+- **内容**: `req.json()` で取得した `defenseCustomInstruction` が文字列であることを検証していない。クライアントが `{"defenseCustomInstruction": 12345}` のように数値・配列・オブジェクト等を送ると、行 33 の `=== ""` チェックは通過せず（数値は `""` でない）、行 34 の `instruction.length` が `undefined` となる。`undefined > 200` は `false` のためバリデーションをスキップし、非文字列値がそのまま `updates.defense_custom_instruction` にセットされる。PostgreSQL は数値等を text に coerce するため DB レベルでは大きな問題にならないが、型安全な境界での検証が欠如しており、DB の CHECK 制約頼みになっている。エンドユーザーへの影響は軽微だが、API のロバスト性が低い。 (由来: audit_20260526_115705.md)
+- **修正案**: `defenseCustomInstruction !== undefined` の分岐内先頭で型チェックを追加する。 (由来: audit_20260526_115705.md)
+ (由来: audit_20260526_115705.md)
+  ```typescript (由来: audit_20260526_115705.md)
+  if (typeof defenseCustomInstruction !== "string" && defenseCustomInstruction !== null) { (由来: audit_20260526_115705.md)
+
 ---
 
 #### [FEAT-003] 法律作成機能

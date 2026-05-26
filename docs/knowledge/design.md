@@ -2,170 +2,291 @@
 
 ## 概要（変更の目的・背景）
 
-バックログ FEAT-001 および IMP-002 に基づく、ブランド確立フェーズの変更。
+FEAT-002 Phase 1 として、ユーザーの個性表現要素を追加する。
 
-**FEAT-001**: サービス名を `家庭裁判所`（仮称）から `igiari` に改称する。UI テキスト・メタタグ・OGP・README を統一し、検索エンジン・SNS でのブランド表記を確定させる。ロゴ画像・ファビコンの新規作成、ドメイン取得、Supabase プロジェクト名変更は本変更のスコープ外とする。
+- **G-1. プロフィールアイコン設定**: Supabase Storage を利用したアバター画像アップロード機能
+- **G-2. 弁護人AIカスタム指示**: ユーザーが弁護人AIのシステムプロンプト末尾を上書きできる機能
 
-**IMP-002**: 現在混在している青系・グレー系の配色を、黄色・オレンジ・薄い茶色系のウォームパレットに統一する。要件定義書の「温かみのある・柔らかい雰囲気。対立感・緊張感を煽らない」という非機能要件を、視覚レベルで実現することが目的。
-
-両変更は独立した変更だが、ブランド統一効果を高めるため同一 PR で実施する（バックログ IMP-002 備考に従う）。
+変更対象は `profiles` テーブル・プロフィール画面（`/profile`）・弁護人AI連携ロジックに限定される。フレンド機能（Phase 2）・ヘッダーナビゲーション変更はスコープ外。
 
 ---
 
 ## API 仕様（変更・追加するエンドポイントのリクエスト/レスポンス定義）
 
-本変更に新規・変更 API エンドポイントはない。
+### G-1: POST /api/profile/avatar
+
+アバター画像をサーバーサイドで受け取り、Storage にアップロードし、`profiles.avatar_url` を更新する。
+
+**リクエスト**
+
+```
+Content-Type: multipart/form-data
+Field: file  (Blob)
+```
+
+| 項目 | 内容 |
+|---|---|
+| 受理 MIME type | `image/jpeg` / `image/png` / `image/webp` |
+| ファイルサイズ上限 | 2 MB（2,097,152 bytes） |
+
+**処理フロー**
+
+1. `auth.getUser()` で認証確認（未認証 → 401）
+2. `request.formData()` でファイル取得
+3. MIME type・サイズのサーバーサイドバリデーション（不正 → 400）
+4. MIME type から拡張子を決定（`image/jpeg` → `jpg`、`image/png` → `png`、`image/webp` → `webp`）
+5. 既存 `profiles.avatar_url` を参照し、拡張子が異なるファイルが存在する場合は旧 Storage オブジェクトを先に削除する
+6. `createAdminClient().storage.from('avatars').upload('{user_id}/avatar.{ext}', ..., { upsert: true })` でアップロード
+7. `storage.from('avatars').getPublicUrl(path)` で公開 URL を取得
+8. `createAdminClient()` で `profiles.avatar_url` を更新
+
+**レスポンス（200）**
+
+```json
+{ "avatar_url": "https://..." }
+```
+
+**エラーレスポンス**
+
+| ステータス | 条件 |
+|---|---|
+| 401 | 未認証 |
+| 400 | MIME type 不正・サイズ超過 |
+| 500 | Storage アップロード失敗・DB 更新失敗 |
+
+---
+
+### G-2: PATCH /api/profile
+
+`defense_custom_instruction` など非機密プロフィールフィールドを更新する。
+
+**リクエスト**
+
+```json
+{ "defense_custom_instruction": "string | null" }
+```
+
+| フィールド | 型 | 制約 |
+|---|---|---|
+| `defense_custom_instruction` | `string \| null` | 最大 200 文字。空文字列は `null` として扱う |
+
+**処理フロー**
+
+1. `auth.getUser()` で認証確認（未認証 → 401）
+2. `defense_custom_instruction` の文字数検証（200 文字超過 → 400）
+3. `createAdminClient()` で `profiles` を `update`（profiles は signup 時作成済みのため `upsert` 不要）
+
+**レスポンス（200）**
+
+```json
+{ "success": true }
+```
+
+**エラーレスポンス**
+
+| ステータス | 条件 |
+|---|---|
+| 401 | 未認証 |
+| 400 | 200 文字超過 |
+| 500 | DB 更新失敗 |
+
+> **注意**: 既存の `/api/profile` PATCH エンドポイントがある場合はフィールドを追加して拡張する。ない場合は新規作成する。API キー更新エンドポイントとのメソッド・パス衝突を実装前に確認すること。
 
 ---
 
 ## データモデル（DB スキーマ・型定義の変更）
 
-本変更に DB スキーマ・型定義の変更はない。
+### profiles テーブルへのカラム追加
+
+```sql
+-- migration ファイルとして supabase/migrations/ に追加すること
+
+-- G-1: アバター URL
+ALTER TABLE profiles
+  ADD COLUMN avatar_url text;
+
+-- G-2: 弁護人カスタム指示
+ALTER TABLE profiles
+  ADD COLUMN defense_custom_instruction text
+  CHECK (defense_custom_instruction IS NULL OR char_length(defense_custom_instruction) <= 200);
+```
+
+両カラムとも nullable。既存レコードへの影響なし（デフォルト値の設定不要）。
+
+---
+
+### Supabase Storage: avatars バケット
+
+バケット作成と RLS ポリシーを migration または Supabase ダッシュボードで設定する。
+
+```sql
+-- バケット作成（public = true: 公開 URL で直接参照可能）
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('avatars', 'avatars', true);
+
+-- 認証済みユーザーが自分の {user_id}/ 配下のみ操作できる
+CREATE POLICY "Users can upload own avatar"
+  ON storage.objects FOR INSERT TO authenticated
+  WITH CHECK (
+    bucket_id = 'avatars'
+    AND (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+CREATE POLICY "Users can update own avatar"
+  ON storage.objects FOR UPDATE TO authenticated
+  USING (
+    bucket_id = 'avatars'
+    AND (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+CREATE POLICY "Users can delete own avatar"
+  ON storage.objects FOR DELETE TO authenticated
+  USING (
+    bucket_id = 'avatars'
+    AND (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+-- 読み取りは全員可（公開 URL で直接参照するため）
+CREATE POLICY "Anyone can read avatars"
+  ON storage.objects FOR SELECT TO public
+  USING (bucket_id = 'avatars');
+```
+
+---
+
+### TypeScript 型定義の変更（lib/types.ts）
+
+`Profile` 型に以下を追加する。
+
+```typescript
+type Profile = {
+  // ... 既存フィールド ...
+  avatar_url: string | null;
+  defense_custom_instruction: string | null;
+};
+```
 
 ---
 
 ## コンポーネント設計（新設・変更するファイルの責務と仕様）
 
-### G-1: サービス名リネーム（FEAT-001）
+### app/api/profile/avatar/route.ts（新規）
 
-#### 変更対象ファイルと責務
+**責務**: アバター画像のサーバーサイドバリデーション・Storage アップロード・`profiles.avatar_url` 更新。
 
-| ファイル | 変更内容 |
+| 項目 | 内容 |
 |---|---|
-| `app/layout.tsx` | `metadata.title`、`metadata.description`、OGP 関連 meta タグを `igiari` ブランドに更新 |
-| `app/page.tsx` | ヘッダー・見出し・キャッチコピーなど、ユーザー可視テキストを `igiari` に統一 |
-| 各ページコンポーネント | `家庭裁判所` / `Family Court` の表記が残る箇所をすべて `igiari` に置換 |
-| `README.md` | プロジェクト名・説明文を `igiari` ブランドに合わせて書き直す |
-| `package.json` | `name` フィールドを `igiari` に変更（任意。Vercel デプロイへの影響なし） |
-
-#### メタデータ仕様（`app/layout.tsx`）
-
-Next.js の `Metadata` 型（バージョンごとに構造が異なるため、実際のバージョンの定義を優先すること）を使用し、以下の項目を更新する。
-
-```ts
-// 変更後イメージ（実際の型定義は node_modules/next/dist/docs/ を参照）
-export const metadata = {
-  title: 'igiari',
-  description: '<igiari ブランドに沿ったキャッチコピー>',
-  openGraph: {
-    title: 'igiari',
-    description: '<同上>',
-    siteName: 'igiari',
-  },
-}
-```
-
-**キャッチコピーの方針**: 「恋人・夫婦・家族が話し合える場」というサービスの性格を示しつつ、要件定義書の「対立感・緊張感を煽らない」という非機能要件と矛盾しない表現にすること。具体的な文言はスコープ内で自由に設定してよい。
-
-**OGP 画像のテキスト**: `og:image` の画像ファイル内テキストの変更はスコープ外。ただし `og:image:alt` など HTML 属性として存在する alt テキストは更新対象。
-
-#### 文字列の網羅的な置換
-
-プロジェクト全体で `家庭裁判所`・`Family Court`・`family-court`（package.json の name フィールド等）を検索し、ヒットした箇所をすべて確認してから置換する。コメント・JSDoc・型定義内の記述も対象に含める。
+| メソッド | POST |
+| 認証 | `auth.getUser()` |
+| Supabase クライアント | `createAdminClient()`（Storage 操作・profiles 更新） |
+| フォームデータ取得 | `request.formData()` |
+| MIME type → 拡張子マッピング | `image/jpeg` → `jpg` / `image/png` → `png` / `image/webp` → `webp` |
 
 ---
 
-### G-2: デザイン色調統一（IMP-002）
+### app/api/profile/route.ts（新規 or 既存を拡張）
 
-#### カラーパレット設計
+**責務**: `defense_custom_instruction` などの非機密プロフィールフィールドの更新。PATCH メソッドを実装する。
 
-**ブランドパレット（`brand`）**:
+---
 
-`igiari` のブランドイメージ（温かみ・中立・柔らかさ）に合わせ、Tailwind 組み込みの amber スケールと同値のカスタムパレットを `brand` という名称で定義する。エイリアス化することで、将来ブランドカラーが変わった場合もトークン値の変更のみで全体に反映できる。
+### app/profile/page.tsx および関連コンポーネント（変更）
 
-| トークン | 推奨値 | 主な用途 |
-|---|---|---|
-| brand-50 | `#fffbeb` | 背景・ホバー面 |
-| brand-100 | `#fef3c7` | カード背景・軽い強調面 |
-| brand-200 | `#fde68a` | ライトアクセント |
-| brand-300 | `#fcd34d` | バッジ・タグ |
-| brand-400 | `#fbbf24` | アイコン |
-| brand-500 | `#f59e0b` | プライマリボタン・主要リンク |
-| brand-600 | `#d97706` | プライマリボタン hover 状態 |
-| brand-700 | `#b45309` | フォーカスリング・強調テキスト |
-| brand-800 | `#92400e` | ダーク背景上のテキスト |
-| brand-900 | `#78350f` | 最暗色（見出し等） |
+プロフィール画面に以下 2 つの UI ブロックを追加する。
 
-**ニュートラルパレット**:
+**G-1: アバター表示・アップロード UI**
 
-既存の `gray-*`（クールグレー）を `stone-*`（ウォームグレー）に置き換える。`stone` は中性〜暖色の傾きがあり、amber 系 brand パレットとの視覚的親和性が高い。`stone-*` は Tailwind 組み込みのため追加定義は不要（ただし Tailwind v4 での利用可否は実装前に確認すること）。
+| 要素 | 仕様 |
+|---|---|
+| アイコン表示 | `avatar_url` が non-null なら `<img>` を表示。null なら現行の頭文字丸アイコンを fallback として表示 |
+| ファイル選択 | `<input type="file" accept="image/jpeg,image/png,image/webp">` を hidden にし、label または button でラップ |
+| クライアントサイドバリデーション | MIME type・サイズ（2MB 以下）をアップロード前にチェックし、不正なら UI でエラーメッセージを表示 |
+| アップロード中状態 | ローディングインジケーターを表示し、完了または失敗まで送信ボタンを disabled にする（二重送信防止） |
 
-#### Tailwind CSS v4 での定義方式（重要）
+**G-2: カスタム指示 UI**
 
-本プロジェクトは Tailwind CSS **4.x** を使用している。v4 ではカスタムテーマの設定方式が v3 から大幅に変更されており、`tailwind.config.ts` の `theme.extend.colors` ではなく、`app/globals.css` の `@theme` ディレクティブでカスタムカラーを定義することが想定される。
+| 要素 | 仕様 |
+|---|---|
+| テキストエリア | `maxLength={200}`、`rows` は 3 以上 |
+| 文字数カウンター | `200 - 現在文字数` をリアルタイム表示（0 未満は表示しない） |
+| 保存ボタン | クリックで PATCH /api/profile を呼び出す |
 
-**v4 での定義例（`globals.css` 内）**:
+---
 
-```css
-@import "tailwindcss";
+### lib/defense.ts（変更）
 
-@theme {
-  --color-brand-50: #fffbeb;
-  --color-brand-100: #fef3c7;
-  --color-brand-200: #fde68a;
-  --color-brand-300: #fcd34d;
-  --color-brand-400: #fbbf24;
-  --color-brand-500: #f59e0b;
-  --color-brand-600: #d97706;
-  --color-brand-700: #b45309;
-  --color-brand-800: #92400e;
-  --color-brand-900: #78350f;
-}
+`generateDraft` とヒアリング質問生成関数のパラメータに `customInstruction` を追加する。
+
+```typescript
+// 追加するパラメータ（両関数共通）
+customInstruction?: string | null
 ```
 
-**v3 での定義例（`tailwind.config.ts` 内）**:
+**システムプロンプトへの付加方式**
 
-```ts
-// tailwind.config.ts
-theme: {
-  extend: {
-    colors: {
-      brand: {
-        50: '#fffbeb',
-        // ...
-        900: '#78350f',
-      },
-    },
-  },
-},
+`customInstruction` が truthy な場合のみ、システムプロンプトの末尾に「追加指示:」ラベル付きで付加する。
+
+```typescript
+const systemPrompt = baseSystemPrompt
+  + (customInstruction
+      ? `\n\n追加指示:\n${escapeXml(truncate(customInstruction, 200))}`
+      : '');
 ```
 
-プロジェクトの実際の設定方式は、`tailwind.config.ts` と `globals.css` を読んで確認してから実装すること。
+- `escapeXml` と `truncate` は既存ユーティリティ（PR #14 C-3 で確立）をそのまま流用する
+- `truncate` の上限は DB CHECK 制約と合わせて 200 文字
 
-#### 色の置き換えマッピング
+---
 
-| 既存クラス | 置き換え先 | 適用箇所の例 |
-|---|---|---|
-| `blue-600` / `blue-700` | `brand-600` / `brand-700` | プライマリボタン・主要リンク |
-| `blue-500` | `brand-500` | アイコン・インラインアクセント |
-| `blue-100` / `blue-50` | `brand-100` / `brand-50` | 薄い背景・ホバー面 |
-| `gray-900` | `stone-900` | 見出しテキスト |
-| `gray-700` / `gray-600` | `stone-700` / `stone-600` | 本文テキスト |
-| `gray-400` | `stone-400` | プレースホルダー・補足テキスト |
-| `gray-300` | `stone-300` | ボーダー |
-| `gray-100` / `gray-50` | `stone-100` / `stone-50` | 背景面 |
+### app/api/defense/route.ts、app/api/defense/draft/route.ts（変更）
 
-**変更しない色**:
+両ルートはすでに plaintiff の `profiles` を参照して `api_key_encrypted` を取得している。同一クエリに `defense_custom_instruction` を追加し、`lib/defense.ts` の関数呼び出しに渡す。
 
-- `red-*`（エラー・警告）、`green-*`（成功・完了）などステータスを意味する色は変更しない。
-- レイアウト・タイポグラフィ（フォントサイズ・余白・幅）は変更しない。
+```typescript
+// 既存クエリに defense_custom_instruction を追加
+const { api_key_encrypted, defense_custom_instruction } = profile;
+
+// 関数呼び出しに追加
+await generateDraft({ ..., customInstruction: defense_custom_instruction });
+```
 
 ---
 
 ## セキュリティ設計（認証・認可・入力検証の方針）
 
-本変更（テキストおよびスタイリングの変更）はセキュリティ要件に影響を与えない。
+### 認証・認可
+
+- 全 API Route で `auth.getUser()` による認証確認（`getSession()` は使用しない。requirements.md のセキュリティ要件に準拠）
+- Storage 書き込みは `createAdminClient()` 経由で行い、アップロードパスが `{認証済み user_id}/...` に一致することをサーバーサイドで検証してから実行する
+- Storage には別途 RLS ポリシーを設定し、直接アクセスへの二重防御とする
+
+### 入力検証
+
+| 入力 | 検証方法 |
+|---|---|
+| アバターファイル | MIME type（allowlist: jpeg/png/webp）・サイズ（≤ 2MB）をサーバーサイドで検証 |
+| defense_custom_instruction | API Route で ≤ 200 文字の検証 + DB の CHECK 制約（二重バリデーション） |
+| プロンプト埋め込み時 | `escapeXml(truncate(customInstruction, 200))` によるプロンプトインジェクション対策 |
+
+### アバター URL の扱い
+
+- `profiles.avatar_url` に保存するのは Supabase Storage の公開 URL（平文）であり、機密情報ではない。暗号化不要
+- `avatar_url` はクライアントに返してよい
 
 ---
 
 ## 制約・前提条件
 
-1. **スコープ外**: ロゴ・ファビコン画像の新規作成、ドメイン変更、Supabase プロジェクト名変更、フォント変更、レスポンシブ再設計。
+1. **profiles レコードの存在保証**: `PATCH /api/profile` は `upsert` ではなく `update` を使う。profiles レコードはサインアップ時に作成される前提。この前提が崩れる場合はガード処理を追加すること。
 
-2. **Next.js バージョン**: 環境定義書では Next.js **16.2.6**（要件定義書記載の v14 とは異なる）。`app/layout.tsx` の `Metadata` 型・`metadata` export の書き方など、バージョン間でインターフェースが変わっている可能性がある。AGENTS.md の指示に従い、`node_modules/next/dist/docs/` を参照してから実装すること。
+2. **avatars バケットの事前作成**: Supabase Storage バケットは migration（`storage.buckets` テーブルへの INSERT）またはダッシュボードで作成する。作成を忘れると `/api/profile/avatar` が 500 エラーになる。
 
-3. **Tailwind CSS v4 の破壊的変更**: `tailwind.config.ts` のカスタムカラー定義方式が v3 と異なる。実装前に既存の `tailwind.config.ts` および `globals.css` を読み、現行プロジェクトの設定方式を確認すること。
+3. **拡張子変更時の旧ファイル削除**: `{user_id}/avatar.jpg` → `{user_id}/avatar.png` のように拡張子が変わる再アップロードでは、`upsert: true` では旧オブジェクトが残る。API Route は新アップロード前に `profiles.avatar_url` から旧パスを抽出し、Storage オブジェクトを明示的に削除すること。
 
-4. **`stone-*` パレットの利用可否**: Tailwind v4 で `stone-*` が組み込み済みかを確認し、利用できない場合は CSS 変数で補完する。
+4. **弁護人カスタム指示は原告のみ**: `defense_custom_instruction` は plaintiff（原告）のプロフィールから取得してプロンプトに付加する。被告側カスタム指示はスコープ外。
 
-5. **文字列検索の網羅性**: リネーム対象文字列を全ファイルで検索してから一括置換すること。動的に生成される文字列（`template literal` 内等）も見逃さないよう注意する。
+5. **Next.js App Router での multipart 取得**: Route Handler で `multipart/form-data` を受け取る場合は `request.formData()` を使用する（`body-parser` は不要）。実際の API は AGENTS.md の指示に従い `node_modules/next/dist/docs/` で確認すること。
+
+6. **未解決: プロフィール画面の現行コンポーネント構成**: `/profile` の既存 Server/Client Component 分割・`profiles` 取得クエリの構造は実装コードを確認して判断すること。新 UI ブロックをどの階層に追加するかは実装時に決定する。
+
+7. **未解決: PATCH /api/profile の存在確認**: API キー登録に既存の PATCH エンドポイントが存在する場合は拡張する。ない場合は新規作成する。

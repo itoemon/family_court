@@ -2,121 +2,79 @@
 
 ## タスク概要
 
-FEAT-001（サービス名 `igiari` リネーム）と IMP-002（色調統一）を同一 PR で実施する。API・DB 変更はなし。UI テキストとスタイリングのみの変更。
+FEAT-002 Phase 1。`profiles` テーブルへのカラム追加・Supabase Storage バケット新設・プロフィール画面 UI 拡張・弁護人AI連携改修の 4 分野にまたがる変更。API・DB・UI・AI ロジック全部に手が入るが、ページ新設はなくスコープは明確。
 
 ---
 
 ## 実装順序
 
-1. `README.md` の記述更新（ビルドリスクなし・最初に終わらせる）
-2. `package.json` の `name` フィールド（任意・影響範囲ゼロ）
-3. `app/layout.tsx` の metadata・OGP 更新
-4. 各ページの表示テキスト置換（`家庭裁判所`・`Family Court` を全検索してから置換）
-5. `tailwind.config.ts` または `globals.css` に `brand` パレット定義（Tailwind v4 の方式に従う）
-6. 全コンポーネントの色クラス置換（設計書のマッピング表に従う）
+1. **DB migration**: `profiles` に `avatar_url`・`defense_custom_instruction` カラムを追加する migration ファイルを作成
+2. **Storage**: `avatars` バケット作成 + RLS ポリシー設定（migration または Supabase ダッシュボード）
+3. **lib/types.ts**: `Profile` 型に `avatar_url` / `defense_custom_instruction` を追加
+4. **lib/defense.ts**: `generateDraft` とヒアリング関数に `customInstruction?: string | null` 引数を追加し、システムプロンプト末尾への付加ロジックを実装
+5. **app/api/defense/route.ts・app/api/defense/draft/route.ts**: 既存の `profiles` クエリに `defense_custom_instruction` を追加し、手順 4 の関数に渡す
+6. **app/api/profile/avatar/route.ts**: アバターアップロード API Route を新規作成
+7. **app/api/profile/route.ts**: カスタム指示保存の PATCH エンドポイントを追加（既存があれば拡張、なければ新規）
+8. **app/profile/page.tsx**: アバター UI ブロック + カスタム指示 UI ブロックを追加
 
-**順序の根拠**: テキスト変更（1〜4）はビルド失敗リスクがゼロのため先行させる。色変更（5〜6）は定義が先に必要なため、パレット定義（5）を色置換（6）より先に行う。
+**順序の根拠**: 型定義（3）が最初に安定しないと下流の実装で型エラーが連鎖する。AI ロジック（4・5）はプロフィール UI（8）より先に固めることで、UI 側は「保存できる→AIに効く」の動線を一気に確認できる。Storage（2）はアバター API（6）より先に作成しないとテストできない。
 
 ---
 
 ## 判断根拠
 
-### なぜ amber 系を brand パレットのベースにするか
+### なぜアバターアップロードを直接クライアント→Storage ではなく API Route 経由にするか
 
-要件定義書の「温かみのある・柔らかい雰囲気。対立感・緊張感を煽らない」「赤・強調原色を避ける」という非機能要件から、寒色（青）や強い原色は不適切。amber は明度の幅が広く（50〜900）、背景・アクセント・テキストをすべてカバーできる。また Tailwind 組み込みパレットと同値にすることで、stone との組み合わせ調整や将来のカラー変更が容易になる。
+環境定義書の「API Routes での書き込みは必ず `createAdminClient()` を使い、サーバーサイドで本人確認を行う。RLS に認可を委ねない」という規則に従った。Storage RLS（`(storage.foldername(name))[1] = auth.uid()::text`）も設定するが、これはサーバー側バリデーションの二重防御。主たる認可はサーバーサイド。
 
-### なぜ gray-\* → stone-\* とするか
+### なぜ拡張子込みのパス（`{user_id}/avatar.{ext}`）で旧ファイル削除が必要か
 
-`gray-*`（クールグレー）は青みを帯びており、amber/orange 系の brand パレットと並べたときに色調の乖離が生じる。`stone-*`（ウォームグレー）は中性〜暖色の傾きがあり、brand パレットとの視覚的親和性が高い。
+`upsert: true` はパスが完全一致した場合のみ上書きする。ユーザーが `.jpg` をアップロード後に `.png` を再アップロードすると、旧 `.jpg` が Storage に残り続ける。API Route は新アップロード前に `profiles.avatar_url` から現行パスを抽出し、存在する場合は先に削除する。
 
-### なぜ `brand` エイリアスを使うか
+### なぜ `defense_custom_instruction` を `escapeXml + truncate` で処理するか
 
-amber-500 を直接使うと将来ブランドカラーが変わったときに全コンポーネントの書き換えが必要になる。`brand-500` というエイリアスを一箇所で定義しておけば、トークン値の変更のみで全体に反映できる。
+PR #14 (C-3) でプロンプトインジェクション対策として確立されたパターン。ユーザー入力をシステムプロンプトに埋め込む際は必ずこのパターンを適用する。DB で 200 文字制限があっても、プロンプト埋め込み時に再度 `truncate(200)` を適用して二重に保護する。
+
+### なぜ `defense_custom_instruction` を defense API Route 内で取得するか（UI 経由で渡さない）
+
+task.md の「弁護人APIルートで plaintiff の `defense_custom_instruction` を取得してプロンプトに渡す」という要件に基づく。UI から渡す設計にすると、改ざんによるプロンプト注入の窓口を増やす。サーバーサイドで DB から直接取得する方が安全。
 
 ---
 
 ## 注意事項（実装前に必ず確認）
 
-### Next.js のバージョン差異（最重要）
+### Next.js App Router での multipart/form-data 取得
 
-環境定義書では Next.js **16.2.6**（要件定義書には 14 と記載があるが環境定義書が正）。AGENTS.md に「This is NOT the Next.js you know... Read the relevant guide in `node_modules/next/dist/docs/` before writing any code.」と明記されている。
+Route Handler の `request.formData()` を使う。AGENTS.md の指示通り、実装前に `node_modules/next/dist/docs/` を確認してバージョン固有の API を把握すること。
 
-`app/layout.tsx` の `Metadata` 型・`metadata` export の書き方・OGP の設定方法などが v14 と異なる可能性があるため、**実装前に `node_modules/next/dist/docs/` を確認すること**。
+### PATCH /api/profile の既存確認
 
-### Tailwind v4 の設定方式（カラーパレット定義）
+API キー登録に既存の `/api/profile` エンドポイントが存在する場合は、メソッド・パスが衝突しないよう確認すること。同 PATH に複数のメソッドハンドラを共存させるか、別パスにするかは既存実装を見て判断する。
 
-環境は Tailwind CSS **4.x**。v4 ではカスタムカラーの定義方式が v3 から変わっている。
+### defense API での profiles 取得クエリ拡張
 
-プロジェクトの `tailwind.config.ts` と `app/globals.css` を先に読んで現行方式を把握してから実装すること。
+`defense/route.ts` と `defense/draft/route.ts` はすでに `profiles` クエリを持っているはず。`api_key_encrypted` を取得している箇所に `defense_custom_instruction` を追加するだけでよい。クエリを新たに追加する必要はない（二重クエリにしない）。
 
-**v4 方式（`globals.css` に `@theme` ディレクティブ）**:
+### プロフィール画面の Server/Client Component 分割
 
-```css
-@import "tailwindcss";
+`/profile` の既存実装が Server Component か Client Component かによって、アバターのプレビュー（ファイル選択後の即時表示）やカスタム指示のリアルタイム文字数カウンターの実装方針が変わる。ファイルを読んでから設計すること。
 
-@theme {
-  --color-brand-50: #fffbeb;
-  --color-brand-100: #fef3c7;
-  --color-brand-200: #fde68a;
-  --color-brand-300: #fcd34d;
-  --color-brand-400: #fbbf24;
-  --color-brand-500: #f59e0b;
-  --color-brand-600: #d97706;
-  --color-brand-700: #b45309;
-  --color-brand-800: #92400e;
-  --color-brand-900: #78350f;
-}
-```
+### `profiles.avatar_url` の URL キャッシュ
 
-**v3 方式（`tailwind.config.ts` の `theme.extend.colors`）**:
-
-```ts
-theme: {
-  extend: {
-    colors: {
-      brand: {
-        50: '#fffbeb',
-        100: '#fef3c7',
-        200: '#fde68a',
-        300: '#fcd34d',
-        400: '#fbbf24',
-        500: '#f59e0b',
-        600: '#d97706',
-        700: '#b45309',
-        800: '#92400e',
-        900: '#78350f',
-      },
-    },
-  },
-},
-```
-
-v4 では `tailwind.config.ts` が無視される構成になっている場合がある。プロジェクトの実際の動作方式を確認してから選択すること。
-
-### 文字列置換の網羅性
-
-`家庭裁判所`・`Family Court`・`family-court`（package.json 等）を全ファイルで検索し、ヒット箇所をすべて確認してから置換する。`template literal` や動的文字列として埋め込まれている箇所も見逃さないこと。コメント・JSDoc も対象。
-
-### ステータス系カラーは変更しない
-
-`red-*`（エラー）、`green-*`（成功）など、状態を意味する色は変更しない。デザイン上の見た目の問題があっても、今回の変更対象は「青系・グレー系」の UI カラーのみ。
-
-### `stone-*` パレットの利用可否確認
-
-Tailwind v4 での `stone-*` の組み込み状況を確認すること。利用できない場合は `@theme` で同値の CSS 変数を定義して補完する。
+Supabase Storage の公開 URL はパスが同じなら URL 文字列も同じ（`upsert` でファイルを上書きしてもブラウザキャッシュが残る可能性がある）。CDN・ブラウザキャッシュの影響を受けないよう、再アップロード後の URL にキャッシュバスター（`?t={timestamp}` など）を付与して `profiles.avatar_url` に保存することを検討する。ただし task.md で明示されていないためオプション扱い。
 
 ---
 
-## 未解決事項（実装時に判断が必要な箇所）
+## 未解決事項（実装時に判断が必要）
 
-### 1. キャッチコピーの文言
+### 1. プロフィール画面の既存コンポーネント構成
 
-`metadata.description` や UI 上のサブテキストの具体的な文言は設計書の対象外。「温かみのある・柔らかい雰囲気」「裁判形式の話し合い」という要件定義書の方針に沿って作成すること。
+`/profile` の `profiles` 取得クエリ・Server/Client 分割・アイコン表示コンポーネントの構造は実装コードを読んで確認すること。新 UI ブロックをどこに挿入するかはその確認後に決定する。
 
-### 2. OGP 画像の alt テキスト
+### 2. PATCH /api/profile の既存有無
 
-現行に `og:image` が設定されている場合、画像ファイル内のテキスト変更はスコープ外だが、`og:image:alt` など HTML 属性として存在する alt テキストは更新対象。現行コードを確認し、該当箇所があれば更新すること。
+API キー更新に既存の API Route があれば拡張、なければ `app/api/profile/route.ts` を新規作成する。
 
-### 3. `gray-*` の用途判断
+### 3. avatars バケット作成方式
 
-`gray-*` のうちニュートラルなもの（ボーダー・テキスト）は `stone-*` に、アクセント的な用途のものは `brand-*` に振り分ける。判断が難しい場合は `stone-*` を優先する。
+Supabase migration（`storage.buckets` テーブルへの INSERT）とダッシュボード手動設定のどちらで行うかはプロジェクトの運用方針に従うこと。他のバケットがあれば同じ方式にそろえる。バケットが存在しない状態でアバター API が呼ばれると 500 になる。本番デプロイ前に必ず作成すること。
