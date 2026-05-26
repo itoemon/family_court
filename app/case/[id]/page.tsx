@@ -199,7 +199,6 @@ export default function CasePage({ params }: { params: Promise<{ id: string }> }
 
   useEffect(() => {
     if (!caseId) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchDefenseMessages();
   }, [caseId, fetchDefenseMessages]);
 
