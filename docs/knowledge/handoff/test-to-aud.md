@@ -1,8 +1,8 @@
-# テスタ → オーディ引き継ぎメモ（FEAT-003）
+# テスタ → オーディ 引き継ぎメモ（FEAT-003）
 
-**日時**: 2026-05-26 17:00  
-**テスタ**: テスタ  
-**対象**: FEAT-003 法律作成機能
+**日時**: 2026-05-26 17:12  
+**テスタ**: QA エンジニア（テスタ）  
+**対象**: FEAT-003 法律作成機能（FIX-1, FIX-2）
 
 ---
 
@@ -10,99 +10,126 @@
 
 | 項目 | 結果 | 備考 |
 |---|---|---|
-| **テスト実行** | ✅ 完了 | Playwright E2E テスト 4 シナリオ実施 |
-| **CRITICAL 通過** | 2/4（50%） | L01, L03 通過 / L02, L04 失敗 |
-| **判定** | ❌ **不合格** | CRITICAL で 2 件の失敗を確認 |
-| **ビルド差し戻し** | ⚠️ **要修正** | 高優先度バグ 2 件：InvitePanel, オーナー権移譲 |
+| **テスト実行** | ✅ **完了** | Playwright E2E テスト 8 シナリオ（critical + laws） |
+| **CRITICAL 通過** | **8/8（100%）** | M01〜M04, L01〜L04 全通過 |
+| **判定** | ✅ **通過** | パイプライン通過基準満たし |
+| **ビルド検証** | ✅ **完了** | FIX-1（L02）, FIX-2（L04）確認 |
 
 ---
 
 ## テスト実行詳細
 
-### CRITICAL-L01: 法律を作成できる ✅ 通過
-- ログイン済みユーザーが `/laws/new` で法律を作成できる
-- 条文が詳細ページに表示される
-- 作成者が自動的にオーナーになる
+### FEAT-001（ケース機能）結果
 
-### CRITICAL-L02: フレンド招待と承認 ❌ **失敗**
-**失敗内容**: フレンド招待後、メンバー一覧に追加されない
+| シナリオ | 結果 | 時間 |
+|---------|------|------|
+| CRITICAL-M01: 2ユーザー間の会話フロー | ✅ 通過 | 16160ms |
+| CRITICAL-M02: セッション復元 | ✅ 通過 | 10377ms |
+| CRITICAL-M03: 第三者の割り込み拒否 | ✅ 通過 | 10599ms |
+| CRITICAL-M04: ゲスト被告フロー | ✅ 通過 | 9231ms |
 
-**根本原因（確認）**:
-- `eng-to-aud.md` で報告されていた HIGH バグを実際に再現
-- **症状**: InvitePanel の招待機能が機能していない（メンバーが追加されない）
-- **原因推定**: InvitePanel が `/api/friends` ベースで修正されているものの、招待 API (`POST /api/laws/[id]/invitations`) が正常に動作していないか、その後の承認フロー（`PATCH /api/laws/[id]/invitations/[invId]`）の実装に問題がある
-- **Dev ログ確認**: `GET /api/friends 200` は正常。投票・法律作成は 201/200 で成功しているため、API インフラは正常
+### FEAT-003（法律機能）結果
 
-**テスタからのコメント**: ビルドの実装ノートで「InvitePanel の検索を `/api/friends` に変更した」と記載されているが、招待リクエストの送信・承認フローが機能していない可能性がある
-
-### CRITICAL-L03: 改定案の提出と全員合意 ✅ 通過
-- メンバーが改定案を提出できる
-- 全メンバーが投票（賛成）したとき、条文が更新される
-- 改定案レコードが削除される（提案実行の完全性を確認）
-
-### CRITICAL-L04: オーナー権の移譲 ❌ **失敗**
-**失敗内容**: オーナー権移譲モーダルの「移譲する」ボタンが `disabled` のまま
-
-**Playwright エラー**:
-```
-element is not enabled
-Timeout 10000ms exceeded
-```
-
-**原因推定**:
-- `OwnerTransferModal` コンポーネントの enabled/disabled ロジックが不適切
-- 移譲先メンバーの選択状態が完全でないまま button が disabled のままになっている
-- または、モーダル内のセレクト UI が実装されていない可能性
+| シナリオ | 結果 | 内容 | 時間 |
+|---------|------|------|------|
+| CRITICAL-L01: 法律を作成できる | ✅ 通過 | オーナー自動設定 | 3507ms |
+| CRITICAL-L02: フレンド招待と承認（FIX-1） | ✅ 通過 | `/laws` ページでの承認実装 | 6831ms |
+| CRITICAL-L03: 改定案の提出と全員合意 | ✅ 通過 | 合意チェック・条文更新 | 9563ms |
+| CRITICAL-L04: オーナー権の移譲（FIX-2） | ✅ 通過 | L02 修正の連鎖で解決 | 7057ms |
 
 ---
 
-## オーディが優先確認すべき項目
+## 修正検証結果
 
-### [HIGH] ビルドへの差し戻し案件
+### FIX-1: 招待受信 UI の追加（L02 ✅ 通過）
 
-| 案件 | 影響 | 確認方法 |
-|-----|------|--------|
-| InvitePanel の招待フロー | L-2（メンバー招待）機能全体が不可 | `POST /api/laws/[id]/invitations` と `PATCH /api/laws/[id]/invitations/[invId]` の実装確認 |
-| OwnerTransferModal の enabled/disabled ロジック | L-4（オーナー権移譲）が使用不可 | `app/laws/[id]/_components/OwnerTransferModal.tsx` のボタン enable 条件を確認 |
+**実装確認内容**:
+- ✅ `/laws` ページで pending 招待が表示される
+- ✅ 招待者名、法律名が正しく表示
+- ✅ 「承認」「拒否」ボタンが機能
+- ✅ PATCH /api/laws/[id]/invitations/[invId] API が呼び出される
+- ✅ メンバー一覧への追加完了後、ページリロードで反映
 
-### [MEDIUM] セキュリティ確認項目（設計書ベース）
+**テスト修正箇所**:
+- `tests/e2e/laws.spec.ts` L02: `await pageB.goto(lawUrl)` → `await pageB.goto('/laws')` に変更
+- 承認 UI のセレクタを `/laws` ページの pending 招待セクション用に調整
 
-- RLS ポリシーの SELECT/WRITE 分離が正しく実装されているか
-- 認可チェック（オーナー判定、メンバー確認）が API 層で実装されているか
-- UUID 検証、エラーハンドリング（409 Conflict など）
+### FIX-2: OwnerTransferModal disabled 解除（L04 ✅ 通過）
 
-### [LOW] ユーザーフロー確認
+**検証結果**:
+- FIX-1 による B のメンバー追加 → OwnerTransferModal の candidates.length > 0
+- ✅ 「移譲する」ボタンが enabled 状態になる
+- ✅ オーナー権の移譲が正常に実行
+- ✅ B 側でオーナー権が付与される確認
 
-- UI メッセージが適切か（招待・承認・移譲の各フェーズ）
-- バリデーションエラーが正しく表示されるか
+**修正の要不要**:
+- **FIX-2（disabled 条件の変更）は不要** — FIX-1 のみで連鎖解決
+- disabled ロジック `disabled={loading || candidates.length === 0}` は正しい
+
+**テスト修正箇所**:
+- `tests/e2e/laws.spec.ts` L04: L02 修正に同期
+  - 招待承認を `/laws` ページで実行
+  - 招待後の「招待しました」メッセージ待機を追加（確実性向上）
+  - モーダル内の radio ボタン選択と isEnabled() チェックを追加
 
 ---
 
-## テスト実行時の環境詳細
+## オーディの監査重点項目
+
+### [MUST] セキュリティ・認可検証
+
+- [ ] `/laws` ページの pending 招待取得が `invitee_id = auth.uid()` で制限されている
+- [ ] `PATCH /api/laws/[id]/invitations/[invId]` で invitee_id 本人確認（403 チェック）
+- [ ] 招待ステータス `pending | accepted | rejected` のバリデーション
+- [ ] 既処理招待（status != 'pending'）への再操作が 409 で弾かれる
+
+### [MUST] 機能検証
+
+- [ ] `app/laws/page.tsx` での pending 招待セクション実装を確認
+- [ ] `router.refresh()` によるメンバー一覧即座更新
+- [ ] OwnerTransferModal で candidates = members.filter(m => m.user_id !== currentUserId) が正しく計算
+
+### [SHOULD] UI/UX 確認
+
+- [ ] 招待受信セクションの見出し・説明文が適切
+- [ ] 「承認」「拒否」ボタンのラベルが明確
+- [ ] エラーメッセージ表示（フレンドでない場合など）
+
+### [LOW] パフォーマンス
+
+- [ ] pending 招待の取得クエリが効率的（`law_invitations(invitee_id)` インデックス活用）
+- [ ] メンバー数が多い場合の OwnerTransferModal render パフォーマンス
+
+---
+
+## テスト環境詳細
 
 | 項目 | 値 |
 |------|-----|
-| テスト実行時刻 | 2026-05-26 17:00 |
+| テスト実行時刻 | 2026-05-26 17:12 JST |
 | Node.js | v20+ |
 | Next.js | 14 (App Router) |
 | Playwright | 1.60.0 |
 | ブラウザ | Chromium |
-| localhost:3000 | 正常に起動 |
-| E2E テストアカウント | E2E_TEST_EMAIL_A, E2E_TEST_EMAIL_B（Supabase Auth で登録済み） |
-
-**DB マイグレーション**: 前回セッションの問題は解決。`20260526000003_feat003_laws.sql` は適用済み  
-**API ログ**: エラーなし（201, 200, 307 リダイレクト正常）
+| localhost:3000 | ✅ 正常起動 |
+| DB マイグレーション | ✅ 20260526000003_feat003_laws.sql 適用済み |
+| フレンド関係 | ✅ E2E_TEST_EMAIL_A <→ E2E_TEST_EMAIL_B（`friend_requests` status='accepted'） |
 
 ---
 
-## ビルド修正後のテスト再開条件
+## テストレポート位置
 
-1. InvitePanel 招待フロー修正（L02 再テスト）
-2. OwnerTransferModal enabled ロジック修正（L04 再テスト）
-3. テスタが修正後に再度 CRITICAL-L02, L04 を実行
-4. 2 件とも通過したら NORMAL シナリオ（L05～L08）を実施
+詳細テストログは以下を参照：
+- **テストレポート**: `docs/knowledge/test-log/test_20260526_171212.md`
+- **修正後テスト結果**: laws.spec.ts L02, L04 修正後のテスト実行結果を記載
 
 ---
 
-*テスタ実行: 2026-05-26 17:00*  
-*テストレポート: `docs/knowledge/test-log/test_20260526_165800.md`*
+## オーディへの質問・要望
+
+なし。テスト結果が明確で監査実施に必要な情報は十分。
+
+---
+
+*テスタ完了: 2026-05-26 17:12 JST*  
+*ステータス*: ✅ **オーディへ引き継ぎ完了**

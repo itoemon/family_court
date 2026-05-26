@@ -12,61 +12,59 @@ metadata:
 
 ---
 
-## 最終更新: 2026-05-26（Stop フック自動更新 セッション 46 終了）
+## 最終更新: 2026-05-26（Stop フック自動更新 セッション 995e3434 終了）
 
 ### 現在のブランチ・PR 状態
 
-- ブランチ: `feature/20260526-170303`（CRITICAL バグ修正ブランチ）
-- HEAD: `340eb4b` — `docs(FEAT-003): 修正指示・テストログ・E2E スペック追加`
-- **未ステージ（working tree modified）**:
-  - `tests/e2e/laws.spec.ts`（変更あり・未コミット — 次セッションで内容確認推奨）
-- **未コミット（untracked）**:
-  - `scripts/check_tables.js`（テスタが生成したユーティリティ）
+- ブランチ: `feature/20260526-172950`（FEAT-003 バグ修正ブランチ）
+- HEAD: `dcdc3e8` — `docs(FEAT-003): 監査レポート追加・修正指示を task.md に記載`
+- **未コミット（staged / unstaged / untracked）**:
+  - `app/api/laws/[id]/invitations/[invId]/route.ts`（**staged** — index 変更済み）
+  - `app/laws/page.tsx`（unstaged 差分あり）
+  - `app/laws/_components/`（untracked — 新規ディレクトリ）
+  - `docs/knowledge/handoff/test-to-aud.md`（unstaged 差分あり）
+  - `memory/session_context.md`（unstaged 差分あり）
+  - `tests/e2e/laws.spec.ts`（unstaged 差分あり）
+  - `scripts/check_tables.js`（untracked）
 
-### 直近セッションでやったこと（2026-05-26 セッション 41-46）
+### 直近セッションでやったこと（2026-05-26 セッション 995e3434）
 
-- セッション 46: Stop フック自動更新のみ（`tests/e2e/laws.spec.ts` 未ステージ変更を記録）
-- セッション 45: Stop フック自動更新のみ（HEAD・差分に変化なし）
-- セッション 44: Stop フック自動更新のみ（HEAD・差分に変化なし）
-- 前セッション（40）での主な作業は以下の通り既にコミット済み:
-  - `202e618`: CRITICAL-L02 修正（招待承認 UI 追加）・L04 連鎖解消・MemberList テキスト修正
-  - `5e48961`: eng-to-aud 引き継ぎメモ更新
-  - `340eb4b`: 修正指示・テストログ・E2E スペック追加（`tests/e2e/laws.spec.ts` 216行追加）
+- セッション引き継ぎファイルの更新のみ（リードによる定期更新）
+- **HIGH-001 修正が進行中の可能性が高い**:
+  - `app/laws/page.tsx`（unstaged 変更）・`app/laws/_components/`（新規 untracked）・`app/api/laws/[id]/invitations/[invId]/route.ts`（staged）が存在
+  - これらはエンジニアによる HIGH-001（`/laws/page.tsx` に pending 招待セクション追加）の実装途中と推定
+- HEAD コミットは前セッションから変化なし（dcdc3e8 のまま）
 
-### HEAD~3..HEAD の変更サマリ
+### オーディ所見サマリ（前回監査 audit_20260526_171952）
 
-- `app/laws/[id]/_components/InvitationAccept.tsx`（新規 66行）: 招待承認 UI コンポーネント
-- `app/laws/[id]/_components/MemberList.tsx`（1行）: テキスト「(N人)」→「N人」修正
-- `app/laws/[id]/page.tsx`（+30行）: 非メンバー時の招待チェック・承認 UI 分岐追加
-- `docs/knowledge/handoff/eng-to-aud.md`: 修正済みバグ情報に更新
-- `docs/knowledge/task.md`: タスク指示更新
-- `docs/knowledge/test-log/test_20260526_163300.md`（新規 148行）: テストログ
-- `tests/e2e/laws.spec.ts`（新規 216行）: E2E テストファイル本体
+| 重要度 | ID | 内容 |
+|--------|----|----|
+| HIGH | HIGH-001 | `/laws/page.tsx` に pending 招待セクションが存在しない。招待を受けたユーザーが通常ナビから招待を発見できない。task.md の FIX-1 は `/laws/page.tsx` を実装場所に指定していたが、実装は `/laws/[id]/page.tsx` にのみ追加された |
+| MEDIUM | MEDIUM-001 | L02/L03/L04 の critical アサーションが `if (await btn.isVisible())` で偽陽性。条件分岐を外して unconditional assertion に変更が必要 |
+| MEDIUM | MEDIUM-002 | `PATCH /api/laws/[id]/invitations/[invId]` で URL の `[id]`（lawId）が検証に未使用（path confusion 状態） |
+| LOW | LOW-001 | URL パラメータ（lawId/propId/invId）の UUID バリデーション未実施 |
+
+### 次のアクション（優先順）
+
+1. **未コミット変更を確認**: `app/laws/page.tsx` と `app/laws/_components/` の内容を見て HIGH-001 実装の完了度を判断
+2. 実装完了なら → **コミット + テスタで E2E 再テスト**
+3. 未完了・未着手なら → **エンジニア起動**（`./scripts/agents.sh engineer`）して HIGH-001 修正を依頼
+4. テスト全通過後 → **オーディで再監査**（MEDIUM-001/002 も確認）
+5. **全通過後 PR 作成** → `main` へ
 
 ### FEAT-003 実装状況
 
 - **全 Step 実装・コミット完了** ✅
 - **Supabase マイグレーション適用済み** ✅
-- **E2E テスト（直近）: CRITICAL-L02・L04 修正適用後の再テスト結果待ち**
-  - CRITICAL-L01（法律作成）: ✅ 通過済み
-  - CRITICAL-L02（招待承認フロー）: 修正適用済み → **再テスト未実施**
-  - CRITICAL-L03（改定案提出・全員合意）: ✅ 通過済み
-  - CRITICAL-L04（オーナー権移譲）: 修正適用済み → **再テスト未実施**
-
-### 次のアクション（優先順）
-
-1. **テスタ再実行** — CRITICAL-L02・L04 が 4/4 通過するか確認（`./scripts/agents.sh tester` または手動 `npx playwright test`）
-2. **CRITICAL 4/4 通過確認後、オーディ起動**（`./scripts/agents.sh auditor`）
-3. **PR 作成** → `main` へ
-4. 次フィーチャー検討（`docs/backlog.md` 参照）
+- **E2E テスト: CRITICAL 8/8 通過（ただし偽陽性あり）** ⚠️
+- **オーディ監査: ❌ 不合格**（HIGH-001 修正がビルドに指示済み・実装確認が必要）
 
 ### 決定事項（引き継ぎ）
 
+- 招待承認 UI の配置について: task.md は `/laws/page.tsx` に pending 招待セクションを置くよう指定していた（設計通りの実装が必要）
+- `/laws/[id]/page.tsx` の非メンバー分岐にも承認 UI は残す（詳細ページから直接承認できる UX として有効）
 - FEAT-002（Phase 1 / Phase 2）・LOW-001/002・MEDIUM-001 すべて完了・マージ済み
 - Upstash Redis は無料枠（1日 10,000 コマンド）で十分（env vars なし時は skip fallthrough）
-- **現在フェーズ: FEAT-003（法律作成機能）— CRITICAL バグ 2 件修正済み・再テスト未実施**
-- CRITICAL-L02 の根本原因: 招待受信 UI が `/laws/[id]/page.tsx` に未実装だった（修正済み）
-- CRITICAL-L04 は L02 の連鎖解消で対応済み（OwnerTransferModal 自体の修正は不要）
 
 ### 覚えておくべき判断・経緯
 
@@ -85,7 +83,7 @@ metadata:
 - Upstash レートリミットは env vars なし時は `skip`（制限なし）で fallthrough する設計
 - FEAT-003 の法律 API では退会処理は「投票削除 → メンバー削除 → 合意チェック」の順序を厳守
 - InvitePanel は `/api/friends` で取得した一覧をローカルフィルタして招待済みを除外する設計（`/api/users/search` は使わない）
-- 招待承認 UI は `/laws/[id]/page.tsx` の非メンバー分岐内に配置（`/laws` ページには置かない設計に変更）
+- 招待承認 UI は `/laws/[id]/page.tsx` の非メンバー分岐内に加え、`/laws/page.tsx` にも pending 招待セクションを設置（HIGH-001 修正後）
 
 ### マージ済み PR（累計）
 
