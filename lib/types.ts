@@ -93,3 +93,13 @@ export interface DefenseMessage {
   content: string;
   createdAt: string;
 }
+
+export interface Profile {
+  id: string;
+  display_name: string;
+  api_key_encrypted: string | null;
+  avatar_url: string | null;
+  defense_custom_instruction: string | null;
+  created_at: string;
+  updated_at: string;
+}

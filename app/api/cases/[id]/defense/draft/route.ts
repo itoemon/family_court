@@ -60,7 +60,7 @@ export async function POST(
 
   const { data: plaintiffProfile } = await admin
     .from("profiles")
-    .select("api_key_encrypted")
+    .select("api_key_encrypted, defense_custom_instruction")
     .eq("id", c.plaintiff_id)
     .single();
 
@@ -76,6 +76,8 @@ export async function POST(
     console.error("[defense/draft] api key decryption failed:", err);
     return NextResponse.json({ error: "APIキーの復号に失敗しました" }, { status: 500 });
   }
+
+  const customInstruction = (plaintiffProfile.defense_custom_instruction as string | null) ?? null;
 
   const defenseQuery = admin
     .from("defense_messages")
@@ -118,6 +120,7 @@ export async function POST(
         dialogHistory,
         defenseHistory,
         userRole,
+        customInstruction,
       },
       apiKey
     );

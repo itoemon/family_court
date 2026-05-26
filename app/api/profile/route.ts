@@ -8,12 +8,15 @@ export async function PATCH(req: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "未ログイン" }, { status: 401 });
 
-  const { displayName, apiKey } = await req.json();
+  const { displayName, apiKey, defenseCustomInstruction } = await req.json();
 
-  const updates: Record<string, string> = {
-    display_name: displayName,
+  const updates: Record<string, unknown> = {
     updated_at: new Date().toISOString(),
   };
+
+  if (displayName !== undefined) {
+    updates.display_name = displayName;
+  }
 
   if (apiKey) {
     const isValid = await validateApiKey(apiKey);
@@ -26,6 +29,20 @@ export async function PATCH(req: NextRequest) {
     updates.api_key_encrypted = encryptApiKey(apiKey);
   }
 
+  if (defenseCustomInstruction !== undefined) {
+    if (defenseCustomInstruction !== null && typeof defenseCustomInstruction !== "string") {
+      return NextResponse.json({ error: "無効なリクエストです" }, { status: 400 });
+    }
+    const instruction = defenseCustomInstruction === "" ? null : defenseCustomInstruction;
+    if (instruction !== null && instruction.length > 200) {
+      return NextResponse.json(
+        { error: "弁護人への指示は200文字以内にしてください" },
+        { status: 400 }
+      );
+    }
+    updates.defense_custom_instruction = instruction;
+  }
+
   const admin = createAdminClient();
   const { data: updatedProfile, error } = await admin
     .from("profiles")
@@ -35,5 +52,5 @@ export async function PATCH(req: NextRequest) {
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  return NextResponse.json({ hasApiKey: !!updatedProfile?.api_key_encrypted });
+  return NextResponse.json({ hasApiKey: !!updatedProfile?.api_key_encrypted, success: true });
 }

@@ -8,6 +8,9 @@ create table public.profiles (
   id            uuid references auth.users(id) on delete cascade primary key,
   display_name  text not null,
   api_key_encrypted text,           -- ユーザーの AI API キー（AES-256 暗号化済み）
+  avatar_url    text,               -- アバター画像 URL（Supabase Storage）
+  defense_custom_instruction text   -- 弁護人AIへのカスタム指示（最大200文字）
+    check (defense_custom_instruction is null or char_length(defense_custom_instruction) <= 200),
   created_at    timestamptz default now() not null,
   updated_at    timestamptz default now() not null
 );

@@ -11,14 +11,6 @@
 
 ### 機能（FEAT）
 
-#### [FEAT-001] サービス名を `igiari` にリネーム
-
-- **内容**: サービス名を現行の `家庭裁判所` から `igiari` に変更する。ロゴ・メタタグ・OGP・README・UI 上の表記などすべてを統一する。
-- **優先度**: 高（他の機能開発前に確定しておきたいブランド要素）
-- **備考**: ドメイン取得・Supabase プロジェクト名変更は別途検討。
-
----
-
 #### [FEAT-002] ユーザー機能の拡充
 
 - **内容**:
@@ -91,25 +83,19 @@
 
 ---
 
-#### [IMP-002] デザインの色調統一
+### MEDIUM（オーディ監査指摘）
 
-- **内容**: 全ページで色調の統一感を持たせる。イメージカラーは黄色・オレンジ・薄い茶色系。
-- **優先度**: 中
-- **備考**: Tailwind の `tailwind.config.ts` でカスタムカラーパレットを定義し、既存の青系・グレー系を置き換える方針が適切。FEAT-001（リネーム）と同時に実施するとブランド統一効果が高い。
+#### [MEDIUM-001] `bg-brand-500 text-white` — WCAG AA コントラスト比不足（全プライマリボタン）
+
+- **該当ファイル・行番号**:
+  - `app/page.tsx`:125
+  - `app/auth/login/page.tsx`:79
+  - `app/auth/signup/page.tsx`:117
+  - `app/case/[id]/page.tsx`:277, 295, 325, 433, 508
+- **内容**: amber-500 + white のコントラスト比は WCAG AA（4.5:1）未達。
+- **修正案**: `bg-brand-500` → `bg-brand-700` に変更する（amber-700 は十分なコントラスト比を持つ）。
 
 ---
-
-### LOW（オーディ監査指摘）
-
-#### [LOW-001] `createSessionClient()` が try-catch 外（`defense/draft/route.ts:26`） (由来: audit_20260525_185446.md)
-
-- **内容**: 26 行目の `createSessionClient()` が try-catch で保護されていない。他の全 Route は try-catch 内で呼んでいるため挙動が一貫しない。例外時に Next.js デフォルトエラーハンドラが動作し、開発環境でスタックトレースが露出しうる。
-- **修正案**: 既存 Route のパターンに倣い、26–27 行目を try-catch で包む。
-
-#### [LOW-002] `guest_tokens.token_hash` に UNIQUE 制約なし（`supabase/migrations/20260525000003_add_guest_tokens.sql`） (由来: audit_20260525_185446.md)
-
-- **内容**: HMAC-SHA256 の衝突確率は実用上ゼロだが、アプリバグで同一ハッシュが複数 INSERT された際に DB レベルで検知できない。
-- **修正案**: `CREATE UNIQUE INDEX ON guest_tokens(token_hash);` をマイグレーションに追加する。
 
 ---
 
@@ -137,3 +123,10 @@
 | PR #13 (B-1) | `defendantId`（被告 UUID）を認証なし API レスポンスから除去 |
 | PR #13 (B-2) | ログアウト失敗時のフラッシュ Cookie + ErrorBanner 実装 |
 | PR #12       | middleware の保護パス整備・Suspense 境界・logout エラー処理 |
+| PR #17 (FEAT-001) | igiari リネーム（UI・メタデータ・README・package.json） |
+| PR #17 (IMP-002)  | デザイン色調統一（brand-* パレット定義・indigo/rose → brand 置換） |
+| PR #18 (LOW-001)  | `defense/draft/route.ts` の `createSessionClient()` を try-catch で保護 |
+| PR #18 (LOW-002)  | `guest_tokens.token_hash` に UNIQUE INDEX 追加（migration） |
+| PR #18 (MEDIUM-001) | プライマリボタンを brand-700/800 に変更（WCAG AA コントラスト対応） |
+| PR #18 (IMP-001)  | 自動スクロールをメッセージ存在時のみ発火するよう修正 |
+| PR #17 (コパ指摘) | 無効 ESLint ルール名削除・フッター著作権年を動的生成に変更 |
