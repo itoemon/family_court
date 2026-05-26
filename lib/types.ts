@@ -128,3 +128,47 @@ export type IncomingRequest = {
   sender: FriendProfile;
   created_at: string;
 };
+
+export type ProposalType = 'amendment' | 'deletion';
+export type InvitationStatus = 'pending' | 'accepted' | 'rejected';
+
+export interface Law {
+  id: string;
+  name: string;
+  article: string;
+  owner_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LawMember {
+  id: string;
+  law_id: string;
+  user_id: string;
+  joined_at: string;
+}
+
+export interface LawInvitation {
+  id: string;
+  law_id: string;
+  invitee_id: string;
+  status: InvitationStatus;
+  invited_at: string;
+}
+
+export interface LawProposal {
+  id: string;
+  law_id: string;
+  proposal_type: ProposalType;
+  proposed_by: string;
+  proposed_article: string | null;
+  created_at: string;
+}
+
+export interface LawProposalVote {
+  id: string;
+  proposal_id: string;
+  user_id: string;
+  approved: boolean;
+  voted_at: string;
+}
