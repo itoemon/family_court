@@ -12,52 +12,61 @@ metadata:
 
 ---
 
-## 最終更新: 2026-05-26（Stop フック自動更新 セッション 34 終了）
+## 最終更新: 2026-05-26（Stop フック自動更新 セッション 46 終了）
 
 ### 現在のブランチ・PR 状態
 
-- ブランチ: `feature/20260526-155829`
-- HEAD: `11e471e` — `fix(FEAT-003): InvitePanel を /api/friends ベースのローカルフィルタに変更`
-- **直近マージ PR**:
-  - PR #20: `feat(FEAT-002-p2)` フレンド機能 + LOW-001/002 修正 ✅
-  - PR #21: `fix(MEDIUM-001)` `/api/users/search` にレートリミット追加 ✅
-- **未コミット変更あり**: `docs/knowledge/design.md`（staged）、`arch-to-eng.md`・`task.md`・`session_context.md`（unstaged）
+- ブランチ: `feature/20260526-170303`（CRITICAL バグ修正ブランチ）
+- HEAD: `340eb4b` — `docs(FEAT-003): 修正指示・テストログ・E2E スペック追加`
+- **未ステージ（working tree modified）**:
+  - `tests/e2e/laws.spec.ts`（変更あり・未コミット — 次セッションで内容確認推奨）
+- **未コミット（untracked）**:
+  - `scripts/check_tables.js`（テスタが生成したユーティリティ）
 
-### 直近セッションでやったこと（2026-05-26 セッション 33-34）
+### 直近セッションでやったこと（2026-05-26 セッション 41-46）
 
-- **FEAT-003（法律作成機能）実装が全 Step 完了・コミット済み**（`235d713`）
-  - Step 1: `supabase/migrations/20260526000003_feat003_laws.sql`（5テーブル・RLS・インデックス）✅
-  - Step 2: `lib/types.ts`（`Law`, `LawMember`, `LawInvitation`, `LawProposal`, `LawProposalVote` 等）✅
-  - Step 3: `app/api/laws/`（9エンドポイント）✅
-  - Step 4: `middleware.ts`（`/laws` 認証保護追加）✅
-  - Step 5: `app/laws/`（`/laws`, `/laws/new`, `/laws/[id]` + 5 Client Components）✅
-  - 追加: `lib/laws/consensus.ts`（合意チェック共通ロジック）✅
-- **FEAT-003 バグ修正**（`11e471e`）: InvitePanel が `/api/users/search` を叩いていたため `/api/friends` ベースのローカルフィルタに変更（フレンド以外を招待できるバグを修正）
-- ドキュメント一式更新済み（`design.md`, `task.md`, `arch-to-eng.md`, `eng-to-aud.md`）
-- **テスト・監査はまだ実施していない**（オーディ未起動）
+- セッション 46: Stop フック自動更新のみ（`tests/e2e/laws.spec.ts` 未ステージ変更を記録）
+- セッション 45: Stop フック自動更新のみ（HEAD・差分に変化なし）
+- セッション 44: Stop フック自動更新のみ（HEAD・差分に変化なし）
+- 前セッション（40）での主な作業は以下の通り既にコミット済み:
+  - `202e618`: CRITICAL-L02 修正（招待承認 UI 追加）・L04 連鎖解消・MemberList テキスト修正
+  - `5e48961`: eng-to-aud 引き継ぎメモ更新
+  - `340eb4b`: 修正指示・テストログ・E2E スペック追加（`tests/e2e/laws.spec.ts` 216行追加）
 
-### FEAT-003 機能要件サマリー
+### HEAD~3..HEAD の変更サマリ
 
-- L-1: 法律作成（法律名 100 字・条文 2000 字、作成者がオーナー兼メンバー）
-- L-2: メンバー招待（フレンドのみ、承認/拒否）
-- L-3: 改定案提出・全メンバー合意で成立、同時 1 件制限、オーナーが取り下げ可
-- L-4: オーナー権移譲
-- L-5: 退会（オーナー以外自由、合意票も無効化）
-- L-6: 法律削除（全メンバー合意）
+- `app/laws/[id]/_components/InvitationAccept.tsx`（新規 66行）: 招待承認 UI コンポーネント
+- `app/laws/[id]/_components/MemberList.tsx`（1行）: テキスト「(N人)」→「N人」修正
+- `app/laws/[id]/page.tsx`（+30行）: 非メンバー時の招待チェック・承認 UI 分岐追加
+- `docs/knowledge/handoff/eng-to-aud.md`: 修正済みバグ情報に更新
+- `docs/knowledge/task.md`: タスク指示更新
+- `docs/knowledge/test-log/test_20260526_163300.md`（新規 148行）: テストログ
+- `tests/e2e/laws.spec.ts`（新規 216行）: E2E テストファイル本体
 
-### 次のアクション
+### FEAT-003 実装状況
 
-1. **未コミット docs を整理してコミット**（`docs/knowledge/` の staged/unstaged 差分）
-2. **テスタ → オーディ** の正規パイプラインを回す（推奨）、またはスキップして軽量 PR 作成
+- **全 Step 実装・コミット完了** ✅
+- **Supabase マイグレーション適用済み** ✅
+- **E2E テスト（直近）: CRITICAL-L02・L04 修正適用後の再テスト結果待ち**
+  - CRITICAL-L01（法律作成）: ✅ 通過済み
+  - CRITICAL-L02（招待承認フロー）: 修正適用済み → **再テスト未実施**
+  - CRITICAL-L03（改定案提出・全員合意）: ✅ 通過済み
+  - CRITICAL-L04（オーナー権移譲）: 修正適用済み → **再テスト未実施**
+
+### 次のアクション（優先順）
+
+1. **テスタ再実行** — CRITICAL-L02・L04 が 4/4 通過するか確認（`./scripts/agents.sh tester` または手動 `npx playwright test`）
+2. **CRITICAL 4/4 通過確認後、オーディ起動**（`./scripts/agents.sh auditor`）
 3. **PR 作成** → `main` へ
-4. **マージ後**: 本番 DB への migration 適用
-5. 次フィーチャー検討（`docs/backlog.md` 参照）
+4. 次フィーチャー検討（`docs/backlog.md` 参照）
 
 ### 決定事項（引き継ぎ）
 
 - FEAT-002（Phase 1 / Phase 2）・LOW-001/002・MEDIUM-001 すべて完了・マージ済み
 - Upstash Redis は無料枠（1日 10,000 コマンド）で十分（env vars なし時は skip fallthrough）
-- **現在フェーズ: FEAT-003（法律作成機能）— 実装・バグ修正コミット完了、テスト/監査待ち**
+- **現在フェーズ: FEAT-003（法律作成機能）— CRITICAL バグ 2 件修正済み・再テスト未実施**
+- CRITICAL-L02 の根本原因: 招待受信 UI が `/laws/[id]/page.tsx` に未実装だった（修正済み）
+- CRITICAL-L04 は L02 の連鎖解消で対応済み（OwnerTransferModal 自体の修正は不要）
 
 ### 覚えておくべき判断・経緯
 
@@ -76,6 +85,7 @@ metadata:
 - Upstash レートリミットは env vars なし時は `skip`（制限なし）で fallthrough する設計
 - FEAT-003 の法律 API では退会処理は「投票削除 → メンバー削除 → 合意チェック」の順序を厳守
 - InvitePanel は `/api/friends` で取得した一覧をローカルフィルタして招待済みを除外する設計（`/api/users/search` は使わない）
+- 招待承認 UI は `/laws/[id]/page.tsx` の非メンバー分岐内に配置（`/laws` ページには置かない設計に変更）
 
 ### マージ済み PR（累計）
 
