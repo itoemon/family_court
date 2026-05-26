@@ -22,6 +22,9 @@ export default async function Header() {
             <Link href="/history" className="text-stone-600 hover:text-stone-900 transition-colors">
               過去のケース
             </Link>
+            <Link href="/friends" className="text-stone-600 hover:text-stone-900 transition-colors">
+              フレンド
+            </Link>
             <Link href="/profile" className="text-stone-600 hover:text-stone-900 transition-colors">
               プロフィール
             </Link>
