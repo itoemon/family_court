@@ -2,173 +2,170 @@
 
 ## 概要（変更の目的・背景）
 
-現行の `lib/guest-token.ts` における `computeToken` は、HMAC の入力が `"${caseId}:defendant"` のみで決定論的である。ランダム要素・タイムスタンプを持たないため、Cookie をキャプチャされると 7 日間有効なトークンが再利用可能となり、個別セッションの取り消しができない（バックログ MEDIUM 指摘）。
+バックログ FEAT-001 および IMP-002 に基づく、ブランド確立フェーズの変更。
 
-本変更では、トークン発行ごとにランダムな nonce（32 バイト）を生成し、その HMAC を DB テーブル `guest_tokens` に保存する方式に刷新する。Cookie に持つのは nonce の平文のみとし、HMAC（`token_hash`）は DB にのみ保管する。これにより、Cookie 単体からトークンを偽造・延命することが不可能になる。また、DB レコードに `revoked_at` カラムを設けることで、将来の個別セッション取り消し機能の基盤を整える。
+**FEAT-001**: サービス名を `家庭裁判所`（仮称）から `igiari` に改称する。UI テキスト・メタタグ・OGP・README を統一し、検索エンジン・SNS でのブランド表記を確定させる。ロゴ画像・ファビコンの新規作成、ドメイン取得、Supabase プロジェクト名変更は本変更のスコープ外とする。
+
+**IMP-002**: 現在混在している青系・グレー系の配色を、黄色・オレンジ・薄い茶色系のウォームパレットに統一する。要件定義書の「温かみのある・柔らかい雰囲気。対立感・緊張感を煽らない」という非機能要件を、視覚レベルで実現することが目的。
+
+両変更は独立した変更だが、ブランド統一効果を高めるため同一 PR で実施する（バックログ IMP-002 備考に従う）。
 
 ---
 
 ## API 仕様（変更・追加するエンドポイントのリクエスト/レスポンス定義）
 
-### 変更: `lib/guest-token.ts`（内部ライブラリ。HTTP エンドポイントではない）
-
-```typescript
-// 変更前（同期）
-export function generateGuestToken(caseId: string): string
-export function verifyGuestToken(caseId: string, token: string): boolean
-
-// 変更後（非同期）
-export async function generateGuestToken(caseId: string): Promise<string>
-export async function verifyGuestToken(caseId: string, token: string): Promise<boolean>
-```
-
-両関数が非同期になるため、呼び出し元の全 API Route で `await` が必要になる。
-
-#### `generateGuestToken` の処理フロー
-
-| ステップ | 処理 |
-|---------|------|
-| 1 | `crypto.randomBytes(32)` で nonce を生成し、64 桁 hex 文字列に変換する |
-| 2 | `HMAC-SHA256(nonce_hex, GUEST_TOKEN_SECRET)` を計算し、`token_hash`（hex 文字列）とする |
-| 3 | `createAdminClient()` 経由で `guest_tokens` テーブルに `(case_id, token_hash, expires_at = now() + 7 days)` を INSERT する |
-| 4 | `nonce_hex` のみを返す（Cookie にセットされる値。`token_hash` は返さない） |
-
-INSERT 失敗時はエラーをスローする。呼び出し元 API Route が try-catch でキャッチして 500 を返すこと。
-
-#### `verifyGuestToken` の処理フロー
-
-| ステップ | 処理 |
-|---------|------|
-| 1 | Cookie から受け取った `nonce_hex` で `HMAC-SHA256(nonce_hex, GUEST_TOKEN_SECRET)` を再計算する |
-| 2 | `createAdminClient()` 経由で `guest_tokens` テーブルを検索する: `token_hash = <計算値> AND case_id = <引数> AND expires_at > now() AND revoked_at IS NULL` |
-| 3 | 1 件以上ヒットすれば `true`、0 件なら `false` を返す |
-
-DB エラー時は例外をスローする。呼び出し元で catch して `false` 扱いにするか 500 を返すかは、既存の各 API Route の try-catch パターンに従う（PR #14 C-1 で実装済みの構造を維持する）。
-
-> **なぜ `case_id` でも絞るか**: `token_hash` のみでも nonce 衝突確率は無視できるが、`case_id` インデックスを活用することで検索効率を上げつつ、異なるケースへのクロス検証を構造的に防ぐ（Defense-in-Depth）。
-
-### 影響する API Route（呼び出し変更のみ）
-
-| ファイル | 変更内容 |
-|---------|---------|
-| `app/api/cases/[id]/join/route.ts` | `generateGuestToken(caseId)` を `await` に変更 |
-| `app/api/cases/[id]/argument/route.ts` | `verifyGuestToken(caseId, token)` を `await` に変更 |
-| `app/api/cases/[id]/defense/route.ts` | `verifyGuestToken(caseId, token)` を `await` に変更 |
-| `app/api/cases/[id]/route.ts` | `verifyGuestToken(caseId, token)` を `await` に変更（PATCH asGuest パス） |
-
-これら 4 ファイルはロジックの変更は不要。`await` の追加のみ。
+本変更に新規・変更 API エンドポイントはない。
 
 ---
 
 ## データモデル（DB スキーマ・型定義の変更）
 
-### 新設テーブル: `guest_tokens`
-
-```sql
-CREATE TABLE guest_tokens (
-  id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-  case_id     uuid        NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-  token_hash  text        NOT NULL,
-  created_at  timestamptz NOT NULL DEFAULT now(),
-  expires_at  timestamptz NOT NULL,
-  revoked_at  timestamptz
-);
-
-CREATE INDEX ON guest_tokens(case_id);
-
-ALTER TABLE guest_tokens ENABLE ROW LEVEL SECURITY;
--- ポリシーを一切 CREATE しないことで Service Role のみアクセス可能になる
-```
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| `id` | uuid | PK。外部公開しない |
-| `case_id` | uuid | ケース外部キー。ケース削除時に CASCADE 削除 |
-| `token_hash` | text | `HMAC-SHA256(nonce, SECRET)` の hex 文字列。nonce 平文は保存しない |
-| `created_at` | timestamptz | 発行日時 |
-| `expires_at` | timestamptz | 有効期限（`created_at + INTERVAL '7 days'`） |
-| `revoked_at` | timestamptz | NULL = 有効。値があれば個別取り消し済み |
-
-> **なぜ RLS でポリシーなしにするか**: `guest_tokens` の全操作は `createAdminClient()`（Service Role）経由のみで行う。anon・authenticated ロールから直接参照を許可する理由がなく、誤ったクライアント経由アクセスを構造的に防ぐ。ADR-003 の「API Routes はサービスロールキーで RLS をバイパスし、信頼済み操作を行う」方針と一致する。
-
-#### マイグレーションファイル
-
-`supabase/migrations/` 配下に新規 SQL ファイルを作成する。ファイル名は Supabase CLI の命名規則（`YYYYMMDDHHMMSS_add_guest_tokens.sql`）に従う。内容は上記 DDL 一式。
-
-#### 既存テーブルへの影響
-
-`cases`・`arguments`・`verdicts`・`profiles` への変更はなし。`guest_tokens` は `cases(id)` を外部キーで参照するため、`cases` テーブルが先に存在していること。
+本変更に DB スキーマ・型定義の変更はない。
 
 ---
 
 ## コンポーネント設計（新設・変更するファイルの責務と仕様）
 
-### `supabase/migrations/YYYYMMDDHHMMSS_add_guest_tokens.sql`（新設）
+### G-1: サービス名リネーム（FEAT-001）
 
-`guest_tokens` テーブルの DDL のみを含む。ロールバック手順（`DROP TABLE guest_tokens;`）を SQL コメントで記載する。
+#### 変更対象ファイルと責務
 
-### `lib/guest-token.ts`（変更）
+| ファイル | 変更内容 |
+|---|---|
+| `app/layout.tsx` | `metadata.title`、`metadata.description`、OGP 関連 meta タグを `igiari` ブランドに更新 |
+| `app/page.tsx` | ヘッダー・見出し・キャッチコピーなど、ユーザー可視テキストを `igiari` に統一 |
+| 各ページコンポーネント | `家庭裁判所` / `Family Court` の表記が残る箇所をすべて `igiari` に置換 |
+| `README.md` | プロジェクト名・説明文を `igiari` ブランドに合わせて書き直す |
+| `package.json` | `name` フィールドを `igiari` に変更（任意。Vercel デプロイへの影響なし） |
 
-既存の同期関数を非同期に刷新する。このファイルの責務は以下に限定する:
+#### メタデータ仕様（`app/layout.tsx`）
 
-- nonce 生成（`crypto.randomBytes`。Node.js 組み込み API、追加依存なし）
-- HMAC 計算（`node:crypto` の `createHmac`。既存の実装を継続）
-- `guest_tokens` テーブルへの INSERT / SELECT（`createAdminClient()` 使用）
-- `GUEST_TOKEN_SECRET` 未設定時の起動時フェイルファスト（既存の IIFE 実装を継続）
+Next.js の `Metadata` 型（バージョンごとに構造が異なるため、実際のバージョンの定義を優先すること）を使用し、以下の項目を更新する。
 
-**このファイルに含めないもの**: Cookie への読み書き、HTTP レスポンスの組み立て、ケースのフェーズ検証。それらは各 API Route の責務とする。
+```ts
+// 変更後イメージ（実際の型定義は node_modules/next/dist/docs/ を参照）
+export const metadata = {
+  title: 'igiari',
+  description: '<igiari ブランドに沿ったキャッチコピー>',
+  openGraph: {
+    title: 'igiari',
+    description: '<同上>',
+    siteName: 'igiari',
+  },
+}
+```
 
-### `app/api/cases/[id]/join/route.ts`（変更）
+**キャッチコピーの方針**: 「恋人・夫婦・家族が話し合える場」というサービスの性格を示しつつ、要件定義書の「対立感・緊張感を煽らない」という非機能要件と矛盾しない表現にすること。具体的な文言はスコープ内で自由に設定してよい。
 
-`generateGuestToken(caseId)` の呼び出しに `await` を追加する。既存の try-catch 構造の中に収まっているか確認し、なければ追加する。
+**OGP 画像のテキスト**: `og:image` の画像ファイル内テキストの変更はスコープ外。ただし `og:image:alt` など HTML 属性として存在する alt テキストは更新対象。
 
-### `app/api/cases/[id]/argument/route.ts`（変更）
+#### 文字列の網羅的な置換
 
-`verifyGuestToken(caseId, token)` の呼び出しに `await` を追加する。PR #14 C-1 で既存の try-catch が実装済みのため、構造変更は不要。
+プロジェクト全体で `家庭裁判所`・`Family Court`・`family-court`（package.json の name フィールド等）を検索し、ヒットした箇所をすべて確認してから置換する。コメント・JSDoc・型定義内の記述も対象に含める。
 
-### `app/api/cases/[id]/defense/route.ts`（変更）
+---
 
-`verifyGuestToken(caseId, token)` の呼び出しに `await` を追加する。PR #14 C-1 で既存の try-catch が実装済みのため、構造変更は不要。
+### G-2: デザイン色調統一（IMP-002）
 
-### `app/api/cases/[id]/route.ts`（変更）
+#### カラーパレット設計
 
-PATCH asGuest パスの `verifyGuestToken(caseId, token)` 呼び出しに `await` を追加する。
+**ブランドパレット（`brand`）**:
+
+`igiari` のブランドイメージ（温かみ・中立・柔らかさ）に合わせ、Tailwind 組み込みの amber スケールと同値のカスタムパレットを `brand` という名称で定義する。エイリアス化することで、将来ブランドカラーが変わった場合もトークン値の変更のみで全体に反映できる。
+
+| トークン | 推奨値 | 主な用途 |
+|---|---|---|
+| brand-50 | `#fffbeb` | 背景・ホバー面 |
+| brand-100 | `#fef3c7` | カード背景・軽い強調面 |
+| brand-200 | `#fde68a` | ライトアクセント |
+| brand-300 | `#fcd34d` | バッジ・タグ |
+| brand-400 | `#fbbf24` | アイコン |
+| brand-500 | `#f59e0b` | プライマリボタン・主要リンク |
+| brand-600 | `#d97706` | プライマリボタン hover 状態 |
+| brand-700 | `#b45309` | フォーカスリング・強調テキスト |
+| brand-800 | `#92400e` | ダーク背景上のテキスト |
+| brand-900 | `#78350f` | 最暗色（見出し等） |
+
+**ニュートラルパレット**:
+
+既存の `gray-*`（クールグレー）を `stone-*`（ウォームグレー）に置き換える。`stone` は中性〜暖色の傾きがあり、amber 系 brand パレットとの視覚的親和性が高い。`stone-*` は Tailwind 組み込みのため追加定義は不要（ただし Tailwind v4 での利用可否は実装前に確認すること）。
+
+#### Tailwind CSS v4 での定義方式（重要）
+
+本プロジェクトは Tailwind CSS **4.x** を使用している。v4 ではカスタムテーマの設定方式が v3 から大幅に変更されており、`tailwind.config.ts` の `theme.extend.colors` ではなく、`app/globals.css` の `@theme` ディレクティブでカスタムカラーを定義することが想定される。
+
+**v4 での定義例（`globals.css` 内）**:
+
+```css
+@import "tailwindcss";
+
+@theme {
+  --color-brand-50: #fffbeb;
+  --color-brand-100: #fef3c7;
+  --color-brand-200: #fde68a;
+  --color-brand-300: #fcd34d;
+  --color-brand-400: #fbbf24;
+  --color-brand-500: #f59e0b;
+  --color-brand-600: #d97706;
+  --color-brand-700: #b45309;
+  --color-brand-800: #92400e;
+  --color-brand-900: #78350f;
+}
+```
+
+**v3 での定義例（`tailwind.config.ts` 内）**:
+
+```ts
+// tailwind.config.ts
+theme: {
+  extend: {
+    colors: {
+      brand: {
+        50: '#fffbeb',
+        // ...
+        900: '#78350f',
+      },
+    },
+  },
+},
+```
+
+プロジェクトの実際の設定方式は、`tailwind.config.ts` と `globals.css` を読んで確認してから実装すること。
+
+#### 色の置き換えマッピング
+
+| 既存クラス | 置き換え先 | 適用箇所の例 |
+|---|---|---|
+| `blue-600` / `blue-700` | `brand-600` / `brand-700` | プライマリボタン・主要リンク |
+| `blue-500` | `brand-500` | アイコン・インラインアクセント |
+| `blue-100` / `blue-50` | `brand-100` / `brand-50` | 薄い背景・ホバー面 |
+| `gray-900` | `stone-900` | 見出しテキスト |
+| `gray-700` / `gray-600` | `stone-700` / `stone-600` | 本文テキスト |
+| `gray-400` | `stone-400` | プレースホルダー・補足テキスト |
+| `gray-300` | `stone-300` | ボーダー |
+| `gray-100` / `gray-50` | `stone-100` / `stone-50` | 背景面 |
+
+**変更しない色**:
+
+- `red-*`（エラー・警告）、`green-*`（成功・完了）などステータスを意味する色は変更しない。
+- レイアウト・タイポグラフィ（フォントサイズ・余白・幅）は変更しない。
 
 ---
 
 ## セキュリティ設計（認証・認可・入力検証の方針）
 
-### トークン分離の原則
-
-| データ | 保存場所 | アクセス可能な主体 |
-|---|---|---|
-| nonce（平文） | httpOnly Cookie のみ | サーバーサイドのみ（JS・外部からアクセス不可） |
-| token_hash | DB `guest_tokens` テーブル | Service Role（Admin Client）のみ |
-
-Cookie に nonce のみを持ち、HMAC を DB に分離することで、Cookie 単体・DB 単体のいずれが漏洩しても攻撃者はトークンを偽造できない。
-
-### 検証条件の多重チェック
-
-`verifyGuestToken` の SELECT クエリは以下 4 条件の AND で構成する:
-
-1. `token_hash = <再計算値>`（HMAC 一致）
-2. `case_id = <引数の caseId>`（ケース限定、クロス利用防止）
-3. `expires_at > now()`（有効期限内）
-4. `revoked_at IS NULL`（取り消しなし）
-
-いずれか不一致の場合 `false` を返す（fail-closed）。
-
-### 移行時の既存セッションへの影響
-
-マイグレーション適用後、旧方式で発行された Cookie には DB レコードが存在しないため、全て無効と判定される。進行中のゲストセッションはリジョイン（再参加）が必要になる。一時的な UX 低下は許容すべきトレードオフである。本番適用はトラフィックが少ない時間帯に行うことを推奨する。
+本変更（テキストおよびスタイリングの変更）はセキュリティ要件に影響を与えない。
 
 ---
 
 ## 制約・前提条件
 
-- `GUEST_TOKEN_SECRET` 環境変数は設定済みであること（`environment.md` 記載、PR #14 C-2 でフェイルファスト実装済み）
-- `createAdminClient()` が `lib/supabase/server.ts` に実装済みであること（`environment.md` 記載）
-- `supabase/schema.sql` の `cases` テーブルが存在していること（`guest_tokens` が `cases(id)` を外部参照するため）
-- マイグレーションは Supabase CLI（`supabase db push` または `supabase migration apply`）で適用すること
-- `expires_at` は SQL の `DEFAULT now() + INTERVAL '7 days'` で DB 側が計算する（アプリ側での日付計算は行わない）
-- スコープ外: ゲストトークンの手動取り消し UI・トークン一覧管理画面・定期クリーンアップジョブ（`revoked_at` カラムは将来のための基盤）
+1. **スコープ外**: ロゴ・ファビコン画像の新規作成、ドメイン変更、Supabase プロジェクト名変更、フォント変更、レスポンシブ再設計。
+
+2. **Next.js バージョン**: 環境定義書では Next.js **16.2.6**（要件定義書記載の v14 とは異なる）。`app/layout.tsx` の `Metadata` 型・`metadata` export の書き方など、バージョン間でインターフェースが変わっている可能性がある。AGENTS.md の指示に従い、`node_modules/next/dist/docs/` を参照してから実装すること。
+
+3. **Tailwind CSS v4 の破壊的変更**: `tailwind.config.ts` のカスタムカラー定義方式が v3 と異なる。実装前に既存の `tailwind.config.ts` および `globals.css` を読み、現行プロジェクトの設定方式を確認すること。
+
+4. **`stone-*` パレットの利用可否**: Tailwind v4 で `stone-*` が組み込み済みかを確認し、利用できない場合は CSS 変数で補完する。
+
+5. **文字列検索の網羅性**: リネーム対象文字列を全ファイルで検索してから一括置換すること。動的に生成される文字列（`template literal` 内等）も見逃さないよう注意する。

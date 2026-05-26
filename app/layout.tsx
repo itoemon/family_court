@@ -18,8 +18,13 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "家庭裁判所",
-  description: "AI裁判官があなたの議論に判決を下す",
+  title: "igiari",
+  description: "大切な人とおだやかに話し合える場所 — AI 裁判官が判決を下す",
+  openGraph: {
+    title: "igiari",
+    description: "大切な人とおだやかに話し合える場所 — AI 裁判官が判決を下す",
+    siteName: "igiari",
+  },
 };
 
 export default async function RootLayout({

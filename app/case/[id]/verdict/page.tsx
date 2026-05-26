@@ -45,10 +45,10 @@ export default function VerdictPage({ params }: { params: Promise<{ id: string }
   const winnerConfig = {
     plaintiff: {
       label: "の主張が認められました",
-      bg: "bg-indigo-50",
-      border: "border-indigo-100",
-      text: "text-indigo-700",
-      bar: "bg-indigo-300",
+      bg: "bg-brand-50",
+      border: "border-brand-100",
+      text: "text-brand-700",
+      bar: "bg-brand-300",
     },
     defendant: {
       label: "の主張が認められました",
@@ -100,8 +100,8 @@ export default function VerdictPage({ params }: { params: Promise<{ id: string }
             <ScoreBar
               label={caseData.plaintiff?.name ?? "提案者"}
               score={verdict.plaintiffScore}
-              color="bg-indigo-300"
-              textColor="text-indigo-500"
+              color="bg-brand-300"
+              textColor="text-brand-600"
             />
             <ScoreBar
               label={caseData.defendant?.name ?? "反対者"}
@@ -127,7 +127,7 @@ export default function VerdictPage({ params }: { params: Promise<{ id: string }
               const name = isPlaintiff ? caseData.plaintiff?.name : caseData.defendant?.name;
               return (
                 <div key={arg.id} className={`flex flex-col ${isPlaintiff ? "items-start" : "items-end"}`}>
-                  <p className={`text-xs mb-1 px-1 ${isPlaintiff ? "text-indigo-400" : "text-rose-400"}`}>
+                  <p className={`text-xs mb-1 px-1 ${isPlaintiff ? "text-brand-600" : "text-rose-400"}`}>
                     {name}
                     <span className="text-stone-300 ml-1.5">
                       {PHASE_LABELS[arg.phase]}
@@ -137,7 +137,7 @@ export default function VerdictPage({ params }: { params: Promise<{ id: string }
                   <div
                     className={`max-w-sm rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
                       isPlaintiff
-                        ? "bg-indigo-50 text-indigo-900 rounded-tl-sm"
+                        ? "bg-brand-50 text-brand-900 rounded-tl-sm"
                         : "bg-rose-50 text-rose-900 rounded-tr-sm"
                     }`}
                   >

@@ -31,11 +31,11 @@ export default function LoginPage() {
     <main className="min-h-screen bg-stone-50 flex flex-col items-center justify-center p-6">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 bg-rose-100 rounded-2xl mb-4 text-2xl">
+          <div className="inline-flex items-center justify-center w-14 h-14 bg-brand-100 rounded-2xl mb-4 text-2xl">
             ⚖️
           </div>
           <h1 className="text-2xl font-bold text-stone-800">ログイン</h1>
-          <p className="mt-1 text-stone-500 text-sm">家庭裁判所へようこそ</p>
+          <p className="mt-1 text-stone-500 text-sm">igiari へようこそ</p>
         </div>
 
         <div className="bg-white rounded-3xl shadow-sm border border-stone-100 p-7 space-y-4">
@@ -50,7 +50,7 @@ export default function LoginPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 required
                 placeholder="you@example.com"
-                className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-rose-300 focus:border-transparent transition text-sm"
+                className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-transparent transition text-sm"
               />
             </div>
             <div>
@@ -63,7 +63,7 @@ export default function LoginPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 placeholder="••••••••"
-                className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-rose-300 focus:border-transparent transition text-sm"
+                className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-transparent transition text-sm"
               />
             </div>
 
@@ -76,7 +76,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-rose-400 hover:bg-rose-300 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
+              className="w-full bg-brand-500 hover:bg-brand-600 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
             >
               {loading ? "ログイン中..." : "ログイン"}
             </button>
@@ -93,7 +93,7 @@ export default function LoginPage() {
 
           <p className="text-center text-sm text-stone-500">
             アカウントをお持ちでない方は{" "}
-            <Link href="/auth/signup" className="text-rose-400 font-semibold hover:text-rose-300">
+            <Link href="/auth/signup" className="text-brand-600 font-semibold hover:text-brand-700">
               新規登録
             </Link>
           </p>

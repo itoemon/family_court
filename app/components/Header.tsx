@@ -15,7 +15,7 @@ export default async function Header() {
     <header className="bg-stone-50 border-b border-stone-200 sticky top-0 z-20">
       <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
         <Link href="/" className="text-stone-800 font-semibold text-lg">
-          家庭裁判所
+          igiari
         </Link>
         {user ? (
           <nav className="flex items-center gap-4">

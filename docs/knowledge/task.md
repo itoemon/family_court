@@ -4,71 +4,44 @@
 
 ## 今回のタスク
 
-HMAC ゲストトークンを nonce ベースに刷新する（MEDIUM 1件）。
-DB スキーマ変更あり。
+サービス名を `igiari` にリネームし、デザインの色調を統一する（FEAT-001 + IMP-002）。
 
 ## 背景・目的
 
-現在の `lib/guest-token.ts` の `computeToken` は入力が `"${caseId}:defendant"` のみで決定論的。
-Cookie をキャプチャされると 7 日間再利用可能で、個別セッション取り消しが不可。
-DB にトークンテーブルを追加し、nonce（ランダム値）を発行することでセキュリティを改善する。
+- **FEAT-001**: サービス名を `家庭裁判所`（仮称）から `igiari` に変更する。ブランドを確立するため、UI 上の表記・メタタグ・OGP・README をすべて統一する。
+- **IMP-002**: 色調の統一感を高める。現在は青系・グレー系が混在しているが、黄色・オレンジ・薄い茶色系のパレットに寄せ、`igiari` というサービスのイメージに合ったビジュアルに仕上げる。
 
 ## 修正対象
 
-### F-1. `guest_tokens` テーブルを新設し、nonce ベースのトークンに刷新
+### G-1. サービス名リネーム（FEAT-001）
 
 - **影響ファイル**:
-  - `supabase/migrations/` — 新規マイグレーション SQL
-  - `lib/guest-token.ts` — `generateGuestToken` / `verifyGuestToken` を刷新
-  - `app/api/cases/[id]/join/route.ts` — トークン発行側
-  - `app/api/cases/[id]/argument/route.ts` — トークン検証側
-  - `app/api/cases/[id]/defense/route.ts` — トークン検証側
-  - `app/api/cases/[id]/route.ts` — トークン検証側（PATCH asGuest パス）
+  - `app/layout.tsx` — `<title>`・`<meta name="description">` など
+  - `app/page.tsx` など各ページのヘッダー・フッター・見出しテキスト
+  - `README.md`
+  - `package.json` の `name` フィールド（任意）
+  - OGP 画像がある場合はそのテキスト（なければスキップ）
 
-#### DB スキーマ
+- **変更内容**:
+  - UI 上の「家庭裁判所」「Family Court」等の表記を `igiari` に統一
+  - サービスの説明文（キャッチコピー・メタ description）も `igiari` ブランドに合わせて書き直す
 
-```sql
-CREATE TABLE guest_tokens (
-  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  case_id     uuid NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-  token_hash  text NOT NULL,           -- HMAC-SHA256(nonce, SECRET) の hex
-  created_at  timestamptz DEFAULT now(),
-  expires_at  timestamptz NOT NULL,    -- created_at + 7 days
-  revoked_at  timestamptz              -- NULL = 有効
-);
-CREATE INDEX ON guest_tokens(case_id);
-```
+### G-2. デザイン色調統一（IMP-002）
 
-RLS: 全操作を Service Role のみ許可（Row Level Security で anon/authenticated をブロック）。
+- **影響ファイル**:
+  - `tailwind.config.ts` — カスタムカラーパレットを定義
+  - `app/globals.css` — CSS 変数の更新
+  - 各コンポーネント・ページの Tailwind クラス（青系・グレー系 → 新パレットへ置き換え）
 
-#### トークン発行フロー（`generateGuestToken`）
-
-1. `crypto.randomBytes(32)` で nonce を生成
-2. `HMAC-SHA256(nonce, GUEST_TOKEN_SECRET)` でハッシュを計算
-3. `guest_tokens` テーブルに `(case_id, token_hash, expires_at)` を INSERT（Admin Client 使用）
-4. Cookie に渡すトークン値は `${nonce_hex}` のみ（ハッシュは DB にのみ保存）
-
-#### トークン検証フロー（`verifyGuestToken`）
-
-1. Cookie のトークン値（nonce_hex）を受け取る
-2. `HMAC-SHA256(nonce, GUEST_TOKEN_SECRET)` を再計算
-3. `guest_tokens` テーブルで `token_hash` が一致し、`expires_at > now()` かつ `revoked_at IS NULL` のレコードを検索
-4. 見つかれば `true`、なければ `false`
-
-#### API シグネチャ変更
-
-```typescript
-// 変更前
-export function generateGuestToken(caseId: string): string
-export function verifyGuestToken(caseId: string, token: string): boolean
-
-// 変更後（非同期化）
-export async function generateGuestToken(caseId: string): Promise<string>
-export async function verifyGuestToken(caseId: string, token: string): Promise<boolean>
-```
+- **変更内容**:
+  - イメージカラー: 黄色・オレンジ・薄い茶色系
+  - `tailwind.config.ts` に `brand` パレット（例: `brand-50` 〜 `brand-900`）を定義し、既存の `blue-*`・`gray-*` 等を段階的に置き換える
+  - ボタン・バッジ・ボーダー・背景など主要 UI 要素に統一カラーを適用
+  - 既存デザインの「いい感じ」な部分（レイアウト・タイポグラフィ）は保持し、色のみを変更する
 
 ## スコープ外
 
-- ゲストトークンの手動取り消し UI
-- トークン一覧管理画面
-- 他のトークン種別への応用
+- ドメイン取得・Supabase プロジェクト名の変更
+- ロゴ画像・ファビコンの新規作成（テキストベースのリネームのみ）
+- フォント変更
+- レスポンシブ対応の再設計
