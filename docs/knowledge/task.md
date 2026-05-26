@@ -4,85 +4,37 @@
 
 ## 今回のタスク
 
-FEAT-002 Phase 2（フレンド機能）と LOW-001/002（技術負債）を同一 PR で実装する。
+MEDIUM-001（レートリミット）を実装する。
 
 ---
 
-## H-1〜H-4. フレンド機能（FEAT-002 Phase 2）
+## M-1. `/api/users/search` にレートリミットを追加
 
 ### 背景・目的
 
-FEAT-003（法律作成機能）の前提となるユーザー間のつながりを管理する仕組みを追加する。
-フレンドが存在することで、法律への招待対象をフレンドに限定できる。
+`GET /api/users/search` は認証済みユーザーなら制限なく呼び出せる。`display_name ILIKE 'q%'` の前方一致検索を連続実行することで全ユーザーを列挙できるため、プライバシーリスクがある。
 
 ### 要件
 
-#### H-1. フレンドリクエスト送信
+- `user.id` 単位で 1分間に最大 30 リクエストまで
+- 超過時は 429（Too Many Requests）を返す
+- レートリミットの実装方法: **Upstash Redis + `@upstash/ratelimit`**（Vercel Edge 環境で動作する定番実装）
 
-- プロフィール画面（`/profile`）またはフレンド専用画面に検索フォームを設ける
-- メールアドレスまたは表示名（display_name）でユーザーを検索できる
-- 検索結果のユーザーに対してリクエストを送信できる
-- 自分自身・既存フレンド・送信済みリクエスト相手への送信は不可
+### 実装方針
 
-#### H-2. リクエスト承認 / 拒否
-
-- 受信したリクエストを一覧表示する
-- 承認: `friend_requests.status` を `accepted` に更新する
-- 拒否: `friend_requests.status` を `rejected` に更新する（または削除）
-
-#### H-3. フレンド一覧表示
-
-- 承認済みのフレンドを一覧表示する（display_name + アイコン）
-- フレンドのプロフィールは表示しない（名前とアイコンのみ）
-
-#### H-4. フレンド削除
-
-- フレンド一覧からフレンドを削除できる
-- 削除すると双方のフレンド関係が解除される（`friend_requests` レコードを削除）
-
-### DB 変更
-
-- `friend_requests` テーブルを新規作成
-  - `id` uuid PK
-  - `sender_id` uuid（`profiles.id` 参照）
-  - `receiver_id` uuid（`profiles.id` 参照）
-  - `status` text（`pending` / `accepted` / `rejected`）
-  - `created_at` timestamptz
-
-### 画面
-
-| 画面 | パス | 認証 |
-|------|------|------|
-| フレンド管理 | `/friends` | 必須 |
-
-- `/friends` にフレンド一覧・リクエスト受信一覧・検索フォームをまとめる
-- ヘッダーナビに「フレンド」リンクを追加する
+- `app/api/users/search/route.ts` 内でレートリミットを適用する
+- Upstash Redis の接続情報は環境変数（`UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`）で管理する
+- Vercel にも同じ環境変数を設定する必要がある（ダイチ側作業）
 
 ### スコープ外
 
-- フレンドのプロフィール詳細表示
-- フレンドとのダイレクトメッセージ
-- フレンド数の上限制御
-- フォロー型（非対称）の関係
-
----
-
-## LOW-001. `anon` ロールへの不要な SELECT 権限削除（supabase/migrations/20260526000002_feat002_phase2_friends.sql）
-
-- `GRANT SELECT ON public.friend_requests TO anon` を削除する
-- `REVOKE ALL ON FUNCTION search_users(text, uuid) FROM PUBLIC` を追加し、service_role のみに限定する
-
----
-
-## LOW-002. FK 違反（23503）を 500 ではなく 400 で返す（app/api/friends/requests/route.ts）
-
-- `insertError.code === "23503"` を個別ハンドルして 400 を返す
-- 存在しない `receiver_id` を送った場合のクライアントエラーを正しく区別する
+- 他のエンドポイントへのレートリミット適用（今回は search のみ）
+- IP 単位のレートリミット（user.id 単位のみ）
+- Upstash Redis 以外の実装
 
 ---
 
 ## スコープ外（共通）
 
-- メール通知（フレンドリクエスト受信時）
-- リアルタイム通知
-- フレンドのケース履歴閲覧
+- フレンド機能の変更
+- UI の変更
