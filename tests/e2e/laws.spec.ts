@@ -7,7 +7,7 @@ async function loginAs(page: any, email: string, password: string) {
   const passInput = page.locator('input[type="password"]');
   await emailInput.fill(email);
   await passInput.fill(password);
-  await page.click('button[type="submit"]');
+  await page.click('button:has-text("ログイン")');
   await page.waitForURL('/', { timeout: 10_000 });
 }
 
@@ -116,6 +116,8 @@ test('CRITICAL-L03: 改定案の提出と全員合意', async ({ browser }) => {
     const acceptBtn = pageB.locator('button').filter({ hasText: '承認' }).first();
     await expect(acceptBtn).toBeVisible({ timeout: 5_000 });
     await acceptBtn.click();
+    // pending招待が消える = メンバー追加完了
+    await pageB.waitForSelector('text=/この法律に招待されています/i', { state: 'hidden', timeout: 5_000 });
 
     // A が改定案を提出
     await pageA.reload();
@@ -130,6 +132,7 @@ test('CRITICAL-L03: 改定案の提出と全員合意', async ({ browser }) => {
     await pageA.waitForTimeout(500);
 
     // B が投票（賛成）
+    await pageB.reload();  // 法律詳細ページに自動遷移していない場合に対応
     await pageB.goto(lawUrl);
     const voteBtn = pageB.locator('button').filter({ hasText: '賛成する' }).first();
     await expect(voteBtn).toBeVisible({ timeout: 5_000 });
@@ -178,21 +181,20 @@ test('CRITICAL-L04: オーナー権の移譲', async ({ browser }) => {
     const acceptBtn = pageB.locator('button').filter({ hasText: '承認' }).first();
     await expect(acceptBtn).toBeVisible({ timeout: 5_000 });
     await acceptBtn.click();
-    await pageB.waitForTimeout(1_000);
+    // pending招待が消える = メンバー追加完了
+    await pageB.waitForSelector('text=/この法律に招待されています/i', { state: 'hidden', timeout: 5_000 });
 
     // A がオーナー権を B に移譲
     await pageA.reload();
     const transferBtn = pageA.locator('button').filter({ hasText: '権限を移譲' }).first();
     await expect(transferBtn).toBeVisible({ timeout: 5_000 });
     await transferBtn.click();
-    await pageA.waitForTimeout(500);
     // モーダルで B を選択
     const radioBtn = pageA.locator('input[type="radio"]').first();
     await expect(radioBtn).toBeVisible({ timeout: 3_000 });
     await radioBtn.click();
-    await pageA.waitForTimeout(300);
     // 移譲ボタンをクリック
-    const submitBtn = pageA.locator('button:has-text("移譲する")').last();
+    const submitBtn = pageA.locator('button').filter({ hasText: '移譲する' }).last();
     await expect(submitBtn).toBeEnabled({ timeout: 3_000 });
     await submitBtn.click();
     await pageA.waitForTimeout(1_000);
