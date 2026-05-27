@@ -17,12 +17,21 @@ export default function SignupPage() {
     e.preventDefault();
     setError("");
     setLoading(true);
+
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
+    if (!siteUrl) {
+      setError("環境設定エラーが発生しました。管理者にお問い合わせください。");
+      setLoading(false);
+      return;
+    }
+    const emailRedirectTo = new URL("/auth/callback", siteUrl).toString();
+
     const { error } = await supabase.auth.signUp({
       email,
       password,
       options: {
         data: { display_name: displayName },
-        emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback`,
+        emailRedirectTo,
       },
     });
     if (error) {

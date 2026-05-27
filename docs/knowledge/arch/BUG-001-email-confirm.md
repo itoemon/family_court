@@ -30,9 +30,9 @@
     ├─ Site URL: 本番 URL を設定
     └─ Redirect URLs: /auth/callback を許可リストに追加
 
-[SMTP 設定（Resend）]
+[SMTP 設定（Gmail SMTP）]
   Supabase Authentication > SMTP Settings
-    └─ Resend の SMTP 認証情報を設定
+    └─ Gmail SMTP の認証情報を設定（送信元 Gmail + アプリパスワード）
 ```
 
 ---
@@ -116,26 +116,23 @@ https://your-production-domain.com/auth/callback
 - ワイルドカードは `https://*.your-production-domain.com/auth/callback` の形式で指定可能だが、過度に広い許可はセキュリティリスクになる
 - Vercel Preview URL を使う場合は `https://*-your-org.vercel.app/auth/callback` を追加する
 
-### 3-2. Authentication > SMTP Settings（Resend を使ったカスタム SMTP）
+### 3-2. Authentication > SMTP Settings（Gmail SMTP を使ったカスタム SMTP）
 
-#### Resend アカウント作成手順
+#### Gmail アプリパスワードの発行手順
 
-1. [https://resend.com](https://resend.com) でアカウントを作成する
-2. ドメインを追加する（Domains > Add Domain）
-   - DNS レコード（SPF・DKIM・DMARC）をドメインレジストラに設定する
-   - 検証が完了するまで数分〜数時間かかる
-3. API Keys > Create API Key で SMTP 用の API キーを発行する
-   - Name: `supabase-smtp`（識別用）
-   - Permission: Sending access
+1. 送信元として使う Gmail アカウントで [2 段階認証プロセス](https://myaccount.google.com/security)を有効にする
+2. [アプリパスワード](https://myaccount.google.com/apppasswords)を発行する
+   - アプリ名: `supabase-smtp`（識別用）
+   - 発行された 16 桁の英数字パスワードを控える（再表示は不可）
 
-#### Resend の SMTP 認証情報
+#### Gmail の SMTP 認証情報
 
 ```
-Host:     smtp.resend.com
-Port:     465（SSL）または 587（STARTTLS）
-Username: resend
-Password: <Resend で発行した API キー>
-Sender:   no-reply@your-domain.com（Resend に登録済みドメインのアドレス）
+Host:     smtp.gmail.com
+Port:     587（STARTTLS）または 465（SSL）
+Username: <送信元 Gmail アドレス>
+Password: <発行したアプリパスワード>
+Sender:   <送信元 Gmail アドレス>
 ```
 
 #### Supabase への設定方法
@@ -144,6 +141,10 @@ Sender:   no-reply@your-domain.com（Resend に登録済みドメインのアド
 2. 「Enable Custom SMTP」をオンにする
 3. 上記の SMTP 認証情報を入力する
 4. 「Save」後、「Send test email」で動作確認する
+
+#### 送信制限と切り替え判断
+
+Gmail SMTP の送信上限は **500 通／日**。本サービスがこれを超える規模に達した場合は、Google Workspace（有料）の利用、もしくは SendGrid・Resend・Mailgun などの送信専用 SMTP に切り替える。
 
 #### 環境変数への追加（不要）
 
@@ -159,7 +160,7 @@ Supabase SMTP の設定はダッシュボード上で完結する。アプリケ
 |------|----------|
 | `NEXT_PUBLIC_SITE_URL=http://localhost:3000` を設定して開発サーバーを起動 | 環境変数が読み込まれること |
 | 新規アカウントでサインアップを実行 | エラーなく「確認メールを送信しました」の表示になること |
-| Resend ダッシュボードの Logs を確認 | 送信ログに该当メールが記録されていること |
+| Gmail の「送信済みメール」を確認 | 送信ログに該当メールが記録されていること |
 | 受信したメールのリンクをクリック | `/auth/callback?code=...` へリダイレクトされること |
 | コールバック処理後 | ログイン状態になり、ダッシュボード等へリダイレクトされること |
 
@@ -178,7 +179,7 @@ Supabase SMTP の設定はダッシュボード上で完結する。アプリケ
 | `NEXT_PUBLIC_SITE_URL` が本番 URL に設定されていること | デプロイ環境の環境変数を確認 |
 | Supabase ダッシュボードの Redirect URLs に本番 URL が登録されていること | 許可リストを目視確認 |
 | 本番環境で実際にサインアップを実行 | メールが届き、リンクをクリックしてセッションが確立されること |
-| Resend ダッシュボードの Logs | 本番ドメインからの送信ログが記録されていること |
+| Gmail の「送信済みメール」 | 本番アカウントからの送信ログが記録されていること |
 
 ### 4-4. 回帰テスト
 
@@ -196,7 +197,7 @@ Supabase SMTP の設定はダッシュボード上で完結する。アプリケ
 | `app/auth/signup/page.tsx` | コード修正（`emailRedirectTo` 追加） | ビルド |
 | `.env.local` | 環境変数追加（`NEXT_PUBLIC_SITE_URL`） | ビルド／オペレーション |
 | Supabase ダッシュボード（URL Configuration） | 設定変更 | オペレーション |
-| Supabase ダッシュボード（SMTP Settings） | 設定変更（Resend） | オペレーション |
+| Supabase ダッシュボード（SMTP Settings） | 設定変更（Gmail SMTP） | オペレーション |
 
 ---
 
@@ -204,4 +205,5 @@ Supabase SMTP の設定はダッシュボード上で完結する。アプリケ
 
 - `docs/knowledge/environment.md` — 環境変数の管理方針
 - [Supabase Auth: Email Redirect](https://supabase.com/docs/guides/auth/auth-email)
-- [Resend: SMTP](https://resend.com/docs/send-with-smtp)
+- [Supabase: Custom SMTP](https://supabase.com/docs/guides/auth/auth-smtp)
+- [Google: アプリパスワード](https://support.google.com/accounts/answer/185833)

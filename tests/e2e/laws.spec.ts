@@ -116,8 +116,8 @@ test('CRITICAL-L03: 改定案の提出と全員合意', async ({ browser }) => {
     const acceptBtn = pageB.locator('button').filter({ hasText: '承認' }).first();
     await expect(acceptBtn).toBeVisible({ timeout: 5_000 });
     await acceptBtn.click();
-    // 招待承認後に router.refresh() でページ再描画 → 招待セクションから消える
-    await pageB.waitForTimeout(1_000);
+    // 招待承認後に router.refresh() でページ再描画 → 承認ボタンが消えるまで待つ
+    await expect(acceptBtn).toBeHidden({ timeout: 5_000 });
 
     // A が改定案を提出
     await pageA.reload();
@@ -181,8 +181,8 @@ test('CRITICAL-L04: オーナー権の移譲', async ({ browser }) => {
     const acceptBtn = pageB.locator('button').filter({ hasText: '承認' }).first();
     await expect(acceptBtn).toBeVisible({ timeout: 5_000 });
     await acceptBtn.click();
-    // 招待承認後に router.refresh() でページ再描画 → 招待セクションから消える
-    await pageB.waitForTimeout(1_000);
+    // 招待承認後に router.refresh() でページ再描画 → 承認ボタンが消えるまで待つ
+    await expect(acceptBtn).toBeHidden({ timeout: 5_000 });
 
     // A がオーナー権を B に移譲
     await pageA.reload();
