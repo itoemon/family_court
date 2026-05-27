@@ -184,6 +184,8 @@ run_tester() {
 
   log "テストレポートを出力しました: $out_file"
 
+  "$REPO_ROOT/scripts/rotate_logs.sh" test-log || true
+
   if grep -q '判定: 不合格' "$out_file" 2>/dev/null; then
     local critical_count
     critical_count=$(grep -c 'CRITICAL.*❌\|- 結果: ❌' "$out_file" 2>/dev/null) || critical_count="不明"
@@ -215,6 +217,8 @@ run_auditor() {
     --allowedTools "Write,Read,Glob,Grep,Bash"
 
   log "監査ログを出力しました: $out_file"
+
+  "$REPO_ROOT/scripts/rotate_logs.sh" audit-log || true
 
   local high_count total_count
   high_count=$(grep -c '### \[HIGH-' "$out_file" 2>/dev/null) || high_count=0
