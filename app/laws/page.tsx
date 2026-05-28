@@ -10,7 +10,7 @@ export default async function LawsPage() {
 
   const admin = createAdminClient();
 
-  const { data: memberships } = await admin
+  const { data: memberships } = await supabase
     .from("law_members")
     .select("law_id")
     .eq("user_id", user.id);
@@ -29,7 +29,7 @@ export default async function LawsPage() {
   const memberCounts = new Map<string, number>();
   let proposalSet = new Set<string>();
 
-  const { data: rawPendingInvitations } = await admin
+  const { data: rawPendingInvitations } = await supabase
     .from("law_invitations")
     .select("id, law_id")
     .eq("invitee_id", user.id)
@@ -44,7 +44,7 @@ export default async function LawsPage() {
 
   if ((rawPendingInvitations ?? []).length > 0) {
     const invLawIds = rawPendingInvitations!.map(i => i.law_id);
-    const { data: invLaws } = await admin
+    const { data: invLaws } = await supabase
       .from("laws")
       .select("id, name, owner_id")
       .in("id", invLawIds);
@@ -71,9 +71,9 @@ export default async function LawsPage() {
 
   if (lawIds.length > 0) {
     const [lawsResult, memberCountResult, proposalResult] = await Promise.all([
-      admin.from("laws").select("id, name, article, owner_id, created_at").in("id", lawIds).order("created_at", { ascending: false }),
-      admin.from("law_members").select("law_id").in("law_id", lawIds),
-      admin.from("law_proposals").select("law_id").in("law_id", lawIds),
+      supabase.from("laws").select("id, name, article, owner_id, created_at").in("id", lawIds).order("created_at", { ascending: false }),
+      supabase.from("law_members").select("law_id").in("law_id", lawIds),
+      supabase.from("law_proposals").select("law_id").in("law_id", lawIds),
     ]);
 
     laws = lawsResult.data ?? [];
