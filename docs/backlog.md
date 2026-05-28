@@ -5,6 +5,8 @@
 リードがセッション開始時・PR マージ後にダイチへ内容を共有する。
 アーキは次の設計時にここを参照し、関連する指摘を設計に反映すること。
 
+由来表記は監査レポートへの相対パスを記載する（複数の監査レポートで同じ ID が出るため、`(由来 …)` と組み合わせて項目を一意に識別する）。
+
 ---
 
 ## 未対応
@@ -26,7 +28,7 @@
 
 #### [MEDIUM-001] Server Component の読み取りに createAdminClient() を使用（app/laws/page.tsx、app/laws/[id]/page.tsx）
 
-**由来**: audit_20260526_200752.md
+**由来**: `docs/knowledge/audit-log/audit_20260526_200752.md`
 
 - **内容**: `app/laws/page.tsx` および `app/laws/[id]/page.tsx` は、認証確認後のすべての DB 読み取りに `createAdminClient()` を使用している。`design.md` の「Server Component からの読み取りは `createSessionClient()` を使用し、以下のポリシーで保護する」という仕様に反する。`createAdminClient()` は RLS をバイパスするため、SELECT ポリシー（`laws_select_member`、`law_invitations_select` 等）が適用されない。現状は各クエリにアプリ層フィルタ（`.eq("invitee_id", user.id)`、メンバーシップ確認後の `.in("id", lawIds)` 等）が正しく付与されており、データ漏洩は発生していない。しかし RLS による二重防御が機能せず、将来の開発者がアプリ層フィルタを誤って削除・省略した場合に即座にデータが露出するリスクがある。
 - **影響範囲**: エンドユーザーへの直接影響は現時点でなし。ただし防御の単一障害点化により、メンテナンス時の誤実装がデータ漏洩に直結する。
@@ -34,29 +36,9 @@
 
 ---
 
-#### [LOW-001] `anon` ロールへの不要な SELECT 権限付与（supabase/migrations/20260526000002_feat002_phase2_friends.sql:29）
-
-**由来**: audit_20260526_142833.md
-
-- **内容**: `GRANT SELECT ON public.friend_requests TO anon;` により、未認証のブラウザクライアント（anon キー）も `friend_requests` テーブルに対して SELECT 権限を持つ。現時点では RLS ポリシー `friend_requests_select_own` が `USING (sender_id = auth.uid() OR receiver_id = auth.uid())` で制御しており、anon リクエストでは `auth.uid()` が NULL を返すため実際の行は一切返らない。機能上の問題はないが、最小権限の原則に反する。将来誰かが RLS ポリシーを変更・削除した場合（migration ミス、Supabase ダッシュボード操作など）、フレンド関係の全データが未認証ユーザーに公開されるリスクがある。
-- **エンドユーザーへの影響**: 上記の状態変化が起きた場合、全ユーザーのフレンド関係（誰と誰がつながっているか）が漏洩する。
-- **修正案**: `GRANT SELECT ON public.friend_requests TO anon;` の行を削除する。`anon` ロールは直接クライアントからの読み取りに使われるが、`friend_requests` へのアクセスはすべて API Route（service_role）経由で行われるため、anon への GRANT は不要である。
-
----
-
-#### [LOW-002] 存在しない receiver_id に対する FK 違反（23503）が未処理で 500 を返す（app/api/friends/requests/route.ts:102-107）
-
-**由来**: audit_20260526_142833.md
-
-- **内容**: `POST /api/friends/requests` は `receiver_id` の UUID v4 形式を正規表現で検証している（line 72）が、その UUID が `profiles.id` に存在するかどうかは確認しない。存在しない UUID を `receiver_id` として送信した場合、`friend_requests.receiver_id` の外部キー制約（`REFERENCES profiles(id)`）が PostgreSQL エラーコード 23503 を返す。コードは `23505`（重複）のみ個別ハンドルしており（line 103）、23503 はライン 106-107 の汎用 500 分岐に落ちる。レスポンス本文は `"リクエストの送信に失敗しました"` となりエラーコードを露出しないが、ステータスコードが 500（サーバー障害）になることは誤りであり、適切な 400（クライアント入力エラー）と区別できない。
-- **エンドユーザーへの影響**: フロントエンドは 5xx をサーバー側の障害として扱うため、ユーザーへの誤ったエラーメッセージ表示や不要なリトライが発生する可能性がある。ただし存在しない UUID を UI から送る経路は通常ないため、現実の発火は限定的。
-- **修正案**: `insertError.code === "23503"` を個別ハンドルして 400 または 404 を返す。
-
----
-
 #### [LOW-001] `package.json` の `name` フィールド変更が変更ログ未記載（`package.json:2`、`package-lock.json:4`）
 
-**由来**: audit_20260526_152517.md
+**由来**: `docs/knowledge/audit-log/audit_20260526_152517.md`
 
 - **内容**: `package-lock.json` の `name` フィールドが `"family_court"` から `"igiari"` へ変更されている。`package.json` の現在値も `"igiari"` である（2行目）。しかし eng-to-aud.md の「変更ファイル一覧」では `package.json` の変更理由を `@upstash/*` 依存追加のみと説明しており、`name` フィールドの変更への言及がない。意図的なプロジェクト名変更であれば問題ないが、本監査ではその意図を文書から確認できない。エンドユーザーへの直接影響はないものの、Vercel のプロジェクト名・CI 設定と乖離した場合にデプロイのトレーサビリティが失われる。
 - **修正案**: 変更が意図的であれば eng-to-aud.md の変更ファイル一覧に `package.json — name フィールドを igiari へ変更` を追記する。意図的でない場合は `"name": "family_court"` に戻す。
@@ -65,16 +47,16 @@
 
 #### [LOW-002] `@upstash/core-analytics` が本番依存ツリーに混入（`package-lock.json`）
 
-**由来**: audit_20260526_152517.md
+**由来**: `docs/knowledge/audit-log/audit_20260526_152517.md`
 
 - **内容**: `analytics: false` を明示設定しているにもかかわらず、`@upstash/ratelimit@2.0.8` の推移的依存として `@upstash/core-analytics@0.0.10` が `node_modules` に含まれる（`package-lock.json` に `node_modules/@upstash/core-analytics` エントリあり）。このパッケージがモジュール初期化時にアウトバウンド接続を行わないことをコードレベルでは確認できない。`ratelimit.limit(user.id)` は毎リクエストごとに `user.id`（UUID）を渡すため、万一 `analytics: false` が完全に機能していない場合、ユーザー識別子が Upstash のサードパーティサーバーへ送信されうる。本アプリは夫婦・家族の話し合いというプライバシー高感度なドメインであるため、ユーザー識別子の外部送信リスクは軽視できない。
 - **修正案**: `@upstash/core-analytics@0.0.10` の GitHub リポジトリ（upstash/core-analytics）でソースを確認し、`analytics: false` 時にアウトバウンド接続が発生しないことを検証する。または `npm run build` 後に `grep -r "core-analytics" .next/server/` を実行し、analytics 呼び出しがサーバーバンドルに含まれないことを確認する。
 
 ---
 
-#### [LOW-003] URL パスパラメータの UUID バリデーション未実施
+#### [LOW-001] URL パスパラメータの UUID バリデーション未実施（継続指摘）
 
-**由来**: audit_20260526_200752.md
+**由来**: `docs/knowledge/audit-log/audit_20260526_200752.md`
 
 - **内容**: 全 API ルートの `lawId`、`invId`、`propId` がリクエスト URL から取得した生の文字列のまま Supabase クエリの `.eq("id", ...)` に渡されている。招待 POST (`app/api/laws/[id]/invitations/route.ts:5`) の `invitee_id`・オーナー移譲 PATCH (`app/api/laws/[id]/owner/route.ts:5`) の `new_owner_id` はリクエストボディで UUID 形式を検証しているが、パスパラメータ側の検証は行われていない。Supabase は UUID 型カラムへの非 UUID 値を PostgreSQL エラーとして返すため、現時点で実際のデータ操作は発生しないが、エラーレスポンスの形式が不統一になる（PostgreSQL エラーが 500 として漏洩する可能性）。
 - **影響範囲**: 悪意ある入力者が不正な文字列を渡した場合に Supabase エラーログが汚染される。データ漏洩・改ざんの直接リスクは低い。
@@ -82,9 +64,9 @@
 
 ---
 
-#### [LOW-004] PendingInvitations.tsx で HTTP レスポンスステータスを検査していない（app/laws/_components/PendingInvitations.tsx:29-36）
+#### [LOW-002] PendingInvitations.tsx で HTTP レスポンスステータスを検査していない（app/laws/_components/PendingInvitations.tsx:29-36）
 
-**由来**: audit_20260526_200752.md
+**由来**: `docs/knowledge/audit-log/audit_20260526_200752.md`
 
 - **内容**: `respond` 関数内で `fetch(...)` の戻り値 (`Response`) を検査せず、常に `router.refresh()` を実行している。API が 403・404・500 を返した場合でもリフレッシュが走り、ユーザーはエラーメッセージを受け取れない。ページリフレッシュ後は招待が残ったまま表示されるため誤操作防止にはなるが、「なぜ消えないのか」が伝わらず連打を誘発する可能性がある。セキュリティ上の直接影響はないが、失敗時の招待重複クリックがサーバー側に余分なリクエストを送る。
 - **影響範囲**: エンドユーザーへの UX 劣化。サーバー側の状態変化は発生しない（PATCH の冪等性により安全）。
@@ -151,8 +133,8 @@
 | PR #19 (LOW-001) | avatar アップロード時の magic bytes 検証を実装（Content-Type 偽装対策） |
 | PR #19 (LOW-002) | `defenseCustomInstruction` の型検証を追加（typeof !== "string" チェック） |
 | PR #20 (FEAT-002 P2) | フレンド機能（リクエスト送信・承認/拒否・一覧・削除） |
-| PR #20 (LOW-001) | フレンド検索の入力サニタイズ・追加品質修正 |
-| PR #20 (LOW-002) | 表示名取得時のエラーハンドリング追加 |
+| PR #20 (LOW-001) | `friend_requests` への `anon` GRANT を最初から付与せず最小権限を確立（由来: `docs/knowledge/archive/audit-log/audit_20260526_142833.md`） |
+| PR #20 (LOW-002) | `POST /api/friends/requests` で FK 違反 (23503) を 400 で個別ハンドル（由来: `docs/knowledge/archive/audit-log/audit_20260526_142833.md`） |
 | PR #21 (MEDIUM-001) | `/api/users/search` に Upstash Redis レートリミットを実装 |
 | PR #22 (FEAT-003) | 法律作成機能（作成・招待・投票・退会・改定・所有権移譲） |
 | PR #23 (BUG-001) | サインアップ時の確認メール未着を修正（Gmail SMTP・emailRedirectTo の明示化） |
