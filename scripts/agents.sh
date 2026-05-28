@@ -184,7 +184,8 @@ run_tester() {
 
   log "テストレポートを出力しました: $out_file"
 
-  "$REPO_ROOT/scripts/rotate_logs.sh" test-log || true
+  "$REPO_ROOT/scripts/rotate_logs.sh" test-log \
+    || log "警告: test-log のローテーションに失敗しました（テスト結果には影響なし）"
 
   if grep -q '判定: 不合格' "$out_file" 2>/dev/null; then
     local critical_count
@@ -218,7 +219,8 @@ run_auditor() {
 
   log "監査ログを出力しました: $out_file"
 
-  "$REPO_ROOT/scripts/rotate_logs.sh" audit-log || true
+  "$REPO_ROOT/scripts/rotate_logs.sh" audit-log \
+    || log "警告: audit-log のローテーションに失敗しました（監査結果には影響なし）"
 
   local high_count total_count
   high_count=$(grep -c '### \[HIGH-' "$out_file" 2>/dev/null) || high_count=0

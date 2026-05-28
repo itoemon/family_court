@@ -17,6 +17,11 @@ KEEP="${KEEP:-3}"
 
 log() { echo "[rotate_logs] $*"; }
 
+if ! [[ "$KEEP" =~ ^[0-9]+$ ]]; then
+  log "エラー: KEEP は非負整数で指定してください (現在: '$KEEP')"
+  exit 1
+fi
+
 rotate_one() {
   local name="$1"
   local src_dir="$KNOWLEDGE/$name"
@@ -24,11 +29,13 @@ rotate_one() {
 
   [[ -d "$src_dir" ]] || return 0
 
-  # 対象ファイルを更新時刻の新しい順に収集
+  # 対象ファイルを新しい順に収集。
+  # ファイル名が {audit,test}_YYYYMMDD_HHMMSS.md 形式なので lex sort で時系列順になる。
+  # GNU find の `-printf` は BSD/macOS で動かないため使わない。
   local files=()
   while IFS= read -r f; do
     files+=("$f")
-  done < <(find "$src_dir" -maxdepth 1 -type f -name '*.md' -printf '%T@ %p\n' | sort -rn | awk '{print $2}')
+  done < <(find "$src_dir" -maxdepth 1 -type f -name '*.md' | sort -r)
 
   local total=${#files[@]}
   if (( total <= KEEP )); then
