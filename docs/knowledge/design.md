@@ -609,3 +609,227 @@ if (!friendship) {
 - 部分改定 UI（条文の一部のみ変更するインターフェース）
 - 法律の公開 Hub（FEAT-004）
 - 法律コメント・チャット機能
+
+---
+
+## MEDIUM-001 対応: Server Component の RLS 経由化（FEAT-003 補強）
+
+### 概要
+
+`app/laws/page.tsx` と `app/laws/[id]/page.tsx` の Server Component は、認証確認後の DB 読み取りすべてに `createAdminClient()` を使用しており、RLS をバイパスしている。本 PR では法律関連テーブル（`laws`, `law_members`, `law_invitations`, `law_proposals`, `law_proposal_votes`）の読み取りを `createSessionClient()` 経由に切り替え、RLS による二重防御を有効にする。
+
+現状の各クエリにはアプリ層フィルタ（`.eq("invitee_id", user.id)`、メンバーシップ確認後の `.in("id", lawIds)` 等）が正しく付与されているため、データ漏洩は発生していない。しかし RLS が機能していないことで、将来の改修でアプリ層フィルタが誤って削除・省略された場合に即座にデータが露出するリスクがある。本 PR の目的は「アプリ層フィルタが万一壊れても、RLS が二重防御として機能する」状態を作ることである。
+
+FEAT-003 セクションで定めた方針「Server Component からの読み取りは `createSessionClient()` を使用し、以下のポリシーで保護する」を実装に反映する変更でもある。
+
+### 影響範囲
+
+- `app/laws/page.tsx`（Server Component。`law_*` テーブル読み取りを `createSessionClient()` に切り替え。`profiles` 参照のみ admin を維持）
+- `app/laws/[id]/page.tsx`（同上）
+- `supabase/migrations/<新規 1 枚>`（`laws` SELECT ポリシーの差し替え）
+
+**スコープ外（本 PR で触らないもの）**:
+
+- `profiles` テーブルの RLS / 列 GRANT（理由は後述）
+- `app/laws/_components/PendingInvitations.tsx`（backlog の別項目で扱う）
+- `app/api/laws/**` 配下の API Route（書き込みは引き続き `createAdminClient()` 経由・既存方針踏襲）
+- `search_users` 関数
+
+### RLS 設計
+
+#### `laws` SELECT ポリシーの差し替え
+
+##### 現状の課題
+
+既存の `laws_select_member` ポリシー（`supabase/migrations/20260526000003_feat003_laws.sql` で導入）は「メンバーのみ閲覧可」を表現する：
+
+```sql
+CREATE POLICY laws_select_member ON public.laws FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.law_members
+      WHERE law_id = laws.id AND user_id = auth.uid()
+    )
+  );
+```
+
+しかし、`/laws` の「届いた招待」セクションでは、非メンバーである invitee が `laws.name` を読む必要がある。同様に `/laws/[id]` の非メンバー分岐（招待受諾画面）でも `laws.name` と `laws.article` を読みたい。現状は `createAdminClient()` で RLS をバイパスして実現しているため動作しているが、`createSessionClient()` に切り替えた瞬間、invitee からは `laws` レコードが見えなくなり画面が壊れる。
+
+##### 新ポリシー
+
+`laws_select_member` を DROP し、以下の 3 条件のいずれかを満たす場合に SELECT を許可する新ポリシーを CREATE する：
+
+1. **オーナー本人**（`laws.owner_id = auth.uid()`）
+2. **メンバー**（`law_members` に当該 user_id が存在）
+3. **pending な invitee 本人**（`law_invitations` に `invitee_id = auth.uid() AND status = 'pending'` が存在）
+
+```sql
+DROP POLICY IF EXISTS laws_select_member ON public.laws;
+
+CREATE POLICY laws_select_member_or_invitee ON public.laws FOR SELECT
+  USING (
+    laws.owner_id = auth.uid()
+    OR EXISTS (
+      SELECT 1 FROM public.law_members
+      WHERE law_members.law_id = laws.id
+        AND law_members.user_id = auth.uid()
+    )
+    OR EXISTS (
+      SELECT 1 FROM public.law_invitations
+      WHERE law_invitations.law_id = laws.id
+        AND law_invitations.invitee_id = auth.uid()
+        AND law_invitations.status = 'pending'
+    )
+  );
+```
+
+##### 設計判断の理由
+
+- **オーナー条件を独立して列挙する理由**: FEAT-003 設計上、オーナーは作成時に必ず `law_members` に登録されるため、オーナー条件はメンバー条件で通常はカバーされる。しかし `law_members` レコードが障害（手動削除・移行ミス）で失われた場合でもオーナーが自分の法律本体を閲覧できる保険として、独立して残す。コストは EXISTS 1 件追加のみで、安全性とのトレードオフでは保険を取る判断。
+- **`status = 'pending'` のフィルタ**: `accepted` の場合はメンバー条件で既に通る。`rejected` の場合は閲覧権を失うべきなので明示的に除外する。これは「招待を断った相手に法律内容を覗き続けられない」という妥当な振る舞いを RLS 側で保証する判断。
+- **`anon` ロールへの GRANT は付与しない**: 既存方針（FEAT-002 LOW-001 の教訓）を踏襲。新ポリシーは `authenticated` ロールのみ評価される前提。
+
+#### 他テーブルの既存ポリシー検証結果
+
+`supabase/migrations/20260526000003_feat003_laws.sql` で導入済みの SELECT ポリシーが、`createSessionClient()` 切り替え後の Server Component から必要な行を返せるかを検証する。
+
+| テーブル | 既存ポリシー | Server Component での読み手 | 結果 |
+|----------|------------|----------------------------|------|
+| `law_members` | 同じ法律のメンバーのみ | `/laws` で自分の所属一覧、`/laws/[id]` でメンバー一覧 | **十分**（読み手は常にメンバー） |
+| `law_invitations` | invitee 本人 OR オーナー | `/laws` で届いた招待（invitee 視点）、`/laws/[id]` で pending 招待一覧（オーナー視点） | **十分**（両方向カバー済） |
+| `law_proposals` | メンバーのみ | `/laws/[id]` のメンバー分岐でのみ読む | **十分** |
+| `law_proposal_votes` | メンバーのみ | `/laws/[id]` のメンバー分岐でのみ読む | **十分** |
+
+検証ポイント：
+
+- `/laws/[id]` の **非メンバー分岐**（pending invitee による招待受諾画面）では、`law_members` / `law_proposals` / `law_proposal_votes` を読む必要はない。`laws.name` / `laws.article` の表示と「承認・拒否ボタン」のみで完結するため、上記ポリシーが「メンバーのみ」のままでも問題ない。
+- `/laws` の「届いた招待」セクションでは、`law_invitations` の自分宛 pending 行と、その `law_id` に対応する `laws.name` を読む。既存の `law_invitations_select` ポリシー（invitee 本人を許可）と、新ポリシー `laws_select_member_or_invitee` のどちらでも通る。
+
+結論：他テーブルへの追加修正は **不要**。`laws` SELECT ポリシーの差し替え 1 件のみで足りる。
+
+#### `profiles` テーブルは本 PR では触らない
+
+理由：
+
+- 列レベル GRANT は role 単位（`authenticated` / `anon` / `service_role`）であり、「本人なら全列 SELECT、他人なら一部列のみ SELECT」を表現できない。
+- `app/page.tsx` および `app/profile/page.tsx`（Client Component）が `api_key_encrypted` や `defense_custom_instruction` を直接読んでおり、列 GRANT で機微情報を絞ると本人取得経路が壊れる。
+- 本 PR では `app/laws/page.tsx` と `app/laws/[id]/page.tsx` 内で `profiles` を読む箇所だけ `createAdminClient()` のまま残し、`law_*` テーブルの読み取りだけを `createSessionClient()` に切り替える。
+- `profiles` の RLS 整備自体は別 backlog 項目として後日扱う。
+
+### コンポーネント設計
+
+#### `app/laws/page.tsx` のクエリ書き換え方針
+
+責務：認証済みユーザーに対し、所属する法律一覧と届いた pending 招待を表示する Server Component。
+
+セッションクライアントと admin クライアントの使い分け：
+
+| 用途 | クライアント | 理由 |
+|------|------------|------|
+| `auth.getUser()`（認証確認） | `createSessionClient()` | 既存通り。先頭で null チェックして未認証は redirect |
+| `law_members`（自分の所属取得） | `createSessionClient()` | RLS により自分が属する行のみ可視 |
+| `laws`（法律本体取得） | `createSessionClient()` | 新 RLS によりオーナー / メンバー / pending invitee のみ可視 |
+| `law_invitations`（届いた招待） | `createSessionClient()` | 既存 RLS により invitee 本人の行のみ可視 |
+| `law_proposals` の存在チェック（バッジ用） | `createSessionClient()` | 既存 RLS によりメンバーのみ可視 |
+| `profiles`（オーナー名・自分の表示名等） | `createAdminClient()` | スコープ外（理由は前節） |
+
+二重防御：既存のアプリ層フィルタ（`.eq("invitee_id", user.id)` 等）はすべて維持する。RLS が誤って緩められた場合の保険として機能させる。
+
+#### `app/laws/[id]/page.tsx` のクエリ書き換え方針
+
+責務：法律詳細の表示。メンバーには本体・メンバー一覧・招待・提案・投票を表示し、pending invitee には招待受諾画面を表示する Server Component。
+
+クエリ順序と分岐：
+
+1. `createSessionClient()` で `auth.getUser()` → null なら redirect
+2. `createSessionClient()` で `law_members` を `.eq("law_id", id).eq("user_id", user.id)` で取得し、メンバーかどうか判定
+3. **メンバー分岐**：
+   - `laws` / `law_members` / `law_invitations`（pending のみ）/ `law_proposals` / `law_proposal_votes` を `createSessionClient()` で取得
+   - メンバー名・オーナー名・invitee 名等の `profiles` 参照のみ `createAdminClient()` で取得
+4. **非メンバー分岐**：
+   - `createSessionClient()` で `law_invitations` を `.eq("law_id", id).eq("invitee_id", user.id).eq("status", "pending")` で取得し、pending 招待があるか判定
+   - 招待あり：`createSessionClient()` で `laws.name` / `laws.article` を取得（新 RLS の pending invitee 条件で通る）→ 招待受諾画面をレンダリング
+   - 招待なし：404 相当の redirect
+
+二重防御：メンバー分岐内のアプリ層フィルタ（`.eq("law_id", id)` 等）はすべて維持する。
+
+### migration 設計
+
+新規 migration を 1 枚追加する。既存の `20260526000003_feat003_laws.sql` は applied 済みのため、上書きや書き換えは行わない。
+
+ファイル例：`supabase/migrations/<新タイムスタンプ>_medium001_laws_select_invitee.sql`
+
+```sql
+-- MEDIUM-001: laws SELECT ポリシーを「メンバーのみ」から
+-- 「オーナー OR メンバー OR pending invitee」に拡張する。
+-- 由来: docs/knowledge/archive/audit-log/audit_20260526_200752.md MEDIUM-001
+-- 目的: Server Component (app/laws/page.tsx, app/laws/[id]/page.tsx) を
+--       createSessionClient() 経由に切り替えるため、invitee から
+--       laws.name / laws.article が見えるようにする。
+
+BEGIN;
+
+-- 冪等性のため DROP POLICY IF EXISTS で前ポリシーを除去
+DROP POLICY IF EXISTS laws_select_member ON public.laws;
+
+-- 新ポリシー側も冪等にする（再適用耐性）
+DROP POLICY IF EXISTS laws_select_member_or_invitee ON public.laws;
+
+CREATE POLICY laws_select_member_or_invitee ON public.laws FOR SELECT
+  USING (
+    laws.owner_id = auth.uid()
+    OR EXISTS (
+      SELECT 1 FROM public.law_members
+      WHERE law_members.law_id = laws.id
+        AND law_members.user_id = auth.uid()
+    )
+    OR EXISTS (
+      SELECT 1 FROM public.law_invitations
+      WHERE law_invitations.law_id = laws.id
+        AND law_invitations.invitee_id = auth.uid()
+        AND law_invitations.status = 'pending'
+    )
+  );
+
+COMMIT;
+
+-- ロールバック手順（必要時に手動で実行）:
+-- BEGIN;
+--   DROP POLICY IF EXISTS laws_select_member_or_invitee ON public.laws;
+--   CREATE POLICY laws_select_member ON public.laws FOR SELECT
+--     USING (
+--       EXISTS (
+--         SELECT 1 FROM public.law_members
+--         WHERE law_id = laws.id AND user_id = auth.uid()
+--       )
+--     );
+-- COMMIT;
+```
+
+設計上の注意：
+
+- `BEGIN` / `COMMIT` で囲み、ポリシー入れ替え中の途中状態（ノーポリシー時の RLS による全行不可視）が外から見えないようにする。
+- DROP は `IF EXISTS` 付きで冪等にし、同じマイグレーションを誤って再適用しても失敗しない。
+- 新ポリシー側も `DROP POLICY IF EXISTS` を先に実行し、再適用耐性を確保する。
+- 既存マイグレーションの編集は行わない。
+- `GRANT` は触らない。`authenticated` ロールへの既存 GRANT がそのまま新ポリシーで評価される。
+
+### セキュリティ設計
+
+- **アプリ層フィルタは二重防御として保持する**: Server Component の各 SELECT に付いている `.eq("invitee_id", user.id)` / `.in("id", lawIds)` / `.eq("law_id", id)` 等は引き続き残す。新 RLS と同じ集合に絞られるが、RLS が将来誤って緩められた場合に備えた多層防御として機能する。
+- **API Routes の書き込みは引き続き service_role 経由**: environment.md および FEAT-003 設計の方針「API Routes での書き込みは必ず `createAdminClient()` を使い、サーバー側コードで本人確認を行う」を踏襲する。本 PR では書き込み経路には一切手を加えない。
+- **`auth.getUser()` の null チェックは Server Component 先頭で維持**: 未認証ユーザーが Server Component に到達した場合の即時 redirect は既存の防御であり、変更しない。これにより RLS による空集合返却に頼らず、認可境界をコード上で明示する。
+- **`profiles` の機微列保護は本 PR スコープ外**: `api_key_encrypted` 等の機微列は引き続き `createAdminClient()` 経由で読まれる。本 PR の防御強化は `law_*` テーブルに限定されることを明記する。`profiles` 列の保護は別 backlog 項目で扱う。
+- **新 RLS による情報露出範囲の確認**: 新ポリシーで invitee に追加で見えるのは `laws.name` と `laws.article` のみ。`law_members` / `law_proposals` / `law_proposal_votes` のポリシーは「メンバーのみ」のままなので、invitee はメンバー構成や進行中の提案を観測できない。これは設計意図通り。
+- **`status = 'rejected'` 後の閲覧不可**: 新ポリシーは `status = 'pending'` で限定しているため、招待を拒否した invitee は `laws` を見られなくなる。これは「招待を断った相手に法律内容を覗き続けられない」という妥当な振る舞いを保証する。
+
+### 制約・前提条件
+
+- **過去 migration は applied 済み**: `20260526000003_feat003_laws.sql` を含む既存マイグレーションはすべて適用済みとする。本 PR は新規 1 枚を追加する形で対応し、既存マイグレーションの編集は行わない。
+- **既存メンバー閲覧 UX を一切壊さない**: 新 RLS の「オーナー OR メンバー OR pending invitee」はメンバーを必ず含むため、メンバーから見える行集合は従来と同一以上となる。メンバー視点での画面表示は完全に同等。
+- **`profiles` の RLS 整備は本 PR スコープ外**: `profiles` を読む箇所は `createAdminClient()` のまま残す。`profiles` の RLS / 列 GRANT 整備は別 backlog 項目（後日）で扱う。
+- **`search_users` 関数の挙動は維持**: フレンド検索の RPC は本 PR で変更しない。`InvitePanel.tsx` の動作は据え置き。
+- **アプリ層フィルタは温存**: `.eq(...)` / `.in(...)` 等の既存フィルタは削除しない。RLS と二重に絞ることで多層防御を実現する。
+- **書き込み API は不変**: `app/api/laws/**` 配下の Route Handler はすべて `createAdminClient()` 経由のまま据え置く。本 PR で書き込み経路は触らない。
+- **デプロイ順序の前提**: 本番適用は「マイグレーション先・コード後」とする。逆順では invitee 画面が短時間壊れる（新コードが旧 RLS に当たり `laws` が見えない）。詳細は引き継ぎメモを参照。
+

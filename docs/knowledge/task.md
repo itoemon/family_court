@@ -1,128 +1,115 @@
 # タスク指示（パイプライン実行前にリード/ダイチが更新する）
 
 > **優先順位**: このファイルの内容は最優先。設計書・handoff メモと矛盾する場合は必ずこちらを優先すること。
+>
+> **重要 1**: `docs/knowledge/design.md` は永続資料である。**既存の設計（FEAT-001〜FEAT-003、過去 PR の設計など）を絶対に削除・短縮しないこと**。本タスクの内容は `design.md` の末尾に新規セクションとして **追記** すること（[[feedback-design-md]] 参照）。
+>
+> **重要 2**: 本タスクは `laws` テーブル系の RLS 整備のみが対象である。`profiles` テーブルの RLS / 列 GRANT には **一切手を加えない**（後述の理由を参照）。
 
 ## 今回のタスク
 
-FEAT-003（法律作成機能）監査不合格の修正。
+MEDIUM-001（FEAT-003 監査由来）対応の **設計**。`app/laws/page.tsx` と `app/laws/[id]/page.tsx` の Server Component が法律関連テーブル（`laws`, `law_members`, `law_invitations`, `law_proposals`, `law_proposal_votes`）を読む経路を、`createAdminClient()`（service_role / RLS バイパス）から `createSessionClient()`（authenticated / RLS 適用）へ切り替えるための RLS 設計とコンポーネント設計を確定する。
 
-**修正内容（3件）:**
+**由来**: `docs/knowledge/archive/audit-log/audit_20260526_200752.md` の MEDIUM-001
 
-### FIX-A: `/laws/page.tsx` に pending 招待セクションを追加（HIGH-001 対応・最重要）
+---
 
-`app/laws/page.tsx` の Server Component 部分に以下を追加する。
-前回のエンジニアが `/laws/[id]/page.tsx` に実装したが、ユーザーはその URL を知らなければ到達不能。本来の実装先は `/laws/page.tsx`。
+### 背景
 
-実装仕様:
-- `law_invitations` から `invitee_id = user.id AND status = 'pending'` のレコードを取得
-- 関連する `laws.name` と、`laws.owner_id` → `profiles.display_name` を取得して表示
-- 「届いた招待」セクションを法律一覧の上部に配置する
-- 承認・拒否ボタンは `app/laws/_components/PendingInvitations.tsx` として切り出す（Client Component）
-- 承認ボタン → `PATCH /api/laws/[id]/invitations/[invId]` に `{ "status": "accepted" }` を送信
-- 拒否ボタン → 同 API に `{ "status": "rejected" }` を送信
-- 操作後に `router.refresh()` でページをリフレッシュ
+- `app/laws/page.tsx` と `app/laws/[id]/page.tsx` は、認証確認後のすべての DB 読み取りに `createAdminClient()` を使用しており、RLS をバイパスしている。
+- 現状は各クエリにアプリ層フィルタ（`.eq("invitee_id", user.id)` 等）が付いているためデータ漏洩は発生していないが、RLS による二重防御が効いていない。将来フィルタを誤って削除した場合、即座にデータが露出するリスクがある。
+- `design.md`（FEAT-003 当時）の方針は「Server Component からの読み取りは `createSessionClient()` を使用し、RLS で保護する」。現在の実装はこの方針に反する。
 
-`app/laws/[id]/page.tsx` の非メンバー処理は**そのまま残す**（直リンクからのアクセスにも対応するため）。
+---
 
-### FIX-B: E2E テストの assertion を hard assertion に修正（HIGH-001/MEDIUM-001 対応）
+### 解決すべき設計上の課題
 
-`tests/e2e/laws.spec.ts` の以下の `if (await xxx.isVisible(...))` 条件分岐を `await expect(xxx).toBeVisible(...)` に変更する。
+1. **`laws` SELECT ポリシーの拡張**
+   `/laws` の「届いた招待」セクションでは、非メンバーである invitee が法律の `name` を読む必要がある。`/laws/[id]` の非メンバー分岐（招待受諾画面）でも `laws.name` と `laws.article` を読みたい。現状の `laws_select_member` ポリシーは「メンバーのみ」なので invitee には `laws` が見えない。
+   - 新ポリシー案: 「メンバー OR pending invitee 本人 OR 法律オーナー」
+   - 既存ポリシー `laws_select_member` を `DROP POLICY IF EXISTS` してから新ポリシーを `CREATE POLICY` する
 
-| 行 | テスト | 修正内容 |
-|----|--------|---------|
-| 72–76 | L02 | `if (await acceptBtn.isVisible(...))` → `await expect(acceptBtn).toBeVisible(...)` |
-| 119–122 | L03 | 同様 |
-| 139–141 | L03 | 同様 |
-| 147–151 | L03 | 同様 |
-| 189–193 | L04 | 同様 |
+2. **`law_members`, `law_invitations`, `law_proposals`, `law_proposal_votes` の既存 SELECT ポリシー検証**
+   既存ポリシー（`supabase/migrations/20260526000003_feat003_laws.sql`）で Server Component に必要な行が見えるかを設計書で検証する。不足があれば追加修正案を提示する。
 
-テストは FIX-A の実装後に `/laws` ページで招待ボタンを探すよう修正すること。
+3. **Server Component のクエリ書き換え方針**
+   `app/laws/page.tsx` と `app/laws/[id]/page.tsx` のクエリを `createSessionClient()` 経由で書く実装案を設計書に明記する。アプリ層フィルタは二重防御として保持。
 
-### FIX-C: PATCH invitations ルートに lawId バリデーションを追加（MEDIUM-002 対応）
+---
 
-`app/api/laws/[id]/invitations/[invId]/route.ts:10` を修正する。
+### スコープ外（重要）
 
-```typescript
-// 変更前
-const { invId } = await params;
+- **`profiles` テーブルの RLS / 列 GRANT は一切触らない**
+  - 理由: 列レベル GRANT は role 単位（authenticated/anon/service_role）であり、「本人なら全列 SELECT、他人なら一部列のみ SELECT」を表現できない。`app/page.tsx` および `app/profile/page.tsx`（Client Component）が `api_key_encrypted` や `defense_custom_instruction` を読んでおり、列 GRANT で機微情報を絞ると本人取得経路が壊れる。
+  - 今回は `app/laws/page.tsx` と `app/laws/[id]/page.tsx` 内で `profiles` を読む箇所だけ **`createAdminClient()` のまま残す**。`law_*` テーブルの読み取りだけを `createSessionClient()` に切り替える。
+  - `profiles` の RLS 整備自体は別 backlog 項目として後日扱う。
+- backlog の他の LOW 項目（UUID バリデーション、`anon` GRANT 削除、FK 23503 ハンドル、PendingInvitations.tsx の fetch 検査、`package.json` 変更ログ、`@upstash/core-analytics` 検証）
+- FEAT-004（法案 Hub）に関連する変更
+- MON-001 / MON-002
+- `app/laws/_components/PendingInvitations.tsx` の改修（backlog の別項目）
 
-// 変更後
-const { id: lawId, invId } = await params;
+---
+
+### 期待する設計成果物
+
+#### 1. `docs/knowledge/design.md` への **追記**（既存内容は保持）
+
+末尾に以下のセクションを **追加** する（既存の章は一切変更しないこと）。
+
+```
+## MEDIUM-001 対応: Server Component の RLS 経由化（FEAT-003 補強）
+
+### 概要
+（変更の目的・背景）
+
+### 影響範囲
+- app/laws/page.tsx
+- app/laws/[id]/page.tsx
+- supabase/migrations/<新規 1 枚>
+
+### RLS 設計
+- `laws` SELECT ポリシー新案（メンバー OR pending invitee OR 法律オーナー）
+- 他法律系テーブル（`law_members` 他）の既存ポリシーで十分かの検証結果
+- `profiles` は本 PR では触らない旨を明記
+
+### コンポーネント設計
+- `app/laws/page.tsx` のクエリ書き換え方針（law_* は session client、profiles は admin のまま）
+- `app/laws/[id]/page.tsx` のクエリ書き換え方針
+
+### migration 設計
+- 新規 migration 1 枚（DROP/CREATE POLICY、冪等、BEGIN/COMMIT、ロールバック手順をコメントで記載）
+
+### セキュリティ設計
+- アプリ層フィルタは二重防御として保持
+- API Routes の書き込みは引き続き service_role 経由（既存方針踏襲）
+- `auth.getUser()` の null チェックは先頭で維持
+
+### 制約・前提条件
+- 過去 migration は applied 済み
+- 既存メンバー閲覧 UX を一切壊さない
 ```
 
-そして招待の検索クエリに `.eq("law_id", lawId)` を追加する。
+#### 2. `docs/knowledge/handoff/arch-to-eng.md` の更新
 
-```typescript
-const { data: invitation } = await admin
-  .from("law_invitations")
-  .select("id, law_id, invitee_id, status")
-  .eq("id", invId)
-  .eq("law_id", lawId)  // この行を追加
-  .maybeSingle();
-```
+ビルドへの引き継ぎメモ。設計書だけで判断できない実装手順（ステップ順、grep の必要性、動作確認シナリオ）を記載する。`profiles` を触らないことを明示する。
 
 ---
 
-## 概要
+### 制約・前提
 
-ユーザーが「法律」（オリジナルルールセット）を作成・管理できる機能。
-フレンド間でルールを施行し、改定案を合議で決める仕組みを提供する。
-
----
-
-## 機能要件
-
-### L-1. 法律の作成
-
-- ログイン済みユーザー（以後「オーナー」）が法律を作成できる
-- 作成時に「法律名」（必須・最大 100 文字）と「条文」（必須・最大 2000 文字）を入力する
-- 作成者が自動的にオーナー兼メンバーになる
-
-### L-2. メンバー招待
-
-- オーナーは自分のフレンドを法律に招待できる
-- 招待されたフレンドは承認 / 拒否を選択できる
-- 承認するとメンバーになり、その法律のルールに参加する
-
-### L-3. 改定案の提出・合意
-
-- メンバー（オーナー含む）は改定案を提出できる
-- 改定案には「変更後の条文」を記載する
-- **全メンバーの合意**（全員が承認）で改定が成立し、条文が更新される
-- 1 つの法律に同時に存在できる改定案は 1 件のみ
-- 改定案はオーナーが取り下げ（削除）できる
-
-### L-4. オーナー権の移譲
-
-- オーナーは他のメンバーにオーナー権を移譲できる
-- 移譲後、前オーナーは一般メンバーになる
-
-### L-5. 退会
-
-- オーナー以外のメンバーは自由に退会できる
-- 退会すると進行中の改定案の合意票も無効になる
-
-### L-6. 法律の削除
-
-- オーナーは削除を提案できる
-- **全メンバーの合意**で法律が削除される
+- **`design.md` は永続資料**: 既存セクション（FEAT-001, FEAT-002 Phase 1/2, FEAT-003 等）は **絶対に削除しない**。新規セクションとして末尾に追記すること。
+- 既存メンバーの閲覧 UX を一切壊さないこと
+- `profiles` の RLS 整備は本 PR スコープ外。`laws` 系テーブルの RLS のみ強化する
+- `search_users` 関数の挙動は維持
+- 過去 migration（`20260526000003_feat003_laws.sql` 他）は applied 済みのため、新規 migration を 1 枚追加する形で対応
+- アプリ層フィルタ（`.eq(...)`, `.in(...)`）はそのまま残す（二重防御）
 
 ---
 
-## 画面
+### 関連ファイル
 
-| 画面 | パス | 認証 |
-|------|------|------|
-| 法律一覧（自分が参加中） | `/laws` | 必須 |
-| 法律詳細・条文・改定案 | `/laws/[id]` | 必須（メンバーのみ閲覧） |
-| 法律作成 | `/laws/new` | 必須 |
-
----
-
-## スコープ外
-
-- 法律のコメント・チャット機能
-- 法律の公開 Hub（FEAT-004）
-- メール通知
-- 改定案の複数同時提出
-- 部分改定（条文の一部だけ変更するUI）
+- `app/laws/page.tsx`（Server Component、要書き換え）
+- `app/laws/[id]/page.tsx`（Server Component、要書き換え）
+- `supabase/migrations/20260526000003_feat003_laws.sql`（既存 RLS、参照のみ）
+- `docs/knowledge/design.md`（設計書、**末尾に追記**）
+- `docs/knowledge/archive/audit-log/audit_20260526_200752.md`（指摘元、参照のみ）
