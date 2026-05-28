@@ -1,7 +1,7 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 // ログインヘルパー
-async function loginAs(page: any, email: string, password: string) {
+async function loginAs(page: Page, email: string, password: string) {
   await page.goto('/auth/login');
   const emailInput = page.locator('input[type="email"]');
   const passInput = page.locator('input[type="password"]');
@@ -12,7 +12,7 @@ async function loginAs(page: any, email: string, password: string) {
 }
 
 // 法律作成ヘルパー
-async function createLaw(page: any, name: string, article: string): Promise<string> {
+async function createLaw(page: Page, name: string, article: string): Promise<string> {
   await page.goto('/laws/new');
   const nameInput = page.locator('form input[type="text"]').first();
   const articleInput = page.locator('form textarea').first();
@@ -29,7 +29,7 @@ test('CRITICAL-L01: 法律を作成できる', async ({ page }) => {
   const passA = process.env.E2E_TEST_PASSWORD_A ?? '';
 
   await loginAs(page, emailA, passA);
-  const lawUrl = await createLaw(page, 'テスト法律1', 'これはテスト条文です。');
+  await createLaw(page, 'テスト法律1', 'これはテスト条文です。');
 
   // 作成直後は自分がオーナーとして表示される
   await expect(page.locator('h1, h2').filter({ hasText: 'テスト法律1' })).toBeVisible();
@@ -50,7 +50,7 @@ test('CRITICAL-L02: フレンド招待と承認', async ({ browser }) => {
   try {
     // ユーザー A がフレンド法律を作成
     await loginAs(pageA, emailA, passA);
-    const lawUrl = await createLaw(pageA, 'フレンド法律', 'フレンド間のルール');
+    await createLaw(pageA, 'フレンド法律', 'フレンド間のルール');
 
     // ユーザー A がユーザー B を招待（/api/friends ベースのフィルタ）
     await pageA.waitForSelector('input[placeholder="表示名で絞り込む"]', { timeout: 5_000 });
@@ -110,14 +110,14 @@ test('CRITICAL-L03: 改定案の提出と全員合意', async ({ browser }) => {
     await inviteBtn.click();
     await pageA.waitForTimeout(500);
 
-    // B がログインして法律詳細ページから直接承認（当該法律の招待を確実に処理するため）
+    // B がログインして /laws ページで承認（FIX-A: pending招待は /laws に表示されるため）
     await loginAs(pageB, emailB, passB);
-    await pageB.goto(lawUrl);
+    await pageB.goto('/laws');
     const acceptBtn = pageB.locator('button').filter({ hasText: '承認' }).first();
     await expect(acceptBtn).toBeVisible({ timeout: 5_000 });
     await acceptBtn.click();
-    // 招待承認後に router.refresh() でページ再描画 → メンバーとして表示される
-    await expect(pageB.locator('text=この法律に招待されています')).not.toBeVisible({ timeout: 8_000 });
+    // 招待承認後に router.refresh() でページ再描画 → 承認ボタンが消えるまで待つ
+    await expect(acceptBtn).toBeHidden({ timeout: 5_000 });
 
     // A が改定案を提出
     await pageA.reload();
@@ -175,14 +175,14 @@ test('CRITICAL-L04: オーナー権の移譲', async ({ browser }) => {
     await inviteBtn.click();
     await pageA.waitForSelector('text=招待しました', { timeout: 5_000 });
 
-    // B がログインして法律詳細ページから直接承認（当該法律の招待を確実に処理するため）
+    // B がログインして /laws ページで承認（FIX-A: pending招待は /laws に表示されるため）
     await loginAs(pageB, emailB, passB);
-    await pageB.goto(lawUrl);
+    await pageB.goto('/laws');
     const acceptBtn = pageB.locator('button').filter({ hasText: '承認' }).first();
     await expect(acceptBtn).toBeVisible({ timeout: 5_000 });
     await acceptBtn.click();
-    // 招待承認後に router.refresh() でページ再描画 → メンバーとして表示される
-    await expect(pageB.locator('text=この法律に招待されています')).not.toBeVisible({ timeout: 8_000 });
+    // 招待承認後に router.refresh() でページ再描画 → 承認ボタンが消えるまで待つ
+    await expect(acceptBtn).toBeHidden({ timeout: 5_000 });
 
     // A がオーナー権を B に移譲
     await pageA.reload();
