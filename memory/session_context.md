@@ -8,63 +8,57 @@ metadata:
 # セッション引き継ぎ
 
 新しいチャットを開いたら、リードはこのファイルを読んで前回の状況を把握する。
-セッション終了時またはひと区切りついたタイミングで更新する。
+**更新タイミング**: ダイチが「セッションを乗り換える」「session_context を更新して」と明示したときのみ ([[feedback-session-context]] 参照)。
 
 ---
 
-## 最終更新: 2026-05-26（Stop フック自動更新 セッション 995e3434 終了）
+## 最終更新: 2026-05-28（環境刷新・トークン消費対策・PR #23/#24 整備）
 
 ### 現在のブランチ・PR 状態
 
-- ブランチ: `feature/20260526-172950`（FEAT-003 バグ修正ブランチ）
-- HEAD: `dcdc3e8` — `docs(FEAT-003): 監査レポート追加・修正指示を task.md に記載`
-- **未コミット（staged / unstaged / untracked）**:
-  - `app/api/laws/[id]/invitations/[invId]/route.ts`（**staged** — index 変更済み）
-  - `app/laws/page.tsx`（unstaged 差分あり）
-  - `app/laws/_components/`（untracked — 新規ディレクトリ）
-  - `docs/knowledge/handoff/test-to-aud.md`（unstaged 差分あり）
-  - `memory/session_context.md`（unstaged 差分あり）
-  - `tests/e2e/laws.spec.ts`（unstaged 差分あり）
-  - `scripts/check_tables.js`（untracked）
+- 現ブランチ: `chore/log-rotation-tooling`（clean、push 済み）
+- main HEAD: `e0ba32f docs(test): FEAT-003 テストログを追加（L03/L04 修正過程）`
 
-### 直近セッションでやったこと（2026-05-26 セッション 995e3434）
+#### オープン PR
 
-- セッション引き継ぎファイルの更新のみ（リードによる定期更新）
-- **HIGH-001 修正が進行中の可能性が高い**:
-  - `app/laws/page.tsx`（unstaged 変更）・`app/laws/_components/`（新規 untracked）・`app/api/laws/[id]/invitations/[invId]/route.ts`（staged）が存在
-  - これらはエンジニアによる HIGH-001（`/laws/page.tsx` に pending 招待セクション追加）の実装途中と推定
-- HEAD コミットは前セッションから変化なし（dcdc3e8 のまま）
+- **PR #23** (`feature/20260527-153557`) — fix(BUG-001): サインアップ時の確認メール未着を修正
+  - コパレビュー 7 件 → 全対応コミット `332df1d` push 済み
+  - ダイチ確認: 「コパからレビュー来た、修正点なさそう」 → **マージ可能**
+- **PR #24** (`chore/log-rotation-tooling`) — chore: トークン消費の可視化とログローテーション機構
+  - 本日新規作成、コパレビュー待ち
+  - コミット: `5b8c382` tooling 追加 / `54cd609` 既存ログ退避
 
-### オーディ所見サマリ（前回監査 audit_20260526_171952）
+### 直近セッションでやったこと（2026-05-27〜28）
 
-| 重要度 | ID | 内容 |
-|--------|----|----|
-| HIGH | HIGH-001 | `/laws/page.tsx` に pending 招待セクションが存在しない。招待を受けたユーザーが通常ナビから招待を発見できない。task.md の FIX-1 は `/laws/page.tsx` を実装場所に指定していたが、実装は `/laws/[id]/page.tsx` にのみ追加された |
-| MEDIUM | MEDIUM-001 | L02/L03/L04 の critical アサーションが `if (await btn.isVisible())` で偽陽性。条件分岐を外して unconditional assertion に変更が必要 |
-| MEDIUM | MEDIUM-002 | `PATCH /api/laws/[id]/invitations/[invId]` で URL の `[id]`（lawId）が検証に未使用（path confusion 状態） |
-| LOW | LOW-001 | URL パラメータ（lawId/propId/invId）の UUID バリデーション未実施 |
+開発環境の刷新とトークン消費対策が主軸。
+
+1. **環境移行**: VSCode リモートトンネル → Ubuntu + tailscale + termius (SSH from スマホ) + tmux
+2. **session_context.md 更新ポリシー変更**: 毎ターン自動更新 → ダイチ明示時のみ。トークン消費が激しく Max プランでも上限に当たるため。tmux でセッション保持されるので常時最新化は不要
+3. **トークン消費の可視化**:
+   - `~/.claude/statusline.py` 新規 — セッション中の消費・コンテキスト % を常時表示（60% 超で黄、80% 超で赤）
+   - `~/.claude/settings.json` に statusLine 設定
+   - `scripts/token_report.py` 新規 — 日別/セッション別/モデル別/ブランチ別の集計。source アダプタ構造で将来 Codex CLI 追加可能
+4. **ログローテーション機構**:
+   - `scripts/rotate_logs.sh` 新規 — audit-log/test-log を直近 KEEP=3 件のみアクティブに保つ
+   - `scripts/agents.sh` のテスタ/オーディ実行直後に自動呼び出し
+   - 既存累積ログ 43 件（audit 19 + test 24）を `docs/knowledge/archive/` へ退避 → アクティブ docs サイズ 1/4 以下に（約 84k トークン削減）
+5. **承認スキップ**: `.claude/settings.local.json` に `permissions.defaultMode: "bypassPermissions"` を設定（このプロジェクト内限定・**次回 Claude Code 起動時から有効**）
+6. **gh CLI セットアップ**: Ubuntu に `apt install gh` でインストール（v2.45.0）、`gh auth login` で `itoemon` 認証済み（HTTPS）
+7. **PR #23 コパレビュー対応 7 件**:
+   - signup/page.tsx: `emailRedirectTo` を `new URL('/auth/callback', siteUrl).toString()` で組み立て。`NEXT_PUBLIC_SITE_URL` 未設定時はサインアップ中断 + エラー表示
+   - laws.spec.ts L03/L04: `waitForTimeout(1_000)` → `expect(acceptBtn).toBeHidden({ timeout: 5_000 })`
+   - BUG-001 設計書: Resend 前提 → Gmail SMTP 前提に書き換え、誤字「该当」→「該当」
+   - PR 説明にスコープ追記（FEAT-003 関連の同梱を明記、次回は分割と宣言）
+8. **PR #24 作成**: ローテーション/トークン視覚化を別 PR 化
 
 ### 次のアクション（優先順）
 
-1. **未コミット変更を確認**: `app/laws/page.tsx` と `app/laws/_components/` の内容を見て HIGH-001 実装の完了度を判断
-2. 実装完了なら → **コミット + テスタで E2E 再テスト**
-3. 未完了・未着手なら → **エンジニア起動**（`./scripts/agents.sh engineer`）して HIGH-001 修正を依頼
-4. テスト全通過後 → **オーディで再監査**（MEDIUM-001/002 も確認）
-5. **全通過後 PR 作成** → `main` へ
-
-### FEAT-003 実装状況
-
-- **全 Step 実装・コミット完了** ✅
-- **Supabase マイグレーション適用済み** ✅
-- **E2E テスト: CRITICAL 8/8 通過（ただし偽陽性あり）** ⚠️
-- **オーディ監査: ❌ 不合格**（HIGH-001 修正がビルドに指示済み・実装確認が必要）
-
-### 決定事項（引き継ぎ）
-
-- 招待承認 UI の配置について: task.md は `/laws/page.tsx` に pending 招待セクションを置くよう指定していた（設計通りの実装が必要）
-- `/laws/[id]/page.tsx` の非メンバー分岐にも承認 UI は残す（詳細ページから直接承認できる UX として有効）
-- FEAT-002（Phase 1 / Phase 2）・LOW-001/002・MEDIUM-001 すべて完了・マージ済み
-- Upstash Redis は無料枠（1日 10,000 コマンド）で十分（env vars なし時は skip fallthrough）
+1. **PR #23 を main へマージ**（コパ再レビュー OK 確認済み、ダイチ判断でマージ実行）
+2. **PR #24 のコパレビュー対応**（来たら）
+3. **PR #24 を main へマージ**
+4. （任意・トークン対策の続き）session_context.md の累積セクションを `memory/decisions.md` 等に切り出して圧縮
+5. （任意）`design.md` (20KB) + `design_defense_ai.md` (19KB) を機能別に分割
+6. （任意）`backlog.md` の完了項目掃除
 
 ### 覚えておくべき判断・経緯
 
@@ -83,7 +77,21 @@ metadata:
 - Upstash レートリミットは env vars なし時は `skip`（制限なし）で fallthrough する設計
 - FEAT-003 の法律 API では退会処理は「投票削除 → メンバー削除 → 合意チェック」の順序を厳守
 - InvitePanel は `/api/friends` で取得した一覧をローカルフィルタして招待済みを除外する設計（`/api/users/search` は使わない）
-- 招待承認 UI は `/laws/[id]/page.tsx` の非メンバー分岐内に加え、`/laws/page.tsx` にも pending 招待セクションを設置（HIGH-001 修正後）
+- 招待承認 UI は `/laws/[id]/page.tsx` の非メンバー分岐内に加え、`/laws/page.tsx` にも pending 招待セクションを設置
+- **SMTP は Gmail SMTP を採用**（500 通/日制限、Google アプリパスワード使用）。設計書 `docs/knowledge/arch/BUG-001-email-confirm.md` 参照
+- **サインアップの `emailRedirectTo`** は `new URL('/auth/callback', NEXT_PUBLIC_SITE_URL).toString()` で組み立て。SITE_URL 未設定時はサインアップ中断 + エラー表示（オープンリダイレクト回避のため `window.location.origin` フォールバックは採用しない）
+- **`gh pr edit` は古い projects classic API で失敗**するため、PR body 更新は `gh api -X PATCH /repos/itoemon/family_court/pulls/N -f body="$(cat body.md)"` で実施
+- **Claude Code Bash ツールは毎回独立シェルで起動**するため、別ペインで `apt install` したコマンドは即時 PATH 経由で利用可能（セッション再起動不要）
+- **`.claude/settings.local.json` の設定は次回 Claude Code 起動時から有効**（動的リロードなし）
+- **エージェント定義（`docs/agents/*.md`）は audit-log/test-log に触らない設計**なので、archive 退避してもエージェント動作には影響しない
+
+### 環境・ツール状態（2026-05-28 時点）
+
+- OS: Ubuntu（tailscale + termius SSH from スマホ + tmux でセッション保持）
+- gh CLI: v2.45.0 インストール済み・`itoemon` 認証済み（HTTPS）
+- Claude Code: `~/.claude/settings.json` に statusLine 設定済み（次回起動時から表示）
+- プロジェクト承認スキップ: `.claude/settings.local.json`（gitignore 済み、次回起動時から有効）
+- 過去セッションログ: VSCode 環境のものは未引き継ぎ、Ubuntu には今日以降のみ。`token_report.py` の集計対象は移行後のみ
 
 ### マージ済み PR（累計）
 
@@ -97,3 +105,4 @@ metadata:
 - PR #19: FEAT-002-p1 プロフィールアイコン + 弁護人AIカスタム指示 ✅ 本番 DB 適用済み
 - PR #20: FEAT-002-p2 フレンド機能 + LOW-001/002 修正 ✅
 - PR #21: MEDIUM-001 `/api/users/search` レートリミット（Upstash Redis）✅
+- PR #22: FEAT-003 法律作成機能 ✅
