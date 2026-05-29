@@ -162,6 +162,57 @@ run_engineer() {
   echo "$branch"
 }
 
+# ── dev サーバー（node20）の起動/停止 ────────────────────────────────────────
+# パイプライン各エージェント（claude -p）は volta 管理の claude（node18 pin）配下で
+# 動くため、PATH に node18 実体が前置され package.json の volta pin（node20）が解決
+# されない。node18 実体を PATH から除去し _VOLTA_TOOL_RECURSION を解除した環境で
+# dev サーバーを起動することで、volta シムが project pin（node20）を解決する。
+# Next.js 16 は node ≥ 20.9.0 必須のため、サーバー起動はエージェント任せにせず
+# 本スクリプト側で行う（テスタは playwright 実行のみを担当。ランナーは node18 で可）。
+DEV_PGID=""
+start_dev_server() {
+  local clean_path
+  clean_path="$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '/\.volta/tools/image/node/' | paste -sd:)"
+  rm -f /tmp/dev_server.log
+  setsid env -u _VOLTA_TOOL_RECURSION PATH="${VOLTA_HOME:-$HOME/.volta}/bin:$clean_path" \
+    bash -c "cd '$REPO_ROOT' && npm run dev" > /tmp/dev_server.log 2>&1 &
+  DEV_PGID=$!
+  log "dev サーバーを起動しています (node20, PGID=$DEV_PGID)..."
+  local i
+  for i in $(seq 1 30); do
+    if grep -qE 'Ready|Local:|started server' /tmp/dev_server.log 2>/dev/null; then
+      log "dev サーバー応答確認 (http://localhost:3000)"
+      return 0
+    fi
+    if grep -qiE 'required|EADDRINUSE|Cannot find' /tmp/dev_server.log 2>/dev/null; then
+      log "dev サーバー起動失敗:"
+      sed 's/^/[dev] /' /tmp/dev_server.log >&2
+      return 1
+    fi
+    sleep 1
+  done
+  log "dev サーバーが 30 秒以内に起動しませんでした:"
+  sed 's/^/[dev] /' /tmp/dev_server.log >&2
+  return 1
+}
+
+stop_dev_server() {
+  [[ -n "$DEV_PGID" ]] || return 0
+  # setsid 配下では $! が実プロセスグループ ID と一致しないことがあるため、
+  # ポート 3000 のリスナーから実 PGID を特定してグループごと停止する。
+  local port_pid pgid
+  port_pid="$(ss -ltnp 2>/dev/null | grep -m1 ':3000 ' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)"
+  if [[ -n "$port_pid" ]]; then
+    pgid="$(ps -o pgid= -p "$port_pid" 2>/dev/null | tr -d ' ')"
+    [[ -n "$pgid" ]] && { kill -- "-$pgid" 2>/dev/null || true; }
+  fi
+  kill -- "-$DEV_PGID" 2>/dev/null || true
+  # 最終フォールバック: ポート 3000 を掴むプロセスを強制終了
+  command -v fuser &>/dev/null && fuser -k 3000/tcp &>/dev/null || true
+  log "dev サーバーを停止しました"
+  DEV_PGID=""
+}
+
 # ── テスタ ────────────────────────────────────────────────────────────────────
 # 入力: 実装コード + design.md + requirements.md
 # 出力: docs/knowledge/test-log/test_YYYYMMDD_HHMMSS.md
@@ -176,21 +227,39 @@ run_tester() {
 
   [[ -f "$design_file" ]] || die "設計書が見つかりません: $design_file"
 
+  # Playwright ブラウザ（chromium）が未導入なら導入する（初回のみ。E2E 実行に必須）。
+  if ! ls "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"/chromium* &>/dev/null; then
+    log "Playwright chromium を導入します（初回のみ）..."
+    npx playwright install chromium \
+      || log "警告: Playwright ブラウザ導入に失敗しました（E2E が実施不可になる可能性）"
+  fi
+
+  # dev サーバー（node20）を起動。失敗時はテストを実施せず die。
+  if ! start_dev_server; then
+    die "dev サーバーを起動できませんでした（node20 / Next.js 16）。テストを実施できません。"
+  fi
+  trap stop_dev_server EXIT
+
   log "テスタを起動します..."
 
   claude -p "$(load_prompt tester OUT_FILE="$out_file")" \
     --model claude-haiku-4-5-20251001 \
     --allowedTools "Write,Read,Glob,Grep,Bash"
 
+  stop_dev_server
+  trap - EXIT
+
   log "テストレポートを出力しました: $out_file"
 
   "$REPO_ROOT/scripts/rotate_logs.sh" test-log \
     || log "警告: test-log のローテーションに失敗しました（テスト結果には影響なし）"
 
-  if grep -q '判定: 不合格' "$out_file" 2>/dev/null; then
+  # 「不合格」だけでなく「実施不可」も失敗として扱う（環境不備による未実施を
+  # 誤って通過扱いにしないため）。
+  if grep -qE '判定:.*(不合格|実施不可)' "$out_file" 2>/dev/null; then
     local critical_count
     critical_count=$(grep -c 'CRITICAL.*❌\|- 結果: ❌' "$out_file" 2>/dev/null) || critical_count="不明"
-    log "テスト不合格（CRITICAL 失敗: ${critical_count}件）"
+    log "テスト不合格／実施不可（CRITICAL 失敗: ${critical_count}件）"
     return 1
   else
     log "テスト通過"

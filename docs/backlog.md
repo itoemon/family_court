@@ -28,11 +28,22 @@
 
 #### [OPS-001] E2E 実行基盤の運用見直し
 
-- **背景**: パイプラインのテスタ段階で E2E（Playwright）を回す前提が、本環境（Ubuntu）で 2 点の課題を抱える。
-  1. **node バージョン**: Next.js 16 は node ≥ 20.9.0 必須だが、volta デフォルトが node18 だったため dev サーバーが起動できず E2E が実施不可だった。`package.json` に `volta.node = 20.20.2` を pin して解消済み（PR で同梱）。ただし `claude -p` で起動するパイプライン各エージェントは volta-node18 を継承し直すため、**テスタエージェント内の `npm run dev` は依然 node18 になる**（リードが手動サニタイズ環境で node20 起動して回避した）。テスタが node20 で dev サーバーを起動できる恒久策が必要（例: tester.md にサニタイズ手順を明記、または claude の node pin 見直し）。
-  2. **E2E のターゲット DB**: 現状 `.env.local` が**本番 Supabase** を指しており、laws/friends 系 spec が本番にテストデータを作りうる。テスト用 DB / staging 環境、またはシード&クリーンアップ戦略の検討が必要。
-- **暫定運用**: 当面は従来どおり（リードが node20 でターゲット検証を手動実施、または既存の本番ターゲット運用）。本項目で恒久策を設計する。
-- **優先度**: 中（パイプライン信頼性に影響）
+- **背景**: パイプラインのテスタ段階で E2E（Playwright）を回す前提が、本環境（Ubuntu）で課題を抱えていた。
+
+- **Part 1（node 実行基盤）: 解決済み ✅**（2026-05-29）
+  - 課題: Next.js 16 は node ≥ 20.9.0 必須だが、`claude -p` で起動するパイプライン各エージェントは volta-node18（claude の pin）を継承し直すため、テスタ内の `npm run dev` が node18 で起動失敗していた。さらに Playwright ブラウザ（chromium）が未導入だった。
+  - 対応:
+    - `package.json` に `volta.node = 20.20.2` を pin（PR #27 で同梱済み）。
+    - `scripts/agents.sh` の `run_tester` が dev サーバーを**自前で node20 環境で起動/停止**するよう変更（PATH から node18 実体を除去し `_VOLTA_TOOL_RECURSION` を解除して volta シムに project pin を解決させる）。停止はポート 3000 のリスナーから実 PGID を特定してグループごと kill。テスタは playwright 実行のみ担当（ランナーは node18 で可）。
+    - `docs/agents/tester.md` から dev サーバーの起動/停止指示を除去し「agents.sh が起動済み・確認のみ」に変更。
+    - `run_tester` に Playwright chromium の自動導入ガードを追加（初回のみ）。
+    - 判定ロジックを修正: 「実施不可」も不合格扱いにし、環境不備による未実施を誤って通過扱いにしない。
+  - 検証: 読み取り専用テスト（VISUAL-BRAND-001）を node20 サーバー + node18 playwright + chromium で実行し、chain が end-to-end で動作することを確認済み。
+
+- **Part 2（E2E のターゲット DB）: 未対応**
+  - 現状 `.env.local` が**本番 Supabase** を指しており、laws/friends 系 spec が本番にテストデータを作りうる。テスト用 Supabase プロジェクト + `.env.test`、またはシード&クリーンアップ戦略の検討が必要。
+  - 暫定運用: 当面は従来どおり本番ターゲット（または読み取り系のみリードが手動検証）。
+- **優先度**: 中（Part 1 完了によりパイプラインで E2E が回せるようになった。残るは Part 2）
 - **由来**: 2026-05-29 LOW バッチ対応時に顕在化
 
 ---
