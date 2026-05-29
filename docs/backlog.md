@@ -57,26 +57,6 @@
 
 ---
 
-#### [LOW-001] URL パスパラメータの UUID バリデーション未実施（継続指摘）
-
-**由来**: `docs/knowledge/audit-log/audit_20260526_200752.md`
-
-- **内容**: 全 API ルートの `lawId`、`invId`、`propId` がリクエスト URL から取得した生の文字列のまま Supabase クエリの `.eq("id", ...)` に渡されている。招待 POST (`app/api/laws/[id]/invitations/route.ts:5`) の `invitee_id`・オーナー移譲 PATCH (`app/api/laws/[id]/owner/route.ts:5`) の `new_owner_id` はリクエストボディで UUID 形式を検証しているが、パスパラメータ側の検証は行われていない。Supabase は UUID 型カラムへの非 UUID 値を PostgreSQL エラーとして返すため、現時点で実際のデータ操作は発生しないが、エラーレスポンスの形式が不統一になる（PostgreSQL エラーが 500 として漏洩する可能性）。
-- **影響範囲**: 悪意ある入力者が不正な文字列を渡した場合に Supabase エラーログが汚染される。データ漏洩・改ざんの直接リスクは低い。
-- **修正案**: 各ルートの先頭で `UUID_REGEX.test(lawId)` 等のチェックを追加し、不正な場合は 400 を返す。`invitations/route.ts` に定義済みの `UUID_REGEX` を共通ユーティリティとして `lib/utils.ts` 等に移動して使い回す。
-
----
-
-#### [LOW-002] PendingInvitations.tsx で HTTP レスポンスステータスを検査していない（app/laws/_components/PendingInvitations.tsx:29-36）
-
-**由来**: `docs/knowledge/audit-log/audit_20260526_200752.md`
-
-- **内容**: `respond` 関数内で `fetch(...)` の戻り値 (`Response`) を検査せず、常に `router.refresh()` を実行している。API が 403・404・500 を返した場合でもリフレッシュが走り、ユーザーはエラーメッセージを受け取れない。ページリフレッシュ後は招待が残ったまま表示されるため誤操作防止にはなるが、「なぜ消えないのか」が伝わらず連打を誘発する可能性がある。セキュリティ上の直接影響はないが、失敗時の招待重複クリックがサーバー側に余分なリクエストを送る。
-- **影響範囲**: エンドユーザーへの UX 劣化。サーバー側の状態変化は発生しない（PATCH の冪等性により安全）。
-- **修正案**: `const res = await fetch(...)` → `if (!res.ok) { /* エラーメッセージを state にセット */ return; }` を追加し、承認/拒否失敗時にインライン警告を表示する。
-
----
-
 ### マネタイズ（MON）
 
 #### [MON-001] クレジット制課金（1 クレジット = 1 ケース）
@@ -144,3 +124,5 @@
 | PR #24 (chore) | トークン消費の可視化（statusline.py・token_report.py）とログローテーション機構（rotate_logs.sh） |
 | PR #25 (chore) | backlog の完了項目整理・由来重複の掃除 |
 | PR #26 (MEDIUM-001) | Server Component の `law_*` 読み取りを `createAdminClient()` → `createSessionClient()`（RLS 二重防御）に切替・`laws` SELECT ポリシーを invitee 本人まで拡張（由来: `docs/knowledge/archive/audit-log/audit_20260526_200752.md`） |
+| PR #27 (LOW-001) | API 動的セグメントの UUID バリデーション追加（全 15 ルート）・`UUID_REGEX` を `lib/text-utils.ts` に共通化（由来: `docs/knowledge/archive/audit-log/audit_20260526_200752.md`） |
+| PR #27 (LOW-002) | `PendingInvitations.tsx` の fetch ステータス検査・失敗時エラー表示とリフレッシュ抑止（由来: `docs/knowledge/archive/audit-log/audit_20260526_200752.md`） |
