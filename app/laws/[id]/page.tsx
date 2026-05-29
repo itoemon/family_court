@@ -19,7 +19,7 @@ export default async function LawDetailPage({
 
   const admin = createAdminClient();
 
-  const { data: law } = await admin
+  const { data: law } = await supabase
     .from("laws")
     .select("id, name, article, owner_id, created_at, updated_at")
     .eq("id", lawId)
@@ -27,14 +27,14 @@ export default async function LawDetailPage({
 
   if (!law) notFound();
 
-  const { data: members } = await admin
+  const { data: members } = await supabase
     .from("law_members")
     .select("user_id, joined_at")
     .eq("law_id", lawId);
 
   const isMember = (members ?? []).some(m => m.user_id === user.id);
   if (!isMember) {
-    const { data: invitation } = await admin
+    const { data: invitation } = await supabase
       .from("law_invitations")
       .select("id")
       .eq("law_id", lawId)
@@ -71,12 +71,12 @@ export default async function LawDetailPage({
   const profileMap = new Map((profiles ?? []).map(p => [p.id, p]));
 
   const [invitationsResult, proposalResult] = await Promise.all([
-    admin
+    supabase
       .from("law_invitations")
       .select("id, invitee_id, status")
       .eq("law_id", lawId)
       .eq("status", "pending"),
-    admin
+    supabase
       .from("law_proposals")
       .select("id, proposal_type, proposed_by, proposed_article, created_at")
       .eq("law_id", lawId)
@@ -93,7 +93,7 @@ export default async function LawDetailPage({
   const proposal = proposalResult.data;
   let votes: { user_id: string; approved: boolean; voted_at: string }[] = [];
   if (proposal) {
-    const { data: votesData } = await admin
+    const { data: votesData } = await supabase
       .from("law_proposal_votes")
       .select("user_id, approved, voted_at")
       .eq("proposal_id", proposal.id);
