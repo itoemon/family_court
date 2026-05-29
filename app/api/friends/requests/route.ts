@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createSessionClient, createAdminClient } from "@/lib/supabase/server";
 import type { IncomingRequest } from "@/lib/types";
-
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+import { UUID_REGEX } from "@/lib/text-utils";
 
 export async function GET() {
   const supabase = await createSessionClient();

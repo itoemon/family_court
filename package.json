@@ -31,5 +31,8 @@
     "supabase": "^2.101.0",
     "tailwindcss": "^4",
     "typescript": "^5"
+  },
+  "volta": {
+    "node": "20.20.2"
   }
 }

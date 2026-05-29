@@ -3,12 +3,16 @@ import { createAdminClient } from "@/lib/supabase/server";
 import { requestVerdict } from "@/lib/claude";
 import { decryptApiKey } from "@/lib/crypto";
 import { Case } from "@/lib/types";
+import { isUuid } from "@/lib/text-utils";
 
 export async function POST(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "不正な ID 形式です" }, { status: 400 });
+  }
   const admin = createAdminClient();
 
   const { data: c } = await admin.from("cases").select("*").eq("id", id).single();

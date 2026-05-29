@@ -17,18 +17,26 @@ interface Props {
 export default function PendingInvitations({ invitations }: Props) {
   const router = useRouter();
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   if (invitations.length === 0) return null;
 
   async function respond(lawId: string, invId: string, status: "accepted" | "rejected") {
     setProcessingId(invId);
+    setError(null);
     try {
-      await fetch(`/api/laws/${lawId}/invitations/${invId}`, {
+      const res = await fetch(`/api/laws/${lawId}/invitations/${invId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status }),
       });
+      if (!res.ok) {
+        setError("この招待は処理できませんでした。一覧を更新して最新の状態をご確認ください。");
+        return;
+      }
       router.refresh();
+    } catch {
+      setError("通信エラーが発生しました。時間をおいて再度お試しください。");
     } finally {
       setProcessingId(null);
     }
@@ -37,6 +45,11 @@ export default function PendingInvitations({ invitations }: Props) {
   return (
     <section className="space-y-3">
       <h2 className="text-sm font-semibold text-stone-500 uppercase tracking-wide">届いた招待</h2>
+      {error && (
+        <p className="text-sm text-rose-600" role="alert">
+          {error}
+        </p>
+      )}
       <ul className="space-y-2">
         {invitations.map((inv) => (
           <li

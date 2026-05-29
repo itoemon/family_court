@@ -5,12 +5,16 @@ import { JoinCaseRequest } from "@/lib/types";
 import { buildCaseResponse } from "@/lib/case-response";
 import { generateJudgeMessage } from "@/lib/judge";
 import { decryptApiKey } from "@/lib/crypto";
+import { isUuid } from "@/lib/text-utils";
 
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "不正な ID 形式です" }, { status: 400 });
+  }
   const admin = createAdminClient();
 
   const { data: rawCase } = await admin
@@ -57,6 +61,9 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "不正な ID 形式です" }, { status: 400 });
+  }
   const admin = createAdminClient();
 
   const { data: c } = await admin.from("cases").select("*").eq("id", id).single();

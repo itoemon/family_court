@@ -833,3 +833,169 @@ COMMIT;
 - **書き込み API は不変**: `app/api/laws/**` 配下の Route Handler はすべて `createAdminClient()` 経由のまま据え置く。本 PR で書き込み経路は触らない。
 - **デプロイ順序の前提**: 本番適用は「マイグレーション先・コード後」とする。逆順では invitee 画面が短時間壊れる（新コードが旧 RLS に当たり `laws` が見えない）。詳細は引き継ぎメモを参照。
 
+---
+
+## LOW バッチ対応: UUID バリデーション共通化 + fetch ステータス検査
+
+由来: `docs/knowledge/archive/audit-log/audit_20260526_200752.md` の LOW-001 / LOW-002
+
+### 概要
+
+監査由来の LOW 指摘 2 件を 1 PR でまとめて対応する、アプリケーションコードのみの品質改善である。**RLS / migration / DB スキーマには一切手を加えない。**
+
+- **LOW-001（UUID バリデーション）**: API ルートの動的セグメント（`lawId` / `invId` / `propId` 等）が、リクエスト URL から取得した生の文字列のまま Supabase クエリの `.eq("id", ...)` 等に渡されている。UUID 型カラムへの非 UUID 値は PostgreSQL がエラーを返すため実データ操作は発生しないが、PostgreSQL エラーが 500 として漏洩しうる（エラーレスポンス形式の不統一）。リクエストボディ側の UUID（`invitee_id` / `new_owner_id` / `receiver_id`）は既に `UUID_REGEX` で検証済みだが、その `UUID_REGEX` が 3 ファイルに重複定義されている。本対応では (1) `UUID_REGEX` を共通ユーティリティへ集約し、(2) UUID 型カラムを参照する全動的セグメントに対し各メソッドハンドラ先頭で形式チェックを行い、不正なら 400 を返す。
+
+- **LOW-002（fetch ステータス検査）**: `app/laws/_components/PendingInvitations.tsx` の `respond()` が `fetch(...)` の戻り値（`Response`）を検査せず、常に `router.refresh()` を実行している。API が 403 / 404 / 500 を返してもリフレッシュが走り、ユーザーはエラーを受け取れない。招待が残ったまま表示され「なぜ消えないのか」が伝わらず連打を誘発する。本対応では `res.ok` を検査し、失敗時はエラーを表示してリフレッシュを抑止する。
+
+いずれも**正常系（正しい UUID・成功レスポンス）の挙動は一切変えない**ことを設計の絶対条件とする。
+
+### 影響範囲
+
+| 対象 | 種別 | 変更内容 |
+|------|------|---------|
+| `lib/text-utils.ts` | 共通化（新規 export 追加） | `UUID_REGEX` と `isUuid()` を集約。配置理由は LOW-001 設計を参照 |
+| `app/api/laws/[id]/invitations/route.ts` | 重複解消 + ガード | ローカル `UUID_REGEX` 定義を削除し共通 import に置換。`[id]` のガード追加 |
+| `app/api/friends/requests/route.ts` | 重複解消 | ローカル `UUID_REGEX` 定義を削除し共通 import に置換（ボディ検証の挙動は不変。このルートは動的セグメントを持たないためパスガードは追加しない） |
+| `app/api/laws/[id]/owner/route.ts` | 重複解消 + ガード | ローカル `UUID_REGEX` 定義を削除し共通 import に置換。`[id]` のガード追加 |
+| `app/api/laws/**/route.ts`（下表） | ガード追加 | UUID 型カラムを参照する動的セグメントを持つルートの各メソッド先頭にガード追加 |
+| `app/api/**/route.ts`（cases 系・friends 系等の候補） | ガード追加（要 grep 確定） | 同上。最終的な対象集合はビルドが grep で全数確認する（引き継ぎメモ参照） |
+| `app/laws/_components/PendingInvitations.tsx` | fetch ステータス検査 | `respond()` に `res.ok` 検査とエラー表示を追加 |
+
+**スコープ外（本 PR で触らないもの）**:
+
+- RLS / migration / DB スキーマ（`laws_*` ポリシー、`supabase/` 配下すべて）
+- `profiles` テーブル関連
+- リクエストボディ側 UUID 検証の**ロジック**（共通 `UUID_REGEX` への参照差し替えのみ可。判定式・正規表現リテラルは不変）
+- backlog の他 LOW 項目（`package.json` の `name` 変更ログ、`@upstash/core-analytics` 検証）
+- FEAT-004 / MON-001 / MON-002
+
+### LOW-001 設計
+
+#### 1. `UUID_REGEX` 共通化の配置と公開 API
+
+**配置先: `lib/text-utils.ts`（既存）に追記する。**
+
+設計判断（トレードオフ）:
+
+- **候補 A: 既存 `lib/text-utils.ts` に追記（採用）** — 既存の純粋な文字列ヘルパー（`truncate` / `escapeXml` 等）と同じファミリーに属する「文字列フォーマット述語」であり、新規ファイルを増やさず import 面の追加もファイル単位では発生しない。既存 lib 構成との一貫性が最も高い。
+- **候補 B: 新規 `lib/utils.ts` を作成** — 意味的には汎用 util として素直だが、`utils.ts` は将来あらゆるものが流入する catch-all（雑多ファイル）化のアンチパターンを招きやすく、ファイル 1 つ・関数 1 つのために新ファイルを増やすコストに見合わない。
+
+→ **既存構成との一貫性と最小差分を優先し、候補 A を採用**する。`isUuid` は本質的に文字列形式の述語であり `text-utils.ts` の責務範囲内と判断する。
+
+**公開 API:**
+
+```typescript
+// lib/text-utils.ts に追加
+export const UUID_REGEX = /* 既存 3 ファイルのリテラルを「そのまま」移設 */;
+
+export function isUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_REGEX.test(value);
+}
+```
+
+設計上の絶対条件:
+
+- `UUID_REGEX` のリテラルは**既存 3 ファイルに定義済みのものを一字一句そのまま移設する**こと。新しい正規表現を起こしてはならない（挙動変化＝リグレッションを禁ずるため）。3 ファイルの定義が万一相互に異なる場合は、その差異自体を報告対象とし、独断で統一しないこと（引き継ぎメモ「未解決事項」参照）。
+- `isUuid` は `unknown` を受けて型ガード（`value is string`）として narrowing する。パスパラメータ（常に string）にもボディ値（`unknown`）にも安全に使える。
+- 既存ボディ検証側は、**判定式を変えずに参照元だけを共通 `UUID_REGEX` に差し替える**（例: ローカル const を削除して `import { UUID_REGEX } from "@/lib/text-utils"` に置換し、`UUID_REGEX.test(...)` の呼び出しはそのまま）。`isUuid` への書き換えは任意だが、挙動が完全一致する範囲でのみ行う。
+
+#### 2. パスパラメータ検証の適用ルート一覧と各メソッドのガード方針
+
+**ガード判定ルール（ビルドが全数確認する際の基準）:**
+
+> ルートの動的セグメント `[xxx]` のうち、その値が UUID 型カラム（`id` / `law_id` / `invitee_id` 等）への `.eq(...)` 等に渡るものは、当該ルートの**各 HTTP メソッドハンドラの先頭**で UUID 形式チェックを行い、不正なら 400 を返す。リテラルセグメント（`me` 等。動的セグメントではない）はガード対象外。
+
+本コードベースでは動的セグメントは事実上すべて UUID 主キー/外部キーを指すため、運用上は「`[param]` 形式の動的セグメント値はすべて UUID ガードを通す」を既定ルールとしてよい。
+
+**確定対象（`docs/knowledge/design.md` の FEAT-003 API ルートツリーから列挙。一次ソースとして確実）:**
+
+| ルートファイル | メソッド | ガード対象セグメント |
+|---------------|---------|---------------------|
+| `app/api/laws/[id]/route.ts` | GET | `id` |
+| `app/api/laws/[id]/invitations/route.ts` | POST | `id` |
+| `app/api/laws/[id]/invitations/[invId]/route.ts` | PATCH | `id`, `invId` |
+| `app/api/laws/[id]/members/me/route.ts` | DELETE | `id`（`me` はリテラルにつき対象外） |
+| `app/api/laws/[id]/owner/route.ts` | PATCH | `id` |
+| `app/api/laws/[id]/proposals/route.ts` | POST | `id` |
+| `app/api/laws/[id]/proposals/[propId]/route.ts` | DELETE | `id`, `propId` |
+| `app/api/laws/[id]/proposals/[propId]/votes/route.ts` | POST | `id`, `propId` |
+
+注: `app/api/laws/route.ts`（GET/POST）と `app/api/friends/requests/route.ts`（POST）は動的セグメントを持たないため、パスガードの追加対象外（後者はボディ検証の参照差し替えのみ）。
+
+**要 grep 確定の候補（`app/` を直接参照していないため、ビルドが grep で実在・メソッド・カラム種別を確認のうえ確定する）:**
+
+| 候補 | 根拠 | 確認事項 |
+|------|------|---------|
+| `app/api/cases/[id]/**`（argument / defense / draft 等） | requirements.md の `/case/[id]`、task.md の「`cases` の `[id]`」、backlog の argument/defense/draft 言及 | 実在パス・各メソッド・`[id]` が `cases.id`（UUID）を指すか。**ゲスト経路と認証経路の双方**で先頭ガードを通すこと |
+| `app/api/friends/requests/[id]/**` | PR #20「フレンド機能（承認/拒否/削除）」が path param 経由の可能性 | 動的セグメントの有無と UUID カラム参照の有無 |
+
+ゲスト経路への適用方針: case 系ルートはゲスト/認証の分岐を内部に持つ（environment.md のゲスト HMAC/nonce トークン方式）。UUID ガードは**分岐より前（メソッドハンドラ最先頭、`params` 取得直後）**に置き、両経路に等しく適用する。これにより認証状態に関わらず不正 ID は 400 で早期遮断される。
+
+**ガードの実装方針（疑似コード）:**
+
+```typescript
+import { isUuid } from "@/lib/text-utils";
+
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;                 // ※ 本バージョンの Next.js は params が Promise
+  if (!isUuid(id)) {
+    return Response.json({ error: /* 既存 400 と同形式のメッセージ */ }, { status: 400 });
+  }
+  // …以降の既存処理（DB クエリ等）は一切変更しない
+}
+```
+
+- ガードは `params` を取得した**直後・あらゆる DB アクセスより前**に置く。複数セグメント（`id` と `invId` 等）を持つルートでは、全セグメントをまとめて検証する（いずれか不正なら 400）。
+- 本バージョンの Next.js では Route Handler の `params` が `Promise` の可能性が高い（`AGENTS.md` の警告に従い `node_modules/next/dist/docs/` で実シグネチャを確認すること）。`await params` の後ろにガードを置く。
+
+#### 3. 400 レスポンスの形式
+
+既存の 400（ボディ UUID 不正時等）と**同一形状**に統一する。
+
+- 形状: `Response.json({ error: <string> }, { status: 400 })`。既存ルートが用いている 400 のレスポンスシェイプ（キー名・JSON 構造）に厳密に合わせる。
+- メッセージ: 同一ファイル内の既存 400 メッセージの言語・文体に合わせる。混在等で判断がつかない場合は短い汎用メッセージ（例: `"不正な ID 形式です"`）とする。
+- **不正値そのもの（生のパスパラメータ）をレスポンスやログにエコーしない**（情報漏洩・ログ汚染の回避が本指摘の趣旨であるため）。
+
+### LOW-002 設計
+
+対象: `app/laws/_components/PendingInvitations.tsx` の `respond()`（Client Component）。
+
+#### `respond()` のステータス検査フロー
+
+```
+respond(invitationId, action):
+  setProcessingId(invitationId)
+  setError(null)                         // 直前のエラーをクリア
+  try:
+    const res = await fetch(url, { method, body })
+    if (!res.ok):
+      setError(<失敗メッセージ>)          // ← 追加: 失敗時はエラー表示
+      return                              // ← router.refresh() を呼ばない
+    router.refresh()                      // ← 成功時のみ
+  finally:
+    setProcessingId(null)                 // ← 既存の finally リセットは維持
+```
+
+設計上の要点:
+
+- **成功時のみ `router.refresh()`**。失敗時はリフレッシュを抑止し、招待行を残したままエラーを提示する（連打防止と原因の可視化を両立）。
+- `finally` での `processingId` リセットは維持（成功・失敗いずれでもボタンの処理中状態を解除）。
+- エラー state（`const [error, setError] = useState<string | null>(null)`）を 1 つ追加。`respond()` 開始時に `null` クリアし、`!res.ok` 時にセット。
+- 例外（ネットワーク断等で `fetch` が reject）も拾うなら `catch` で同じ `setError` を行う。ただし**既存の例外ハンドリングの有無を確認し、なければ最小限の追加にとどめる**（挙動の不要な拡張を避ける）。
+
+#### エラー表示方針（配色ルール厳守）
+
+- **既存の `ErrorBanner` コンポーネント（PR #13 B-2 で実装済み）が存在し再利用可能なら、それを使う**。props 形状・配置を既存利用箇所に合わせる。
+- 存在しない/形が合わない場合は最小限のインライン表示（例: `<p className="text-sm text-rose-600">{error}</p>`）を招待リスト付近に置く。
+- **配色ルール厳守**: エラー/被告系は `rose-*`、プライマリは `brand-700/800`、`brand-500` は使用しない。エラー表示に `brand-*` を使わないこと。
+- エラーの粒度: 招待が複数あっても、単一の `error` state（リスト上部に 1 つのバナー）で十分。新しい操作のたびに先頭で `null` クリアするため、古いエラーが残らない。
+
+### 制約・前提条件
+
+- **DB / RLS / migration は一切触らない**。本対応はアプリケーションコードのみ。`supabase/` 配下に変更を加えない。
+- **正常系の挙動を一切変えない**: 正しい UUID のリクエスト、および成功レスポンス時の `router.refresh()` 動作は従来と完全に同一。
+- **`UUID_REGEX` リテラルは既存定義を移設**: 新規の正規表現を起こさない。ボディ検証の判定ロジックは不変（参照先の差し替えのみ）。
+- **配色ルール厳守**: エラーは `rose-*`、プライマリは `brand-700/800`、`brand-500` 不使用。
+- **対象ルートの全数確定はビルドの grep に委ねる**: 本設計は確定対象（laws ツリー）＋候補（cases / friends）＋判定ルールを提示する。`app/` 実コードの最終的な網羅確認はビルドが grep で行う（引き継ぎメモ参照）。本設計書はドキュメント（design.md の FEAT-003 ツリー・requirements.md・backlog）を一次ソースとして列挙しており、`app/` の直接読み取りは行っていない。
+- **Next.js のバージョン差異**: Route Handler の `params` 取得方法（`Promise` か否か）は `node_modules/next/dist/docs/` で確認する（`AGENTS.md` の方針）。ガードは `params` 取得直後・DB アクセス前に置く。
+
