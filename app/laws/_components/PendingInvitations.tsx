@@ -31,7 +31,7 @@ export default function PendingInvitations({ invitations }: Props) {
         body: JSON.stringify({ status }),
       });
       if (!res.ok) {
-        setError("操作に失敗しました。時間をおいて再度お試しください。");
+        setError("この招待は処理できませんでした。一覧を更新して最新の状態をご確認ください。");
         return;
       }
       router.refresh();
