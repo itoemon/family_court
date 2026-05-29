@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createSessionClient, createAdminClient } from "@/lib/supabase/server";
+import { isUuid } from "@/lib/text-utils";
 
 export async function PATCH(
   req: NextRequest,
@@ -25,6 +26,9 @@ export async function PATCH(
   }
 
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "不正な ID 形式です" }, { status: 400 });
+  }
   const admin = createAdminClient();
 
   const { data: request, error: fetchError } = await admin

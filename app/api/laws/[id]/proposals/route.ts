@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createSessionClient, createAdminClient } from "@/lib/supabase/server";
 import type { ProposalType } from "@/lib/types";
+import { isUuid } from "@/lib/text-utils";
 
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id: lawId } = await params;
+  if (!isUuid(lawId)) {
+    return NextResponse.json({ error: "不正な ID 形式です" }, { status: 400 });
+  }
 
   const supabase = await createSessionClient();
   const { data: { user } } = await supabase.auth.getUser();

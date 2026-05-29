@@ -1,13 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createSessionClient, createAdminClient } from "@/lib/supabase/server";
-
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+import { UUID_REGEX, isUuid } from "@/lib/text-utils";
 
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id: lawId } = await params;
+  if (!isUuid(lawId)) {
+    return NextResponse.json({ error: "不正な ID 形式です" }, { status: 400 });
+  }
 
   const supabase = await createSessionClient();
   const { data: { user } } = await supabase.auth.getUser();

@@ -3,6 +3,7 @@ import { createAdminClient, createSessionClient } from "@/lib/supabase/server";
 import { verifyGuestToken } from "@/lib/guest-token";
 import { decryptApiKey } from "@/lib/crypto";
 import { generateDraft } from "@/lib/defense";
+import { isUuid } from "@/lib/text-utils";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -11,6 +12,9 @@ export async function POST(
   { params }: RouteContext
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "不正な ID 形式です" }, { status: 400 });
+  }
   const admin = createAdminClient();
 
   const { data: c } = await admin

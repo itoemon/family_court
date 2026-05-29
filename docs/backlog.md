@@ -26,16 +26,6 @@
 
 ### 監査由来の品質改善
 
-#### [MEDIUM-001] Server Component の読み取りに createAdminClient() を使用（app/laws/page.tsx、app/laws/[id]/page.tsx）
-
-**由来**: `docs/knowledge/audit-log/audit_20260526_200752.md`
-
-- **内容**: `app/laws/page.tsx` および `app/laws/[id]/page.tsx` は、認証確認後のすべての DB 読み取りに `createAdminClient()` を使用している。`design.md` の「Server Component からの読み取りは `createSessionClient()` を使用し、以下のポリシーで保護する」という仕様に反する。`createAdminClient()` は RLS をバイパスするため、SELECT ポリシー（`laws_select_member`、`law_invitations_select` 等）が適用されない。現状は各クエリにアプリ層フィルタ（`.eq("invitee_id", user.id)`、メンバーシップ確認後の `.in("id", lawIds)` 等）が正しく付与されており、データ漏洩は発生していない。しかし RLS による二重防御が機能せず、将来の開発者がアプリ層フィルタを誤って削除・省略した場合に即座にデータが露出するリスクがある。
-- **影響範囲**: エンドユーザーへの直接影響は現時点でなし。ただし防御の単一障害点化により、メンテナンス時の誤実装がデータ漏洩に直結する。
-- **修正案**: Server Component 内の DB 読み取りを `createSessionClient()` に切り替える。`laws/page.tsx` の `createAdminClient()` 呼び出し（line 13）を削除し、`createSessionClient()` の戻り値を用いてデータ取得に使う。`laws/[id]/page.tsx` も同様（line 20）。RLS ポリシーが SELECT を invitee 本人・メンバーのみに制限しているため、フィルタを省略しても安全な読み取りになる。
-
----
-
 #### [LOW-001] `package.json` の `name` フィールド変更が変更ログ未記載（`package.json:2`、`package-lock.json:4`）
 
 **由来**: `docs/knowledge/audit-log/audit_20260526_152517.md`
@@ -139,3 +129,5 @@
 | PR #22 (FEAT-003) | 法律作成機能（作成・招待・投票・退会・改定・所有権移譲） |
 | PR #23 (BUG-001) | サインアップ時の確認メール未着を修正（Gmail SMTP・emailRedirectTo の明示化） |
 | PR #24 (chore) | トークン消費の可視化（statusline.py・token_report.py）とログローテーション機構（rotate_logs.sh） |
+| PR #25 (chore) | backlog の完了項目整理・由来重複の掃除 |
+| PR #26 (MEDIUM-001) | Server Component の `law_*` 読み取りを `createAdminClient()` → `createSessionClient()`（RLS 二重防御）に切替・`laws` SELECT ポリシーを invitee 本人まで拡張（由来: `docs/knowledge/archive/audit-log/audit_20260526_200752.md`） |

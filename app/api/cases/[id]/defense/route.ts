@@ -4,6 +4,7 @@ import { verifyGuestToken } from "@/lib/guest-token";
 import { decryptApiKey } from "@/lib/crypto";
 import { generateDefenseResponse } from "@/lib/defense";
 import { DefenseMessage } from "@/lib/types";
+import { isUuid } from "@/lib/text-utils";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -86,6 +87,9 @@ export async function GET(
   { params }: RouteContext
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "不正な ID 形式です" }, { status: 400 });
+  }
   const auth = await resolveAuth(req, id);
   if ("error" in auth) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
@@ -112,6 +116,9 @@ export async function POST(
   { params }: RouteContext
 ) {
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "不正な ID 形式です" }, { status: 400 });
+  }
   const auth = await resolveAuth(req, id);
   if ("error" in auth) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
