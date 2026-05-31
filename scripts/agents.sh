@@ -162,22 +162,15 @@ run_engineer() {
   echo "$branch"
 }
 
-# ── dev サーバー（node20）の起動/停止 ────────────────────────────────────────
-# パイプライン各エージェント（claude -p）は volta 管理の claude（node18 pin）配下で
-# 動くため、PATH に node18 実体が前置され package.json の volta pin（node20）が解決
-# されない。node18 実体を PATH から除去し _VOLTA_TOOL_RECURSION を解除した環境で
-# dev サーバーを起動することで、volta シムが project pin（node20）を解決する。
-# Next.js 16 は node ≥ 20.9.0 必須のため、サーバー起動はエージェント任せにせず
-# 本スクリプト側で行う（テスタは playwright 実行のみを担当。ランナーは node18 で可）。
+# ── dev サーバーの起動/停止 ──────────────────────────────────────────────────
+# Next.js 16 は node ≥ 20.9.0 必須。テスタは Playwright 実行のみを担当し
+# サーバー操作を行わないため、起動・停止は本スクリプト側で行う。
 DEV_PGID=""
 start_dev_server() {
-  local clean_path
-  clean_path="$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '/\.volta/tools/image/node/' | paste -sd:)"
   rm -f /tmp/dev_server.log
-  setsid env -u _VOLTA_TOOL_RECURSION PATH="${VOLTA_HOME:-$HOME/.volta}/bin:$clean_path" \
-    bash -c "cd '$REPO_ROOT' && npm run dev" > /tmp/dev_server.log 2>&1 &
+  setsid bash -c "cd '$REPO_ROOT' && npm run dev" > /tmp/dev_server.log 2>&1 &
   DEV_PGID=$!
-  log "dev サーバーを起動しています (node20, PGID=$DEV_PGID)..."
+  log "dev サーバーを起動しています (PGID=$DEV_PGID)..."
   local i
   for i in $(seq 1 30); do
     if grep -qE 'Ready|Local:|started server' /tmp/dev_server.log 2>/dev/null; then
@@ -234,9 +227,9 @@ run_tester() {
       || log "警告: Playwright ブラウザ導入に失敗しました（E2E が実施不可になる可能性）"
   fi
 
-  # dev サーバー（node20）を起動。失敗時はテストを実施せず die。
+  # dev サーバーを起動。失敗時はテストを実施せず die。
   if ! start_dev_server; then
-    die "dev サーバーを起動できませんでした（node20 / Next.js 16）。テストを実施できません。"
+    die "dev サーバーを起動できませんでした。テストを実施できません。"
   fi
   trap stop_dev_server EXIT
 

@@ -32,7 +32,7 @@
     "tailwindcss": "^4",
     "typescript": "^5"
   },
-  "volta": {
-    "node": "20.20.2"
+  "engines": {
+    "node": ">=20.9.0"
   }
 }
