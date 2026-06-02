@@ -2,6 +2,8 @@
 
 大切な人とおだやかに話し合うための場所。恋人・夫婦・家族が裁判形式で意見を交わし、AI 裁判官が判決を下す Web アプリです。
 
+> 旧名: `family_court`。PR #17 (FEAT-001) でブランド名を `igiari` にリネームした。Vercel プロジェクト名・GitHub リポジトリ名・`package.json` の `name` フィールドは新名で揃えている。
+
 ## Getting Started
 
 ```bash

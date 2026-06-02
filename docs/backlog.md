@@ -75,21 +75,7 @@
 
 ### 監査由来の品質改善
 
-#### [LOW-001] `package.json` の `name` フィールド変更が変更ログ未記載（`package.json:2`、`package-lock.json:4`）
-
-**由来**: `docs/knowledge/audit-log/audit_20260526_152517.md`
-
-- **内容**: `package-lock.json` の `name` フィールドが `"family_court"` から `"igiari"` へ変更されている。`package.json` の現在値も `"igiari"` である（2行目）。しかし eng-to-aud.md の「変更ファイル一覧」では `package.json` の変更理由を `@upstash/*` 依存追加のみと説明しており、`name` フィールドの変更への言及がない。意図的なプロジェクト名変更であれば問題ないが、本監査ではその意図を文書から確認できない。エンドユーザーへの直接影響はないものの、Vercel のプロジェクト名・CI 設定と乖離した場合にデプロイのトレーサビリティが失われる。
-- **修正案**: 変更が意図的であれば eng-to-aud.md の変更ファイル一覧に `package.json — name フィールドを igiari へ変更` を追記する。意図的でない場合は `"name": "family_court"` に戻す。
-
----
-
-#### [LOW-002] `@upstash/core-analytics` が本番依存ツリーに混入（`package-lock.json`）
-
-**由来**: `docs/knowledge/audit-log/audit_20260526_152517.md`
-
-- **内容**: `analytics: false` を明示設定しているにもかかわらず、`@upstash/ratelimit@2.0.8` の推移的依存として `@upstash/core-analytics@0.0.10` が `node_modules` に含まれる（`package-lock.json` に `node_modules/@upstash/core-analytics` エントリあり）。このパッケージがモジュール初期化時にアウトバウンド接続を行わないことをコードレベルでは確認できない。`ratelimit.limit(user.id)` は毎リクエストごとに `user.id`（UUID）を渡すため、万一 `analytics: false` が完全に機能していない場合、ユーザー識別子が Upstash のサードパーティサーバーへ送信されうる。本アプリは夫婦・家族の話し合いというプライバシー高感度なドメインであるため、ユーザー識別子の外部送信リスクは軽視できない。
-- **修正案**: `@upstash/core-analytics@0.0.10` の GitHub リポジトリ（upstash/core-analytics）でソースを確認し、`analytics: false` 時にアウトバウンド接続が発生しないことを検証する。または `npm run build` 後に `grep -r "core-analytics" .next/server/` を実行し、analytics 呼び出しがサーバーバンドルに含まれないことを確認する。
+（現在、未対応の監査由来 LOW はない。過去の指摘は「対応済み」セクション参照。）
 
 ---
 
@@ -162,3 +148,7 @@
 | PR #26 (MEDIUM-001) | Server Component の `law_*` 読み取りを `createAdminClient()` → `createSessionClient()`（RLS 二重防御）に切替・`laws` SELECT ポリシーを invitee 本人まで拡張（由来: `docs/knowledge/archive/audit-log/audit_20260526_200752.md`） |
 | PR #27 (LOW-001) | API 動的セグメントの UUID バリデーション追加（全 15 ルート）・`UUID_REGEX` を `lib/text-utils.ts` に共通化（由来: `docs/knowledge/archive/audit-log/audit_20260526_200752.md`） |
 | PR #27 (LOW-002) | `PendingInvitations.tsx` の fetch ステータス検査・失敗時エラー表示とリフレッシュ抑止（由来: `docs/knowledge/archive/audit-log/audit_20260526_200752.md`） |
+| PR #31 (FEAT-RESP-HEADER) | ヘッダーをアバター起点のドロップダウンメニュー方式へ刷新（全画面サイズ統一、breakpoint 不使用）|
+| PR #32 (FEAT-005) | マイページ `/me` を新設（プロフィール / フレンド / 過去のケース / 参加中の法律 のダイジェスト、ヘッダー導線に「マイページ」追加）|
+| 本 PR (LOW-001) | `package.json` の `name` フィールド変更経緯を README に明示（PR #17 で `family_court` → `igiari` にリネーム済みの追跡性を回復、由来: `docs/knowledge/audit-log/audit_20260526_152517.md`） |
+| 本 PR (LOW-002) | `@upstash/core-analytics` の外部送信不可検証（`analytics: false` 設定時に Analytics クラス未インスタンス化 + `if (this.analytics)` ガードで record/ingest 実行経路なし、本番ビルドのバンドル含有はコードのみで動作経路なし、由来: `docs/knowledge/audit-log/audit_20260526_152517.md`） |
