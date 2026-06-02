@@ -23,7 +23,7 @@ function UserSilhouette({ className }: { className?: string }) {
 }
 
 export default function MeHeader({ displayName, avatarUrl }: MeHeaderProps) {
-  const label = displayName ?? "（名前未設定）";
+  const label = displayName || "（名前未設定）";
 
   return (
     <div className="flex items-center gap-4">
@@ -32,7 +32,7 @@ export default function MeHeader({ displayName, avatarUrl }: MeHeaderProps) {
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={avatarUrl}
-            alt={displayName ?? "プロフィール画像"}
+            alt={displayName || "プロフィール画像"}
             width={64}
             height={64}
             className="w-full h-full object-cover"

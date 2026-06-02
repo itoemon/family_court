@@ -58,7 +58,7 @@ export default function ProfileCard({
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-stone-800 truncate">
-            {displayName ?? "（名前未設定）"}
+            {displayName || "（名前未設定）"}
           </p>
           {hasInstruction ? (
             <p className="text-sm text-stone-500 mt-1 whitespace-pre-wrap break-words">
