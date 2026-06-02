@@ -39,6 +39,7 @@
     - `run_tester` に Playwright chromium の自動導入ガードを追加（初回のみ）。
     - 判定ロジックを修正: 「実施不可」も不合格扱いにし、環境不備による未実施を誤って通過扱いにしない。
   - 検証: 読み取り専用テスト（VISUAL-BRAND-001）を node20 サーバー + node18 playwright + chromium で実行し、chain が end-to-end で動作することを確認済み。
+  - **追記 (PR #30 / 2026-06-02)**: 2026-05-30 の claude CLI ネイティブ版移行（node 非依存、`~/.local/bin/claude`）により、claude → 子プロセスへの node18 強制（`_VOLTA_TOOL_RECURSION` 経由）が消滅した。これに伴い PR #30 で `package.json` の `volta.node` pin を撤去し、要件は `engines.node: ">=20.9.0"` で表明する形へ切り替えた。`scripts/agents.sh` の PATH サニタイズおよび `_VOLTA_TOOL_RECURSION` 解除処理も併せて撤去し、`start_dev_server` は素の `setsid bash -c "npm run dev"` に簡素化した。停止側の PGID 特定ロジックおよびテスタの判定ロジックは本筋なので残置している。
 
 - **Part 2（E2E のターゲット DB）: 未対応**
   - 現状 `.env.local` が**本番 Supabase** を指しており、laws/friends 系 spec が本番にテストデータを作りうる。テスト用 Supabase プロジェクト + `.env.test`、またはシード&クリーンアップ戦略の検討が必要。
