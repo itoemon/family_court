@@ -107,7 +107,7 @@ export default function HeaderUserMenu({
         type="button"
         aria-haspopup="menu"
         aria-expanded={isOpen}
-        aria-controls={menuId}
+        aria-controls={isOpen ? menuId : undefined}
         aria-label={triggerLabel}
         onClick={() => setIsOpen((prev) => !prev)}
         className={`rounded-full ${focusRing}`}
@@ -149,7 +149,7 @@ export default function HeaderUserMenu({
                 プロフィール
               </Link>
               <div role="separator" className="my-1 border-t border-stone-200" />
-              <form action={logout} onSubmit={close}>
+              <form action={logout} onSubmit={close} role="none">
                 <button
                   type="submit"
                   role="menuitem"
