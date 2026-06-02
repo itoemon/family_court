@@ -1,14 +1,25 @@
 import Link from 'next/link'
 import { createSessionClient } from '@/lib/supabase/server'
-import { logout } from '@/app/actions/auth'
+import HeaderUserMenu from '@/app/components/HeaderUserMenu'
 
 export default async function Header() {
   const supabase = await createSessionClient()
   const { data: { user } } = await supabase.auth.getUser()
 
-  async function handleLogout() {
-    'use server'
-    await logout()
+  let avatarUrl: string | null = null
+  let displayName: string | null = null
+
+  if (user) {
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('avatar_url, display_name')
+      .eq('id', user.id)
+      .single()
+
+    if (profile) {
+      avatarUrl = profile.avatar_url ?? null
+      displayName = profile.display_name ?? null
+    }
   }
 
   return (
@@ -17,33 +28,11 @@ export default async function Header() {
         <Link href="/" className="text-stone-800 font-semibold text-lg">
           igiari
         </Link>
-        {user ? (
-          <nav className="flex items-center gap-4">
-            <Link href="/history" className="text-stone-600 hover:text-stone-900 transition-colors">
-              過去のケース
-            </Link>
-            <Link href="/friends" className="text-stone-600 hover:text-stone-900 transition-colors">
-              フレンド
-            </Link>
-            <Link href="/profile" className="text-stone-600 hover:text-stone-900 transition-colors">
-              プロフィール
-            </Link>
-            <form action={handleLogout}>
-              <button type="submit" className="text-stone-500 hover:text-stone-700 text-sm">
-                ログアウト
-              </button>
-            </form>
-          </nav>
-        ) : (
-          <nav className="flex items-center gap-4">
-            <Link href="/auth/login" className="text-stone-600 hover:text-stone-900 transition-colors">
-              ログイン
-            </Link>
-            <Link href="/auth/signup" className="text-stone-600 hover:text-stone-900 transition-colors">
-              サインアップ
-            </Link>
-          </nav>
-        )}
+        <HeaderUserMenu
+          isAuthenticated={!!user}
+          avatarUrl={avatarUrl}
+          displayName={displayName}
+        />
       </div>
     </header>
   )
