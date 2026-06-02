@@ -2,115 +2,117 @@
 
 > **優先順位**: このファイルの内容は最優先。設計書・handoff メモと矛盾する場合は必ずこちらを優先すること。
 >
-> **重要 1**: `docs/knowledge/design.md` は永続資料である。**既存の設計（FEAT-001〜FEAT-003、MEDIUM-001、LOW バッチ等、過去 PR の設計）を絶対に削除・短縮しないこと**。本タスクの内容は `design.md` の末尾に新規セクションとして **追記** すること（[[feedback-design-md]] 参照）。
+> **重要 1**: `docs/knowledge/design.md` は永続資料である。**既存の設計（FEAT-001〜FEAT-003、MEDIUM-001、LOW バッチ、FEAT-RESP-HEADER 等、過去 PR の設計）を絶対に削除・短縮しないこと**。本タスクの内容は `design.md` の末尾に新規セクションとして **追記** すること（[[feedback-design-md]] 参照）。
 >
-> **重要 2**: 本タスクは UI のみの改修である。RLS / migration / DB スキーマには **一切手を加えない**。新規 npm 依存も追加しない。
+> **重要 2**: 本タスクは新規 UI ページ追加とヘッダー導線更新である。RLS / migration / DB スキーマには **一切手を加えない**。新規 npm 依存も追加しない。breakpoint も導入しない。
 
 ## 今回のタスク
 
-ヘッダーをアバター起点のドロップダウンメニュー方式に刷新し、全画面サイズ（PC・タブレット・スマートフォン）で一貫した表示にする **設計と実装**。
+ログインユーザー本人のための統合ハブ「マイページ」を新設する **設計と実装**。プロフィール・フレンド・過去のケース・参加中の法律を 1 画面でダイジェスト参照でき、詳細編集は既存専用ページへの導線で行う。あわせてヘッダーアバターのドロップダウン先頭に「マイページ」項目を追加する。
 
-**バックログ ID**: `FEAT-RESP-HEADER`（`docs/backlog.md` 参照）
+**バックログ ID**: `FEAT-005`（`docs/backlog.md` 参照）
 
 ---
 
 ### 背景
 
-- 現状の `app/components/Header.tsx` は認証時に「過去のケース / フレンド / プロフィール / ログアウト」の 4 リンクを `flex gap-4` で横並びに配置している。
-- 横並びテキストリンクのため、スマートフォン幅（375–390px）でロゴと干渉し、折り返しまたは溢れが発生する。
-- プロジェクト全体で Tailwind の `sm:` `md:` `lg:` ブレークポイントが現状一切使われておらず（grep で 0 件）、本対応では breakpoint を持ち込まない方針で「全画面サイズで同じ UI」へ統一する。
+- 現状、ユーザー本人の情報や活動状況を一望できる場所がなく、`/profile`・`/friends`・`/history`・`/laws` を都度個別に開く必要がある。
+- 直前の FEAT-RESP-HEADER でヘッダーがアバター起点のドロップダウンに刷新されたため、アバターから自然に遷移する先として「マイページ」を実装すると導線が綺麗に繋がる。
+- 編集機能・複雑な操作はすでに既存ページに実装済みなので、マイページは **ダイジェスト + ディープリンク** に責務を限定し、最小スコープで価値を出す。
 
 ---
 
 ### 要件（リード確定事項）
 
-#### 1. レイアウト（全画面サイズ統一）
+#### 1. URL と保護
 
-- ヘッダーは「ロゴ（左） + アバター（右）」の 2 要素のみで構成する。
-- アバターをクリック（タップ）するとドロップダウンメニューが展開する。
-- 横並びテキストリンクは廃止する。breakpoint は使用しない。
+- URL: `/me`
+- middleware で認証必須化する。未認証アクセスは既存挙動どおり `/auth/login` へリダイレクト。
+  - 実装としては `middleware.ts` の `PROTECTED_PATH_PREFIXES` に `/me` を追加する（既存の `/history`・`/profile`・`/friends`・`/laws` と同列扱い）。`pathname === "/me"` と `pathname.startsWith("/me/")` 双方で保護される形を維持。
+- 他ユーザーには見えない自分専用ページ。RLS は **追加で変更しない**。各セクションのクエリは `createSessionClient`（RLS 経由）で自身のデータのみを取得し、現行の RLS で自然に絞り込まれることを利用する。
 
-#### 2. アバターの表示
+#### 2. ページ構成（GitHub / Linear 型）
 
-| 状態 | 表示 |
-|------|------|
-| 認証時 (`profiles.avatar_url` が設定済み) | アバター画像を丸型表示 |
-| 認証時 (`profiles.avatar_url` が未設定) | 人型シルエットアイコンを丸型背景で表示 |
-| 未認証時 | 人型シルエットアイコンを薄いグレー背景で表示 |
+- 既存トーン（`bg-stone-50` / `border-stone-200` / `text-stone-600|800` / `brand-700|800`）で完結させる。`brand-500` は使用しない。
+- 構成:
+  1. **ヘッダー部**（ページ最上部）: アバター（中型）＋ 表示名 ＋ プロフィール編集導線（`/profile` への小さなリンク）。
+  2. **セクションカード（4 つ）**: 各カードは「タイトル」「件数または最新ダイジェスト」「もっと見るリンク」の構造で統一。
+     - プロフィール
+     - フレンド
+     - 過去のケース
+     - 参加中の法律
+- セクションの並び順・ダイジェスト件数（推奨 N=5、要件と紙幅のバランスでアーキ判断、最小 3、最大 5）はアーキが既存トーン・空状態の見え方を踏まえて決定する。
+- カードのレイアウトは縦並びを基本とし、breakpoint は使わない。狭幅でも崩れない構成（1 カラム）とする。
 
-- アバター画像は `profiles.avatar_url`（FEAT-002 で実装済み、Supabase Storage の `avatars` バケット）から取得する。
-- 人型アイコンは SVG（heroicons `user` 相当）またはインライン SVG。新規 npm 依存は追加しない。
+#### 3. 各セクションの内容
 
-#### 3. ドロップダウンメニュー項目
+| セクション | 表示要素 | データソース（RLS 経由 SELECT） | ディープリンク先 |
+|---|---|---|---|
+| プロフィール | 表示名 / アバター / （任意で）弁護人カスタム指示のサマリ（先頭 N 文字、N はアーキ判断） | `profiles` 自身行 | `/profile`（編集する） |
+| フレンド | 件数 + 最近 N 人（アバター + 表示名） | `friend_requests` (status='accepted') を経由した相手の `profiles` | `/friends`（フレンドを管理する） |
+| 過去のケース | 件数 + 最近 N 件（トピックと日付） | `cases` 自身が原告 / ゲスト関与のもの（既存 `/history` と同じクエリ条件を再利用） | `/history`（すべて見る） |
+| 参加中の法律 | 件数 + 最近 N 件（法律名と役割: オーナー / メンバー / 招待中） | `laws` の `laws_select_member_or_invitee` ポリシー経由（PR #26 で導入済み） | `/laws`（すべて見る） |
 
-**認証時**:
-1. 過去のケース (`/history`)
-2. フレンド (`/friends`)
-3. プロフィール (`/profile`)
-4. 区切り線
-5. ログアウト（Server Action 経由、既存 `app/actions/auth.ts` の `logout()` を再利用）
+- 各セクションは **空状態**（フレンド 0 人 / ケース 0 件 / 法律 0 件）を必ずサポートする。空状態は説明文 + ディープリンクのみを表示し、エラー扱いにしない。
 
-**未認証時**:
-1. ログイン (`/auth/login`)
-2. サインアップ (`/auth/signup`)
+#### 4. ヘッダードロップダウンの更新
 
-#### 4. ドロップダウンの挙動
+- `app/components/HeaderUserMenu.tsx` の **認証時メニュー先頭** に「マイページ」(`/me`) を追加する。
+- 既存項目（過去のケース / フレンド / プロフィール / 区切り線 / ログアウト）の順序・配色・遷移挙動は **変更しない**。
+- 未認証時メニュー（ログイン / サインアップ）には変更を加えない。
 
-- アバターボタンをクリックすると開閉トグル。
-- メニュー外側クリックで閉じる。
-- `Escape` キーで閉じる。
-- メニュー項目をクリックすると遷移後（または Server Action 実行後）に閉じる。
-- 開いている間、アバターボタンに `aria-expanded="true"` を付与する。
-- メニューには `role="menu"`、項目には `role="menuitem"` を付与する。
-- フォーカスリングは既存配色トーン（`brand-*` / `stone-*`）に合わせる。
+#### 5. アクセシビリティ
 
-#### 5. 配色・トーン
-
-- 既存トーンを踏襲する: 背景 `bg-stone-50`、境界 `border-stone-200`、テキスト `text-stone-600/800`。
-- アクセントは `brand-700/800`（`brand-500` は WCAG 非対応で不使用）。
-- 区切り線や hover 背景は既存パレットの範囲内で選定する。
-- 新規カラートークンは追加しない。
+- 各セクションカードを `<section aria-labelledby="...">` 構造とし、見出し ID と紐付ける。
+- 「もっと見る」「すべて見る」リンクには明示的なテキストを付与し、視覚情報なしでも遷移先が分かるようにする。
+- フォーカスリングは FEAT-RESP-HEADER で確立した `focus-visible:ring-brand-700` 系のトーンに揃える。
 
 ---
 
 ### 解決すべき設計上の課題
 
-#### A. Server / Client 境界の設計
+#### A. ページの構成と Server/Client 境界
 
-- 現行 `Header.tsx` は Server Component（`async` + `createSessionClient`）。
-- ドロップダウンの開閉はクライアントインタラクションのため、Client Component に分割する必要がある。
-- 設計指針:
-  - 親 (Server): user / profile の取得を担当し、Props（認証状態・アバター URL・表示名 など必要最小限）を子に渡す。
-  - 子 (Client, 例: `app/components/HeaderUserMenu.tsx`): ドロップダウン制御と項目描画を担当。
-- 子コンポーネントの命名・配置（`app/components/` 直下か `_components/` 配下か）はアーキが既存構成（`app/components/Header.tsx` の隣に置く慣例）に合わせて決定する。
+- `/me` は Server Component を基本とする（全データを RLS 経由で SSR 取得）。インタラクションが必要な要素は最小（リンク主体）のため、Client Component への分割は不要を基本方針とする。
+- ただし将来「セクションを折りたたむ」「ライブ更新する」等の拡張に備え、各セクションを独立コンポーネント（`app/me/_components/ProfileCard.tsx` 等）に分割しておく。
+- 配置・命名はアーキが既存慣習（`app/laws/[id]/_components/` のような page ローカル `_components/` 規約）に整合する形で決定する。
 
-#### B. ログアウトの Server Action 呼び出し
+#### B. データ取得の集約と RLS 整合
 
-- 既存実装は Server Component 内に `'use server'` 関数を定義し `<form action={handleLogout}>` で呼んでいる。
-- Client Component から Server Action を呼ぶ場合は、`app/actions/auth.ts` の `logout` を直接 import して `<form action={logout}>` する形が最短。挙動を変えないこと。
+- 1 つの `createSessionClient` インスタンスを共有し、各セクション分のクエリを順次（または `Promise.all`）発行する。
+- すべて `createSessionClient` 経由で取得し、`createAdminClient` は使用しない（[[design.md::MEDIUM-001 対応]] の二層防御方針に整合）。
+- 取得失敗（行欠落 / ネットワーク / RLS 拒否）は当該セクションのみ「空状態」フォールバックとし、ページ全体を 500 にしない。
+- フレンド・法律のクエリは既存ページ（`/friends`、`/laws`）の SELECT パターンを再利用する。新規 RLS 拡張は **行わない**。
 
-#### C. プロフィール取得クエリの追加
+#### C. ヘッダー導線との一貫性
 
-- 現行 Header は `auth.getUser()` のみ。`profiles.avatar_url` `profiles.display_name` を読むクエリを追加する。
-- `createSessionClient`（RLS 経由）で `profiles` テーブルを `select("avatar_url, display_name").eq("id", user.id).single()` する形を採用する（`createAdminClient` は使用しない。MEDIUM-001 の二層防御方針に整合）。
-- 取得失敗時は人型アイコンへフォールバックする（500 を投げない）。
+- アバタークリック → ドロップダウン → 「マイページ」→ `/me` という導線を一画面で完結させる。
+- ヘッダーは FEAT-RESP-HEADER で全画面サイズ統一済みのため、本対応でも breakpoint は持ち込まない。`/me` ページ自体も 1 カラム前提で全画面サイズ統一。
 
-#### D. アクセシビリティ
+#### D. 既存ページとの役割分担（明示）
 
-- WAI-ARIA メニューパターンに準拠する（最低限、上記 4 の `aria-expanded` / `role="menu"` / `role="menuitem"` を満たす）。
-- キーボード操作: アバターボタン Tab で到達 → Enter / Space で開閉 → 矢印キーは任意（実装コストとのバランスでアーキ判断、必須は Escape のみ）。
+- マイページは **読み取り専用ダイジェスト**。編集・追加・削除は **すべて既存ページ側に委ねる**。
+  - プロフィール編集（表示名・API キー・アバター画像・弁護人カスタム指示）は `/profile` のみ。
+  - フレンド検索・追加・承認・削除は `/friends` のみ。
+  - ケース作成は `/`（ホーム）、ケース詳細は `/case/[id]`。
+  - 法律作成は `/laws/new`、法律詳細は `/laws/[id]`。
+- マイページからの「もっと見る」遷移先は上記既存ページとする。
 
 ---
 
 ### スコープ外（重要）
 
-- マイページ実装は別タスク（FEAT-005、backlog 参照）。今回は触らない。
-- ヘッダー以外のコンポーネント・ページのレスポンシブ調整は **行わない**（実機検証は別タスクで実施）。
-- アバターアップロード機能・`profiles` テーブル構造の変更は行わない（FEAT-002 で完了済み）。
-- RLS / migration / DB スキーマの変更は一切行わない。
-- 新規 npm 依存の追加は行わない（ヘッドレス UI ライブラリ等）。
-- breakpoint（`sm:` `md:` `lg:`）の導入は行わない。
-- ロゴデザイン・サービス名表記の変更は行わない。
+- 編集機能（インライン編集を含むあらゆる更新系操作）。マイページからは行わない。
+- 他ユーザーからの閲覧、公開プロフィールページ化。
+- 通知・アクティビティフィード・推薦ロジック等の SNS 的拡張。
+- `profiles`・`friend_requests`・`cases`・`laws` 等のテーブル構造変更、新規カラム追加。
+- RLS / migration / DB スキーマ変更（既存ポリシーの再利用のみ）。
+- 新規 npm 依存の追加。
+- breakpoint（`sm:` `md:` `lg:`）の導入。本対応も全画面サイズで同じ UI を維持する方針。
+- 配色トーンの追加（`stone-*` / `brand-700|800` の範囲で完結。`brand-500` 不使用）。
+- ロゴ・サービス名表記の変更。
+- ヘッダー本体のレイアウト変更（FEAT-RESP-HEADER の構造を変えない。追加するのはドロップダウン項目のみ）。
+- マイページに「参加中の法律」以外のセクションを追加すること（例: 弁護人 AI 統計、通知、検索履歴 等）。
 
 ---
 
@@ -121,64 +123,80 @@
 末尾に以下のセクションを **追加** する（既存の章は一切変更しないこと）。
 
 ```
-## FEAT-RESP-HEADER 対応: ヘッダーをアバター起点のドロップダウンメニュー方式に刷新
+## FEAT-005 対応: マイページ（自分専用統合ハブ）の新設
 
 ### 概要
-（目的・背景・全画面サイズ統一の方針）
+（目的・背景・GitHub/Linear 型 + 全画面サイズ統一の方針）
 
 ### 影響範囲
-- app/components/Header.tsx（Server Component、リファクタ）
-- app/components/HeaderUserMenu.tsx（新設、Client Component。命名・配置はアーキ確定）
-- app/actions/auth.ts（既存 logout 関数を Client から参照、関数本体は不変）
+- app/me/page.tsx（新設、Server Component）
+- app/me/_components/*（新設、セクションカード分割。命名・配置はアーキ確定）
+- app/components/HeaderUserMenu.tsx（メニュー先頭に「マイページ」追加）
+- middleware.ts（PROTECTED_PATH_PREFIXES に "/me" を追加）
 
-### コンポーネント設計
-- Server Component の責務（user + profile 取得、Props 受け渡し）
-- Client Component の責務（ドロップダウン状態管理、外側クリック検知、Escape ハンドリング、項目描画）
-- アバター表示の状態分岐（avatar_url あり / なし / 未認証）
+### ページ構成
+- ヘッダー部（アバター + 表示名 + プロフィール編集導線）
+- セクションカード 4 つ（プロフィール / フレンド / 過去のケース / 参加中の法律）
+- 並び順とダイジェスト件数 N の決定根拠
+
+### データ取得設計
+- createSessionClient による RLS 経由 SELECT 一覧
+- 各セクションのクエリ詳細と既存ページとの再利用
+- 取得失敗時のセクション単位フォールバック方針
+
+### 既存ページとの役割分担
+- マイページは読み取り専用ダイジェスト
+- 編集・追加・削除は既存ページに委譲
+
+### ヘッダー導線
+- HeaderUserMenu の認証時メニュー先頭に「マイページ」を追加
+- 他項目の順序・配色は不変
 
 ### アクセシビリティ設計
-- aria-expanded / role="menu" / role="menuitem"
-- Escape クローズ
-- フォーカスリングの配色
+- section / aria-labelledby 構造
+- フォーカスリングは FEAT-RESP-HEADER と同じトーン
 
 ### 制約・前提条件
 - 新規 npm 依存なし
 - breakpoint なし（全画面サイズ統一）
 - DB / RLS は触らない
-- 配色は既存 stone/brand トーンに限定
+- 配色は既存 stone/brand トーン
 ```
 
 #### 2. `docs/knowledge/handoff/arch-to-eng.md` の更新
 
 ビルドへの引き継ぎメモ。以下を含める:
-- Server / Client 分割の手順
-- `profiles` クエリ追加（`createSessionClient` 経由、フォールバック方針）
-- 外側クリック検知の実装方針（`useEffect` + `mousedown` + `ref.contains` で十分。ライブラリ不要）
-- Escape ハンドリングの実装方針
-- Server Action（logout）を Client から呼ぶ際の form 構成
-- リグレッション確認シナリオ（認証時 / 未認証時 / avatar_url 未設定時の表示確認、各メニュー項目の遷移確認、ログアウトの動作確認）
+- ファイル新設順序（middleware.ts → app/me/page.tsx → app/me/_components/* → HeaderUserMenu.tsx）
+- 既存ページ（/friends, /history, /laws）の SELECT パターンを再利用する手順と grep ヒント
+- 各セクションの空状態テキスト案
+- ヘッダードロップダウンへの 1 項目追加の差分位置
+- リグレッション確認シナリオ（認証時 /me 表示、未認証時のリダイレクト、各「もっと見る」遷移、ヘッダーアバターからの導線、各既存ページの挙動が不変であること）
 
 ---
 
 ### 制約・前提
 
-- **`design.md` は永続資料**: 既存セクション（FEAT-001〜FEAT-003、MEDIUM-001、LOW バッチ等）は **絶対に削除しない**。末尾に追記すること。
+- **`design.md` は永続資料**: 既存セクション（FEAT-001〜FEAT-003、MEDIUM-001、LOW バッチ、FEAT-RESP-HEADER）を **絶対に削除しない**。末尾に追記すること。
 - RLS / migration / DB スキーマは一切変更しない。
 - 新規 npm 依存を追加しない。
-- breakpoint（`sm:` `md:` `lg:`）を導入しない。本対応は全画面サイズで同じ UI とする方針。
-- 配色は既存 `stone-*` / `brand-700/800` の範囲で完結させる。`brand-500` は使用しない。
-- ログアウトの挙動（Server Action）は不変とする。
-- 認証チェック・ガード（middleware 含む）の挙動を変更しない。
+- breakpoint を導入しない。全画面サイズで同じ UI を維持する。
+- 配色は既存 `stone-*` / `brand-700` / `brand-800` の範囲で完結させる。`brand-500` は使用しない。
+- ログアウトの挙動、middleware の認証チェック構造を変更しない（追加するのは `/me` の保護パス登録のみ）。
+- 編集・追加・削除はマイページから一切行わない。
+- 既存ページ `/profile`・`/friends`・`/history`・`/laws` のレイアウト・挙動を変更しない。
 
 ---
 
 ### 関連ファイル
 
-- `app/components/Header.tsx`（リファクタ対象）
-- `app/actions/auth.ts`（既存 `logout` を再利用）
-- `app/profile/page.tsx`（`profiles` テーブル参照例、設計の参考）
-- `lib/types.ts`（`profiles` の型定義: `avatar_url` / `display_name`）
+- `app/components/HeaderUserMenu.tsx`（ドロップダウン項目を 1 つ追加）
+- `app/components/Header.tsx`（参照のみ、変更なし）
+- `middleware.ts`（`PROTECTED_PATH_PREFIXES` に `/me` を追加）
+- `app/profile/page.tsx`（プロフィール SELECT パターン参考、変更なし）
+- `app/friends/page.tsx`（フレンド SELECT パターン参考、変更なし）
+- `app/history/page.tsx`（ケース SELECT パターン参考、変更なし）
+- `app/laws/page.tsx`（法律 SELECT パターン参考、変更なし）
+- `lib/types.ts`（既存型定義の参照）
 - `lib/supabase/server.ts`（`createSessionClient`）
-- `app/layout.tsx`（`<Header />` 呼び出し箇所、参照のみ）
 - `docs/knowledge/design.md`（設計書、**末尾に追記**）
-- `docs/backlog.md`（FEAT-RESP-HEADER の起源）
+- `docs/backlog.md`（FEAT-005 の起源）

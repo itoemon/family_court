@@ -125,6 +125,14 @@ export default function HeaderUserMenu({
           {isAuthenticated ? (
             <>
               <Link
+                href="/me"
+                role="menuitem"
+                onClick={close}
+                className={menuItemClass}
+              >
+                マイページ
+              </Link>
+              <Link
                 href="/history"
                 role="menuitem"
                 onClick={close}
