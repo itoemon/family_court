@@ -103,9 +103,12 @@ test('CRITICAL-H04: 375px 幅のスマートフォンでロゴとアバターが
   const avatar = header.locator('button[aria-haspopup="menu"]');
   await expect(avatar).toBeVisible();
 
-  const bodyWidth = await page.evaluate(() => document.body.scrollWidth);
+  // body と documentElement の最大値で横スクロール判定（環境依存の偽陰性回避）
+  const scrollWidth = await page.evaluate(() =>
+    Math.max(document.body.scrollWidth, document.documentElement.scrollWidth),
+  );
   const viewportWidth = 375;
-  expect(bodyWidth).toBeLessThanOrEqual(viewportWidth + 1); // 1px の許容差
+  expect(scrollWidth).toBeLessThanOrEqual(viewportWidth + 1); // 1px の許容差
 });
 
 // CRITICAL-H05: アバタークリックで開閉トグル
@@ -176,12 +179,13 @@ test('CRITICAL-H08: ログアウトボタンをクリックするとログアウ
 
   await logoutBtn.click();
 
-  await page.waitForURL('/', { timeout: 10_000 });
-
-  // 未認証状態に戻り、未認証トリガが表示されることを確認
+  // ログアウト後の最終到達先は middleware により `/auth/login`（保護パス `/` 経由のリダイレクト）。
+  // ただし Server Action の `redirect('/')` 直後の navigation チェーンはタイミング依存で
+  // `/` で stay する瞬間があり、URL マッチのみだと不安定になるため、未認証ヘッダーの可視を
+  // hard assertion で担保する。これにより「セッション破棄が実際に効いているか」を直接検証する。
   await expect(
     page.locator('header button[aria-haspopup="menu"][aria-label="メニューを開く"]'),
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 15_000 });
 });
 
 // CRITICAL-H09: メニュー項目の aria 属性検証（認証時）

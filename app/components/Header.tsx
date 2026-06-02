@@ -14,7 +14,7 @@ export default async function Header() {
       .from('profiles')
       .select('avatar_url, display_name')
       .eq('id', user.id)
-      .single()
+      .maybeSingle()
 
     if (profile) {
       avatarUrl = profile.avatar_url ?? null
