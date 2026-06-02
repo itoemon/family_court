@@ -999,3 +999,268 @@ respond(invitationId, action):
 - **対象ルートの全数確定はビルドの grep に委ねる**: 本設計は確定対象（laws ツリー）＋候補（cases / friends）＋判定ルールを提示する。`app/` 実コードの最終的な網羅確認はビルドが grep で行う（引き継ぎメモ参照）。本設計書はドキュメント（design.md の FEAT-003 ツリー・requirements.md・backlog）を一次ソースとして列挙しており、`app/` の直接読み取りは行っていない。
 - **Next.js のバージョン差異**: Route Handler の `params` 取得方法（`Promise` か否か）は `node_modules/next/dist/docs/` で確認する（`AGENTS.md` の方針）。ガードは `params` 取得直後・DB アクセス前に置く。
 
+---
+
+## FEAT-RESP-HEADER 対応: ヘッダーをアバター起点のドロップダウンメニュー方式に刷新
+
+由来: `docs/backlog.md` の `[FEAT-RESP-HEADER] ヘッダーのレスポンシブ対応（スマホ最適化）`
+
+### 概要
+
+#### 目的
+スマートフォン幅（375–390px）で発生していたヘッダーのレイアウト崩れ（横並びテキストリンクとロゴの干渉）を解消し、PC・タブレット・スマートフォンの全画面サイズで一貫したヘッダー体験を提供する。
+
+#### 背景
+- 現状の `app/components/Header.tsx` は Server Component で、認証時に「過去のケース / フレンド / プロフィール / ログアウト」を `flex gap-4` の横並びテキストリンクで配置している。
+- 本プロジェクトでは Tailwind の `sm:` `md:` `lg:` ブレークポイントが現状一切使われていない（grep で 0 件）。本対応でも breakpoint を持ち込まない方針とし、全画面サイズで同一 UI とする。
+- 既存導線（過去のケース / フレンド / プロフィール / ログアウト）は維持しつつ、ヘッダー上の可視要素を「ロゴ＋アバター」の 2 つに絞ることで、横幅 375px でも安定して収まるレイアウトに切り替える。
+
+#### 全画面サイズ統一の方針
+- breakpoint は使用しない。
+- ヘッダーは「ロゴ（左）+ アバター（右）」の 2 要素のみで構成する。
+- ナビゲーションはアバタークリック起動のドロップダウンメニューに集約する。
+- 認証時 / 未認証時いずれもアバター要素を表示する（未認証時は薄いグレー背景の人型アイコン）。これにより認証状態の差をレイアウトの横幅変動として表出させない。
+
+### 影響範囲
+
+#### 変更ファイル
+- `app/components/Header.tsx`（Server Component。リファクタ。user + profile 取得 → Props 受け渡しに責務を限定）
+- `app/components/HeaderUserMenu.tsx`（**新設** Client Component。ドロップダウン状態管理・外側クリック検知・Escape ハンドリング・メニュー項目描画・logout フォーム）
+
+#### 参照のみ（変更しない）
+- `app/actions/auth.ts`（既存 `logout` Server Action を新コンポーネントから直接 import して `<form action={logout}>` で再利用）
+- `lib/supabase/server.ts`（既存 `createSessionClient`）
+- `lib/types.ts`（既存 `profiles` 型）
+- `app/layout.tsx`（`<Header />` 呼び出し箇所。マウント方法は不変）
+
+#### 触らないもの
+- `supabase/` 配下（migration / RLS / スキーマ）
+- `profiles` テーブル構造
+- `middleware.ts`（認証チェック・ガード挙動を不変とする）
+- `app/components/Header.tsx` 以外の既存コンポーネント・ページ
+- `package.json` / `package-lock.json`（新規 npm 依存なし）
+- `tailwind.config.*` 等の Tailwind 設定（カラートークン追加なし）
+
+### 配置・命名
+
+#### 新規 Client Component の配置
+`app/components/HeaderUserMenu.tsx` に置く。
+
+設計判断（トレードオフ）:
+
+- **候補 A: `app/components/HeaderUserMenu.tsx`（採用）** — 既存の `Header.tsx` の隣に置くことで Header 専用の付随コンポーネントであることが import 距離から自明になる。`app/components/` 直下にトップレベル UI（Header / Footer 等）を置く既存慣習と整合する。
+- **候補 B: `app/components/header/UserMenu.tsx`** — 名前空間切りとして素直だが、現状 1 ファイルのみのため過剰な構造化。将来 Header 関連 Client Component が増えた時点で再評価。
+- **候補 C: `app/_components/HeaderUserMenu.tsx`** — `_components/` 規約は本プロジェクトでは `app/laws/[id]/_components/` 等、page 配下のローカル UI 限定で採用済み。グローバル UI に持ち込むのは既存方針と不整合。
+
+→ 既存構成との一貫性を優先し候補 A を採用する。
+
+#### 命名
+- ファイル名 / コンポーネント名：`HeaderUserMenu`（PascalCase、`Header` 名前空間を接頭辞、責務を `UserMenu` で表現）。
+- `app/components/Header.tsx` 内部での呼び出しは `<HeaderUserMenu ... />`。
+
+### コンポーネント設計
+
+#### Server Component: `app/components/Header.tsx`
+
+責務：
+- `createSessionClient()` を作成し `auth.getUser()` でユーザーを取得する（既存方針）。
+- 認証済みの場合、同一の `createSessionClient` で `profiles` を `select("avatar_url, display_name").eq("id", user.id).single()` し、アバター URL と表示名を取得する。
+- 取得した最小限の情報（認証状態・`avatar_url`・`display_name`）を Props として `<HeaderUserMenu />` に渡す。
+- ロゴ（左）と `<HeaderUserMenu />`（右）をレンダリングする。
+- ログアウト用 `<form>` の組み立て・ボタン描画は **行わない**（Client 側に移譲）。
+
+Props 形状（Server → Client）：
+
+```typescript
+type HeaderUserMenuProps = {
+  isAuthenticated: boolean;
+  avatarUrl: string | null;     // profiles.avatar_url。未設定または取得失敗で null
+  displayName: string | null;   // profiles.display_name。未取得時は null
+};
+```
+
+設計判断：
+- `user.id` 等の機微情報は Client に渡さない。表示に必要な最小集合に絞る（Server Component → Client Component の Props はシリアライズ可能な値のみ）。
+- `profiles` 取得失敗（行欠落・RLS 拒否・ネットワーク等）は `avatarUrl: null` / `displayName: null` として握りつぶし、人型アイコンへフォールバックする。500 を投げない。
+- 認証チェックは middleware の既存挙動に従う。Header 自体はユーザー有無を Props に反映するだけで、リダイレクト判定は行わない。
+
+クエリ方針：
+- `createSessionClient`（RLS 経由）で読む。`createAdminClient` は使用しない。これは [[design.md::MEDIUM-001 対応]] と同じ「Server Component の `profiles` / 関連テーブル読み取りは RLS 二層防御で扱う」方針に整合する。
+- 取得列は `avatar_url` と `display_name` のみ。`api_key_encrypted` 等の機微列は触らない。
+- 既存 FEAT-002 で確立された `profiles` の自分自身行 SELECT 権限で十分に通る（新規 RLS 不要）。
+
+#### Client Component: `app/components/HeaderUserMenu.tsx`
+
+責務：
+- アバターボタン（トリガ）と、その下に展開するドロップダウンメニュー（ポップオーバー）を描画する。
+- 開閉状態（`isOpen`）の保持と外部要因（外側クリック / Escape / 項目遷移）でのクローズ。
+- 認証時 / 未認証時で項目セットを切り替える。
+- ログアウトを `<form action={logout}>` 形式の Server Action として描画する。
+
+状態管理：
+
+```typescript
+const [isOpen, setIsOpen] = useState(false);
+const rootRef = useRef<HTMLDivElement>(null);      // 外側クリック判定用
+const buttonRef = useRef<HTMLButtonElement>(null); // 閉じた際のフォーカス戻し用
+```
+
+開閉トリガ：
+- アバターボタン `onClick` → `setIsOpen(prev => !prev)`。
+- メニュー外側 `mousedown` → 閉じる（`useEffect` で `document` に登録、`isOpen === true` の間だけ購読）。
+- `keydown` の `Escape` → 閉じる（同上）。閉じた直後は `buttonRef.current?.focus()` でトリガにフォーカスを戻す（フォーカス迷子防止）。
+- メニュー項目（`<Link>`）クリック → 遷移前に `setIsOpen(false)`。
+- ログアウト `<form>` 送信 → `onSubmit` で `setIsOpen(false)` を呼んだ後 Server Action が実行される（実行後はサーバ側で redirect される既存挙動を変更しない）。
+
+外側クリック検知の実装方針：
+- `useEffect` で `document.addEventListener('mousedown', handler)` を登録し、`handler` 内で `rootRef.current?.contains(event.target as Node)` を判定する。`false` なら `setIsOpen(false)`。
+- 登録は `isOpen === true` の間だけにする（依存配列 `[isOpen]`、cleanup で `removeEventListener`）。常時購読を避けて副作用を最小化する。
+- `mousedown` を使う理由：`click` だと内部要素クリック時にバブル順で先に閉じてから遷移処理が走るケースがあり、項目クリック挙動が壊れやすい。`mousedown` + `ref.contains` の組み合わせが React 系の慣用で安定し、新規 npm 依存（ヘッドレス UI ライブラリ等）も不要。
+
+アバター表示の状態分岐：
+
+| 状態 | 表示要素 | 配色 |
+|------|----------|------|
+| 認証時 + `avatarUrl !== null` | アバター画像（丸型） | `<img>` を `rounded-full` で描画。`alt` は `displayName` か空文字 |
+| 認証時 + `avatarUrl === null` | 人型シルエット（丸型背景） | 背景 `bg-stone-200`、アイコン `text-stone-600` |
+| 未認証時 | 人型シルエット（薄いグレー背景） | 背景 `bg-stone-100`、アイコン `text-stone-500` |
+
+- 人型 SVG は heroicons `user` 相当のインライン SVG を本ファイル内に直書きする（新規 npm 依存禁止のため）。サイズは Tailwind ユーティリティ（例 `w-5 h-5`）。
+- 重複を減らすため、`function UserSilhouette({ className }: { className?: string })` のような小さなローカル関数に切り出してよい。
+- 画像は `next/image` ではなく素の `<img>` で扱う（`next.config` の `images.domains` / `remotePatterns` を変更するスコープを避けるため）。`width` / `height` 属性を明示してレイアウトシフトを抑止する。
+- 画像読み込み失敗時の `onError` フォールバックは初版では未実装（実機で失効頻度が高ければ別タスクで対応）。
+
+メニュー項目セット：
+
+認証時（上から）：
+1. 過去のケース — `<Link href="/history">`
+2. フレンド — `<Link href="/friends">`
+3. プロフィール — `<Link href="/profile">`
+4. 区切り線（`<div role="separator" className="border-t border-stone-200" />`）
+5. ログアウト — `<form action={logout}><button type="submit">ログアウト</button></form>`
+
+未認証時（上から）：
+1. ログイン — `<Link href="/auth/login">`
+2. サインアップ — `<Link href="/auth/signup">`
+
+設計上の注意：
+- 各 `<Link>` の `onClick` で `setIsOpen(false)` を呼ぶ。`<Link>` の遷移自体は Next.js に委ねる。
+- ログアウト `<form action={logout}>` は `app/actions/auth.ts` から `logout` を直接 import する。`logout` 関数の本体は変更しない。フォーム送信前の `onSubmit` で `setIsOpen(false)` を呼ぶ。
+- メニュー項目は縦並び（`flex flex-col`）。現行 Header の横並び（`flex gap-4`）構造は廃棄する。
+
+レイアウト：
+- ヘッダー本体：`flex items-center justify-between`（左：ロゴ、右：アバター）。
+- ドロップダウン：アバター直下に絶対配置（トリガを包む `relative` 要素 + 内部 `absolute right-0 mt-2`）。
+- ドロップダウン本体：背景 `bg-stone-50`、境界 `border border-stone-200`、角丸 `rounded-md`、影 `shadow-md` 程度。横幅は `w-48` を推奨（実装時に微調整可）。
+- 全画面サイズで同一の見た目とするため、ドロップダウンの幅・余白・配色に breakpoint 修飾子を一切付けない。
+
+#### `app/actions/auth.ts` との連携
+
+- 既存 `logout` 関数を Client Component から `import` し、`<form action={logout}>` で呼ぶ。
+- 現行 Server Component 内に定義されている `'use server'` のローカル関数（あれば）は HeaderUserMenu への移行に伴い不要となるため、Header.tsx 側からは除去する。`app/actions/auth.ts` の `logout` 関数本体は不変。
+- これにより「ログアウト挙動を変えない」という制約を満たしつつ、Client Component からのフォーム送信形態に整合させる。
+
+### アクセシビリティ設計
+
+#### WAI-ARIA メニューパターン
+- アバターボタン（トリガ）：
+  - `type="button"`
+  - `aria-haspopup="menu"`
+  - `aria-expanded={isOpen ? "true" : "false"}`
+  - `aria-controls={menuId}`（メニュー要素の id を参照）
+  - `aria-label`：認証時は `"アカウントメニューを開く"`、未認証時は `"メニューを開く"`（テキストラベルがアバター画像のみのため必須）。
+- ドロップダウン本体：
+  - `id={menuId}`
+  - `role="menu"`
+  - `aria-orientation="vertical"`
+- 各メニュー項目：
+  - `role="menuitem"`
+  - `<Link>` 要素または `<button>` 要素に直接付与する。
+- 区切り線：
+  - `role="separator"`
+
+#### キーボード操作（必須）
+- アバターボタンへの Tab フォーカス到達 → `Enter` / `Space` で開閉。
+- `Escape` で閉じる → アバターボタンにフォーカス戻し。
+- メニュー内の `<Link>` / `<button>` は通常の Tab 移動でフォーカス可能（ブラウザ既定）。
+- 矢印キーによるメニュー項目間移動は **任意**（必須は Escape のみ。本対応のスコープには含めない。完全な ARIA メニューパターン化は別タスクで実施可）。
+
+#### フォーカスリング
+- アバターボタン：`focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-50` を基本とする（既存パレット内で完結）。
+- 各メニュー項目：`focus-visible:outline-none focus-visible:bg-stone-100 focus-visible:text-stone-900`。リング色を使うなら `ring-brand-700`。`brand-500` は使用しない。
+- リングのオフセット背景はヘッダー背景（`bg-stone-50`）に合わせる。
+
+#### スクリーンリーダー
+- 人型 SVG アイコンは `aria-hidden="true"` を付与し、ラベル情報はトリガボタンの `aria-label` で表現する。
+- 未認証時およびアバター画像未設定時でも、トリガが「メニューを開くボタン」であることが SR にも伝わるようにする。
+
+### 配色・トーン
+
+- ヘッダー背景：`bg-stone-50`
+- 境界線：`border-stone-200`
+- 既定テキスト：`text-stone-600` / `text-stone-800`
+- メニュー hover 背景：`bg-stone-100`
+- メニュー hover テキスト：`text-stone-900`
+- 区切り線：`border-stone-200`
+- アクセント / フォーカスリング：`brand-700`（`brand-500` は WCAG 非対応のため不使用）
+- 人型アイコン背景（認証 + `avatar_url` 未設定）：`bg-stone-200` / アイコン `text-stone-600`
+- 人型アイコン背景（未認証）：`bg-stone-100` / アイコン `text-stone-500`
+- ログアウト項目のアクセント色は使用しない（赤系・rose 系は不使用。ログアウトは「危険操作」ではなく日常操作のため stone トーンで統一）。
+
+新規カラートークンは追加しない。既存パレット（stone / brand）の範囲で完結させる。
+
+### セキュリティ設計
+
+#### 認証・認可
+- Header はユーザー状態の表示のみを担当し、認可境界は middleware と各ページ・API Routes に任せる。本対応で middleware / ガードロジックを変更しない。
+- `logout` Server Action はサーバ側で実行され、セッション cookie の破棄を担う。既存実装の挙動を維持する。
+
+#### Server / Client 間の情報受け渡し
+- Server Component から Client Component に渡す Props は「表示に必要な最小集合」（`isAuthenticated` / `avatarUrl` / `displayName`）に限定する。
+- `user.id`・`email`・`api_key_encrypted`・`defense_custom_instruction` 等は **渡さない**。
+- Props はすべてシリアライズ可能な値（`string` / `null` / `boolean`）に限定する（Server Component → Client Component の制約に整合）。
+
+#### profiles 取得経路
+- `createSessionClient()`（RLS 経由）で `profiles.avatar_url` / `profiles.display_name` のみを SELECT する。
+- `createAdminClient` は使用しない（[[design.md::MEDIUM-001 対応]] の二層防御方針に整合）。
+- 行が見つからない場合や Supabase エラー時は `avatarUrl: null` / `displayName: null` として握りつぶす（500 を投げない）。
+
+#### 入力検証
+- 本対応はサーバへの新規入力経路を追加しない。`logout` Server Action 内部の入力検証は既存実装に任せる。
+
+#### 外部リソース（アバター画像）
+- `profiles.avatar_url` は FEAT-002 で確立済みの Supabase Storage URL を信頼する。本対応で URL を再検証しない（magic bytes 検証はアップロード時にすでに実施済み）。
+- `<img>` を使用するが、`crossOrigin` / `referrerPolicy` 等の追加属性は既存の表示箇所（`app/profile/page.tsx` 等）の挙動に揃える。
+
+### 制約・前提条件
+
+#### 絶対条件（task.md 由来）
+- 新規 npm 依存を追加しない（ヘッドレス UI ライブラリ等を含む）。
+- breakpoint（`sm:` `md:` `lg:` `xl:`）を導入しない。
+- RLS / migration / DB スキーマを一切変更しない（`supabase/` 配下に触れない）。
+- 配色は既存 `stone-*` / `brand-700` / `brand-800` の範囲で完結させる。`brand-500` は使用しない。
+- ログアウト挙動（`app/actions/auth.ts` の `logout`）を不変とする。
+- 認証チェック・ガード（`middleware.ts` 含む）の挙動を変更しない。
+- `profiles` テーブル構造を変更しない。
+
+#### 前提条件
+- FEAT-002 で `profiles.avatar_url` / `profiles.display_name` カラムが利用可能であること。
+- `app/actions/auth.ts` に `logout` Server Action が存在すること（既存）。
+- `lib/supabase/server.ts` の `createSessionClient()` が `profiles` の自分自身の行を読めること（FEAT-002 の RLS 設定済み）。
+- 本バージョンの Next.js での Server Component → Client Component Props 受け渡し制限（シリアライズ可能な値のみ）を遵守する。本設計で渡す値はすべて文字列 / `null` / `boolean` のため問題ない。
+- 本バージョンの Next.js での Server Action を Client Component から `<form action={serverAction}>` で呼ぶシグネチャは `node_modules/next/dist/docs/` で確認のうえ既存利用箇所と揃える（AGENTS.md 方針）。
+
+#### スコープ外
+- マイページ実装（FEAT-005）。
+- ヘッダー以外のページ・コンポーネントのレスポンシブ調整（実機検証は別タスク）。
+- アバターアップロード機能・`profiles` テーブル構造の変更（FEAT-002 で完了済み）。
+- ロゴデザイン・サービス名表記の変更。
+- 矢印キーによるメニュー項目間移動・完全な WAI-ARIA roving tabindex 実装（必須は Escape のみ）。
+- アバター画像読み込み失敗時の `onError` フォールバック（初版未実装、必要なら別タスク化）。
+- `next/image` 採用および `next.config` の `images` 設定変更。
+
+#### 注意事項（曖昧要件の明示・ビルドへの判断委譲はしない方針で残す備考）
+- **ドロップダウンの横幅**：task.md で固定指定されていない。本設計では `w-48` を推奨する。実装時に表示崩れが見つかれば `w-44` / `w-52` 範囲で微調整可。
+- **メニュー上部の「ユーザー識別行」表示**：`displayName` をドロップダウン上部に小さく表示する案は **省略可** とする。最小実装ではメニュー項目のみで足り、表示するか否かは既存トーンとの馴染みを見て実装段階で判断してよい（どちらの選択でも task.md 要件は満たす）。
+- **アバター画像 `onError` フォールバック**：初版では `avatarUrl !== null` の Props 判定のみに依存し、画像読み込み失敗時の自動切り替えは入れない。これは「最初は小さく始め、実害があれば別タスクで足す」設計姿勢の意図的な選択である。
+

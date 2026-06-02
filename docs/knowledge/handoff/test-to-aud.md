@@ -1,117 +1,144 @@
-# テスタ → オーディ 引き継ぎメモ（LOW バッチ対応）
+# テスタ → オーディ 引き継ぎメモ（FEAT-RESP-HEADER）
 
-**日時**: 2026-05-29 15:55 UTC  
-**テスター**: テスタ（QA エンジニア）  
-**対象**: LOW-001 / LOW-002（UUID バリデーション共通化 + fetch ステータス検査）  
-**テスト判定**: ❌ **テスト実施不可（環境要件未満）**
-
----
-
-## テスト実施状況
-
-### ステータス
-❌ **E2E テスト実施不可**
-
-### 原因
-**Node.js バージョン要件の不満足**
-
-```
-要件: Node.js >= 20.9.0
-現在: 18.20.2
-エラー: npm run dev → Node.js バージョンチェック失敗で即座に終了
-```
-
-### テストレポート
-詳細は `docs/knowledge/test-log/test_20260529_155504.md` に記載
+**日時**: 2026-06-02 10:27:26 JST  
+**テスタ**: Claude（QA エンジニア）  
+**対象**: FEAT-RESP-HEADER（ヘッダーをアバター起点のドロップダウンメニュー方式に刷新）  
+**テスト判定**: 🟢 **通過** — CRITICAL 17/17 全件通過
 
 ---
 
-## ビルド実装の設計合致度（ドキュメント検証）
+## テスト実行結果
 
-テスト実施不可のため E2E テストは未実施ですが、**ドキュメント・実装ノート検証で以下を確認**：
-
-| 項目 | 確認内容 | 結果 |
-|------|---------|------|
-| **LOW-001 設計準拠** | `eng-to-aud.md` の変更ファイル一覧・ガード方針が design.md と一致 | ✅ 完全一致 |
-| **LOW-002 設計準拠** | `PendingInvitations.tsx` の実装ポイント（`res.ok` 検査・エラー表示・配色）が task.md と一致 | ✅ 完全一致 |
-| **UUID_REGEX 共通化** | 3 ファイル（invitations/owner/friends-requests）から `lib/text-utils.ts` へ集約する方針・リテラル移設方針が確認 | ✅ 設計通り |
-| **パスガード対象** | 15 ルート全数（laws 系 8 + cases 系 5 + friends 系 2）に UUID ガードを適用する計画が列挙 | ✅ 全数列挙 |
-| **400 レスポンス統一** | `{ error: "不正な ID 形式です" }` 形式の統一方針 | ✅ 統一 |
-
-**→ ドキュメント上は設計に完全準拠。コード詳細検証は環境正常化後の E2E テストで実施が必要。**
-
----
-
-## オーディへの確認項目
-
-### 優先 1. 環境升格後のテスト実施（テスタ再実施予定）
-環境が正常化された後、テスタが **以下 8 つのシナリオ（S1〜S8）を全数実行** します：
-
-#### LOW バッチ検証シナリオ詳細（重点確認）
-
-| ID | シナリオ | 期待挙動 | 重要度 |
-|----|--------|--------|--------|
-| **S1** | 正常系不変 | 正しい UUID で各ルートを叩くと従来どおりのレスポンス | CRITICAL |
-| **S2** | 不正パス→400 | `lawId` に不正値（`abc`・`123`・空文字等）を渡すと DB 前に 400 返却。500・PostgreSQL エラー漏洩なし | CRITICAL |
-| **S3** | 複数セグメント | `invId` / `propId` のいずれか片方だけ不正でも 400（AND 判定） | CRITICAL |
-| **S4** | ゲスト経路 | cases 系で不正 `id` を渡すと、ゲスト/認証チェック**より前**に 400 で遮断 | CRITICAL |
-| **S5** | 重複解消無害 | ボディ側 UUID 検証（`invitee_id` / `new_owner_id` / `receiver_id`）が共通化後も従来と同一 | NORMAL |
-| **S6** | LOW-002 成功 | 招待承認/拒否時 API が 2xx を返すと従来どおり `router.refresh()` で画面更新 | CRITICAL |
-| **S7** | LOW-002 失敗 | API が 403/404/500 返すケースで、リフレッシュ**せず**、`rose-600` エラー表示。招待行は残る | CRITICAL |
-| **S8** | 連打抑止 | 失敗後に再押下するとエラー消去して再試行。`processingId` は `finally` で必ず解除（ボタン固まりなし） | NORMAL |
-
-#### CRITICAL シナリオ（M01〜M04 — 毎回必須）
-既存の 4 つ必須シナリオ。詳細は指示文「テスト手順」セクション参照。
-
-### 優先 2. 実装コードの直接確認（今すぐ実施可能）
-
-#### ドキュメント記載の未テスト項目
-
-以下は E2E テスト未実施のため、**オーディが今すぐコード確認してください**：
-
-1. **`lib/text-utils.ts` への新規 export**
-   - ✓ `UUID_REGEX` のリテラルが既存 3 ファイルと完全一致か（逐語移設が必須）
-   - ✓ `isUuid(value): value is string` の型ガード実装が正しいか
-
-2. **各ルートのパスガード配置（15 ルート全数）**
-   - ✓ `const { id, invId } = await params` の直後に `isUuid()` チェックか
-   - ✓ あらゆる DB クエリより**前**に配置か（重要：条件判定ロジック前）
-   - ✓ cases 系ゲスト経路で分岐（`resolveAuth()` / `createSessionClient()`）**より前**か
-
-3. **3 ファイルのボディ検証の参照差し替え（挙動維持）**
-   - ✓ `import { UUID_REGEX } from "@/lib/text-utils"` に切り替わっているか
-   - ✓ ローカル定義が全削除されているか
-   - ✓ `UUID_REGEX.test(...)` の呼び出し式は**変わっていない**か（判定ロジック不変）
-
-4. **`PendingInvitations.tsx` の `respond()` メソッド**
-   - ✓ `res.ok` 検査が追加されているか
-   - ✓ エラー state 初期化・セット・リセットのフロー正しいか
-   - ✓ `rose-600` CSS クラスが使用されているか（配色ルール遵守）
-   - ✓ 成功時のみ `router.refresh()` 呼び出しか
-
-5. **エラー表示部分**
-   - ✓ `ErrorBanner` コンポーネント再利用か、or 最小インラインメッセージ実装か
-   - ✓ `finally` での `processingId` リセットは維持されているか（ボタン固まり防止）
-
----
-
-## オーディの判定方針
-
-### テスト合格条件
-1. **環境升格後のテスタ再実施で S1〜S8 + M01〜M04 全数通過**
-2. **コード直接確認で上記未テスト項目の実装確認**
-
-### リスク評価
-- **環境問題**: 本来ビルド段階でのチェックリスト項目。重大度は「パイプライン進行阻害」だが実装への指摘ではない
-- **実装準拠度**: ドキュメント検証から高いが、E2E テストで確定必須
-
----
-
-## 参考資料
-
-| 文書 | 内容 |
+| 項目 | 結果 |
 |------|------|
-| `docs/knowledge/task.md` | タスク定義・テスト手順・スコープ |
-| `docs/knowledge/design.md` | LOW バッチ設計（末尾セクション） |
-| `docs/knowledge/handoff/eng-to-aud.md` | ビルド実装ノート・S1〜S8 詳細・未解決事項 |
-| `docs/knowledge/test-log/test_20260529_155504.md` | テスタ実施結果（環境失敗） |
+| **実行テスト数** | 17 件 |
+| **成功** | 17 件（100%）✅ |
+| **失敗** | 0 件（0%） |
+| **CRITICAL-M01〜M04** | 4/4 通過 ✅ |
+| **CRITICAL-H01〜H13** | 13/13 通過 ✅ |
+| **実行時間** | 44.8 秒 |
+| **判定** | 🟢 **通過** — パイプライン承認可 |
+
+---
+
+## テスト内容
+
+### CRITICAL-M（アプリケーション主要フロー）— 4 件全て通過
+
+- **M01**: 2ユーザー間の会話フロー（両者認証済み）✅
+  - 原告ケース作成 → 被告参加 → ターン交代 → 発言同期確認
+  
+- **M02**: セッション復元 ✅
+  - ページリロード後の セッション・ロール・フォーム表示維持を確認
+  
+- **M03**: 第三者の割り込み拒否 ✅
+  - 無関係の第三者が observer 扱いになることを確認
+  
+- **M04**: ゲスト被告フロー ✅
+  - Cookie トークン経由での未認証ユーザーの発言権を確認
+
+### CRITICAL-H（FEAT-RESP-HEADER）— 13 件全て通過
+
+- **H01** アバター画像丸型表示 ✅
+- **H02** アバター未設定時シルエット表示 ✅
+- **H03** 未認証時メニュー表示 ✅
+- **H04** 375px スマートフォン幅対応 ✅
+- **H05** クリック開閉トグル ✅
+- **H06** 外側クリックで閉じ ✅
+- **H07** Escape キー＋フォーカス戻し ✅
+- **H08** ログアウト動作確認 ✅
+- **H09** aria 属性（role / aria-expanded）✅
+- **H10** メニュー項目リンク確認 ✅
+- **H11** 未認証ガード（middleware）リグレッション確認 ✅
+- **H12** 500 エラー抑止・フォールバック ✅
+- **H13** ケース管理機能リグレッション確認 ✅
+
+---
+
+## 実装品質評価
+
+| 観点 | 評価 | 根拠 |
+|------|------|------|
+| **要件適合性** | ✅ | task.md「全画面統一・breakpoint なし」を満たす |
+| **セキュリティ** | ✅ | createSessionClient RLS・profiles 取得失敗時フォールバック・Props 最小化 |
+| **アクセシビリティ** | ✅ | ARIA（role="menu" / aria-expanded）・Escape キー・フォーカス戻し実装 |
+| **レスポンシブ** | ✅ | 375px でロゴ・アバター干渉なし |
+| **既存機能維持** | ✅ | middleware / Layout / 会話フロー 全てリグレッション なし |
+
+---
+
+## オーディ監査チェックリスト
+
+### 必須確認項目
+
+- [ ] Header.tsx: Server Component として profiles 取得（createSessionClient）
+- [ ] HeaderUserMenu.tsx: Client Component として状態・外側クリック・Escape 管理
+- [ ] logout: Server Action を form action で呼び出し（既存実装維持）
+- [ ] Props: isAuthenticated / avatarUrl / displayName のみ（user.id 等は渡さない）
+- [ ] typescript: `npx tsc --noEmit` エラー 0 件
+- [ ] ESLint: app/components/Header.tsx, HeaderUserMenu.tsx エラー 0 件
+
+### セキュリティ確認
+
+- [ ] profiles テーブル: createSessionClient（RLS 経由）で読み取り
+- [ ] 外側クリック: mousedown + ref.contains パターン
+- [ ] Server Action: logout の セッション破棄ロジック不変
+- [ ] 入力検証: 追加なし（既存 middleware に依存）
+
+### アクセシビリティ確認
+
+- [ ] aria-haspopup="menu" / aria-expanded=true/false
+- [ ] role="menu" / role="menuitem" / role="separator"
+- [ ] aria-label="アカウントメニューを開く"（テキスト無しボタン用）
+- [ ] Escape キー + フォーカス戻し
+- [ ] Tab キーで項目移動可能
+
+### デザイン・トーン確認
+
+- [ ] 配色: stone / brand-700 のみ（brand-500 / 赤系なし）
+- [ ] breakpoint: sm: / md: / lg: 未使用（全画面統一）
+- [ ] 新規カラートークン追加なし
+- [ ] tailwind.config 変更なし
+
+### リグレッション確認
+
+- [ ] CRITICAL-M01〜M04 全て通過（会話フロー不変）
+- [ ] middleware: 未認証ユーザー保護ガード動作不変
+- [ ] profiles 他列: api_key_encrypted 等は読み取り/操作なし
+- [ ] RLS / migration / DB スキーマ: 変更なし
+
+---
+
+## 注記
+
+### テスト修正について
+
+初回実行時、header.spec.ts のセレクタ `button[aria-haspopup="menu"]` が Next.js Dev Tools ボタンと干渉しました。修正方法：
+
+```typescript
+// 修正前（干渉）:
+const avatarButton = page.locator('button[aria-haspopup="menu"]');
+
+// 修正後（特定化）:
+const avatarButton = page.locator('button[aria-haspopup="menu"][aria-label="アカウントメニューを開く"]');
+```
+
+修正後、全テスト通過。
+
+### 環境情報
+
+```
+Node.js: >=20.9.0 (package.json engines)
+Next.js: 16.2.6 (App Router)
+Playwright: @playwright/test 1.60.0
+テスト環境: localhost:3000
+認証テストユーザー: Supabase (E2E_TEST_EMAIL_A / E2E_TEST_EMAIL_B)
+```
+
+---
+
+**テスタ署名**: QA Engineer (テスタ)  
+**実行日時**: 2026-06-02 10:27:26 JST  
+**結果**: 🟢 **通過（CRITICAL 17/17 全て通過）**
+
+→ **オーディ監査へ引き継ぎ可**

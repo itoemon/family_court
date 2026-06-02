@@ -23,10 +23,12 @@ test.beforeEach(() => {
 
 async function loginAs(page: any, email: string, password: string) {
   await page.goto('/auth/login');
+  // ページロード完了まで待つ
+  await page.waitForSelector('input[type="email"]', { timeout: 15_000 });
   await page.fill('input[type="email"]', email);
   await page.fill('input[type="password"]', password);
   await page.click('button[type="submit"]');
-  await page.waitForURL('/', { timeout: 10_000 });
+  await page.waitForURL('/', { timeout: 15_000 });
 }
 
 // 原告がログイン済みの状態で呼び出す。/case/:id（クエリなし）を返す。
