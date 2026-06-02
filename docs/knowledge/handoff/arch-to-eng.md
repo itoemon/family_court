@@ -1,20 +1,21 @@
-# アーキ → ビルド 引き継ぎメモ（FEAT-RESP-HEADER）
+# アーキ → ビルド 引き継ぎメモ（FEAT-005）
 
 ## タスク概要
 
-`app/components/Header.tsx` を「ロゴ＋アバター起点のドロップダウンメニュー」方式に刷新する **UI のみ** の改修。バックログ ID `FEAT-RESP-HEADER`。
+ログインユーザー本人のためのダイジェスト型統合ハブ `/me` を新設する **UI + Server Component** の改修。あわせてヘッダードロップダウンの先頭に「マイページ」項目を追加する。バックログ ID `FEAT-005`。
 
-詳細設計は `docs/knowledge/design.md` 末尾の **「FEAT-RESP-HEADER 対応: ヘッダーをアバター起点のドロップダウンメニュー方式に刷新」** セクションを参照すること。
+詳細設計は `docs/knowledge/design.md` 末尾の **「FEAT-005 対応: マイページ（自分専用統合ハブ）の新設」** セクションを参照すること。task.md の内容と矛盾するものは書いていない。task.md と本メモが矛盾する場合は task.md を優先せよ。
 
 **最重要事項（絶対条件）**:
 
 - RLS / migration / DB スキーマには **一切** 触らない（`supabase/` 配下不可侵）。
-- 新規 npm 依存を追加しない（ヘッドレス UI ライブラリ等を含む）。
+- 新規 npm 依存を追加しない（heroicons パッケージ等を含む）。
 - breakpoint（`sm:` `md:` `lg:` `xl:`）を導入しない（全画面サイズで同一 UI）。
-- 配色は `stone-*` / `brand-700` / `brand-800` のみ。`brand-500` は使わない。赤系 / rose 系はログアウト項目にも使わない。
-- `app/actions/auth.ts` の `logout` 関数本体を変更しない（import 経路のみ確認可）。
-- `middleware.ts`・`profiles` テーブル構造・`tailwind.config.*`・`package.json` を変更しない。
-- 正常系の認証ガード挙動（middleware の保護ルートリダイレクト等）は完全に不変。
+- 配色は `stone-*` / `brand-700` / `brand-800` のみ。「招待中」バッジに限り既存 `/laws` の `amber-100` / `amber-700` を流用してよい。`brand-500` は使わない。
+- マイページから編集・追加・削除を一切行わない（form 不可、Server Action 不可、API Route 追加不可）。
+- 既存ページ `/profile`・`/friends`・`/history`・`/laws` のレイアウト・挙動を一切変えない。
+- `app/components/Header.tsx` 本体は変更しない。`HeaderUserMenu.tsx` のメニュー項目を 1 行追加するのみ。
+- `app/actions/auth.ts`・`tailwind.config.*`・`package.json`・`next.config.*` を変更しない。
 
 ---
 
@@ -22,229 +23,282 @@
 
 順序を守ると各ステップ単体で検証しやすい。
 
-### Step 1: 現行構造の把握
+### Step 1: 既存パターンの把握（読み取りのみ）
 
-1. `app/components/Header.tsx` を Read し、現行 Server Component の構造を把握する：
-   - `createSessionClient` 作成位置
-   - `auth.getUser()` 呼び出し
-   - 既存の `'use server'` ローカル関数の有無（あれば移行後は除去対象）
-   - 横並びリンク `<nav>` の構造（廃棄対象）
-2. `app/actions/auth.ts` の `logout` シグネチャを Read で確認する（Client から `<form action={logout}>` で呼べる形か）。
-3. `app/layout.tsx` で `<Header />` がどう呼ばれているか確認する（マウント箇所は不変が条件）。
-4. 本バージョン Next.js での Server Action と `<form action>` の組み合わせを `node_modules/next/dist/docs/` で確認する（`AGENTS.md` の方針）。Client Component から Server Action を直接 import する形が正規かを必ず確認すること。
+実装の前に次の既存ファイルを Read で把握する:
 
-### Step 2: Server Component（`Header.tsx`）の責務縮小
+1. `middleware.ts`（`PROTECTED_PATH_PREFIXES` 配列の位置と判定ロジック構造）
+2. `app/components/HeaderUserMenu.tsx`（メニュー項目の配置と `menuItemClass` 定数の値）
+3. `app/history/page.tsx`（`cases` の自己関連クエリ・`opponentName` の解決パターン。本ページではトピックと日付のみ取得するので opponent 名解決は **コピーしない**）
+4. `app/friends/page.tsx`（`friend_requests` の accepted クエリ + `profiles` cross-user 解決パターン）
+5. `app/laws/page.tsx`（`law_members` → `laws` のメンバーシップクエリ + `law_invitations` の pending クエリ + 役割判定の参考。本ページは `PendingInvitations` Client Component を再利用 **しない**、ダイジェストのみ）
+6. `app/profile/page.tsx`（`defense_custom_instruction` フィールドの存在確認）
+7. `app/components/HeaderUserMenu.tsx` の `UserSilhouette` SVG（`MeHeader` に複製するため）
+8. `lib/supabase/server.ts`（`createSessionClient` / `createAdminClient` のシグネチャ）
+9. `lib/types.ts`（既存型 `Profile`・`FriendListItem`・`HistoryCase`・`Law` 等。プロップス型は本ページ内に閉じて新規定義する判断でよい — `lib/types.ts` に新規 export を追加する必要はない）
 
-`app/components/Header.tsx` をリファクタする。
+ターゲットを把握する grep ヒント:
 
-- `auth.getUser()` に加えて、`createSessionClient` 経由で `profiles.select("avatar_url, display_name").eq("id", user.id).single()` を実行する。
-- `createAdminClient` は使用しない（RLS 経由・MEDIUM-001 方針）。
-- 取得失敗時は `avatarUrl: null` / `displayName: null` で握りつぶす（throw しない）。
-- 既存の横並びリンク `<nav>` および Header 内の `'use server'` ローカル関数（あれば）を削除し、右側に `<HeaderUserMenu isAuthenticated={...} avatarUrl={...} displayName={...} />` のみを置く。
-- ヘッダー全体は `flex items-center justify-between` で左：ロゴ、右：`<HeaderUserMenu />`。
-- `<Header />` のシグネチャ（引数なし・Server Component）を維持する。`app/layout.tsx` 側を変更しないため。
+| 探したい場所 | コマンド |
+|------------|----------|
+| `friend_requests` の自己関連 select パターン | `grep -n "friend_requests" app/friends/page.tsx` |
+| `cases` の自己関連 select パターン | `grep -n "plaintiff_id\\|defendant_id" app/history/page.tsx` |
+| `law_members` / `laws` のメンバーシップ select パターン | `grep -n "law_members\\|laws" app/laws/page.tsx` |
+| `law_invitations` の pending select パターン | `grep -n "law_invitations" app/laws/page.tsx` |
+| 既存 `menuItemClass` の定義 | `grep -n "menuItemClass" app/components/HeaderUserMenu.tsx` |
+| 既存 `PROTECTED_PATH_PREFIXES` | `grep -n "PROTECTED_PATH_PREFIXES" middleware.ts` |
+| `UserSilhouette` の SVG | `grep -n "UserSilhouette" app/components/HeaderUserMenu.tsx` |
 
-### Step 3: `HeaderUserMenu.tsx` の新設（Client Component）
+### Step 2: middleware.ts に `/me` を保護パスに追加
 
-`app/components/HeaderUserMenu.tsx` を **新規作成** する。冒頭に `"use client";` を必ず置く。
-
-Props 型：
-
-```typescript
-type HeaderUserMenuProps = {
-  isAuthenticated: boolean;
-  avatarUrl: string | null;
-  displayName: string | null;
-};
-```
-
-state / ref：
+`PROTECTED_PATH_PREFIXES` 配列に `"/me"` を 1 件追加するだけ。配列の他要素・順序・直後の `pathname === "/"` / `"/case/new"` 判定・matcher 設定はそのまま。
 
 ```typescript
-const [isOpen, setIsOpen] = useState(false);
-const rootRef = useRef<HTMLDivElement>(null);
-const buttonRef = useRef<HTMLButtonElement>(null);
-const menuId = useId(); // aria-controls 紐付け用
+const PROTECTED_PATH_PREFIXES = ["/history", "/profile", "/friends", "/laws", "/me"];
 ```
 
-アバターボタン（トリガ）：
+これにより `/me` 単独 / `/me/...` 両方が `pathname === p || pathname.startsWith(p + "/")` で保護される。
 
-- `<button ref={buttonRef} type="button" aria-haspopup="menu" aria-expanded={isOpen} aria-controls={menuId} aria-label={isAuthenticated ? "アカウントメニューを開く" : "メニューを開く"} onClick={() => setIsOpen(p => !p)}>` でアバターを描画。
-- 認証時かつ `avatarUrl !== null`：`<img src={avatarUrl} alt={displayName ?? ""} width={32} height={32} className="rounded-full ..." />`。
-- 認証時かつ `avatarUrl === null`：丸型 `bg-stone-200` 背景 + インライン人型 SVG（`text-stone-600 w-5 h-5`、`aria-hidden="true"`）。
-- 未認証時：丸型 `bg-stone-100` 背景 + インライン人型 SVG（`text-stone-500 w-5 h-5`、`aria-hidden="true"`）。
+このステップで一度 `npm run dev` を起動し、未ログイン状態で `/me` を開くと `/auth/login` にリダイレクトされることを目視確認しておくと良い（page.tsx をまだ作っていない段階なので 404 でも middleware が先に走るかは確認しておく）。
 
-ドロップダウン本体：
+### Step 3: `app/me/page.tsx` 新設（Server Component・データ取得オーケストレータ）
 
-- `<div id={menuId} role="menu" aria-orientation="vertical" className="absolute right-0 mt-2 w-48 bg-stone-50 border border-stone-200 rounded-md shadow-md ...">`。
-- 認証時：
-  - `<Link href="/history" role="menuitem" onClick={() => setIsOpen(false)}>過去のケース</Link>`
-  - `<Link href="/friends" role="menuitem" onClick={() => setIsOpen(false)}>フレンド</Link>`
-  - `<Link href="/profile" role="menuitem" onClick={() => setIsOpen(false)}>プロフィール</Link>`
-  - `<div role="separator" className="border-t border-stone-200" />`
-  - `<form action={logout} onSubmit={() => setIsOpen(false)}><button type="submit" role="menuitem">ログアウト</button></form>`
-- 未認証時：
-  - `<Link href="/auth/login" role="menuitem" onClick={() => setIsOpen(false)}>ログイン</Link>`
-  - `<Link href="/auth/signup" role="menuitem" onClick={() => setIsOpen(false)}>サインアップ</Link>`
-
-トリガとドロップダウンは `<div ref={rootRef} className="relative">` で包み、外側クリック判定の起点にする。
-
-### Step 4: 開閉ハンドリング（外側クリック / Escape）
-
-`HeaderUserMenu.tsx` 内の `useEffect` で、`isOpen === true` の間だけ document に登録する。cleanup で必ず `removeEventListener` する。
+ファイルの大枠:
 
 ```typescript
-useEffect(() => {
-  if (!isOpen) return;
-  const onMouseDown = (e: MouseEvent) => {
-    if (!rootRef.current?.contains(e.target as Node)) setIsOpen(false);
-  };
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
-      setIsOpen(false);
-      buttonRef.current?.focus();
-    }
-  };
-  document.addEventListener("mousedown", onMouseDown);
-  document.addEventListener("keydown", onKeyDown);
-  return () => {
-    document.removeEventListener("mousedown", onMouseDown);
-    document.removeEventListener("keydown", onKeyDown);
-  };
-}, [isOpen]);
+import { redirect } from "next/navigation";
+import { createSessionClient, createAdminClient } from "@/lib/supabase/server";
+import MeHeader from "./_components/MeHeader";
+import ProfileCard from "./_components/ProfileCard";
+import FriendsCard from "./_components/FriendsCard";
+import CasesCard from "./_components/CasesCard";
+import LawsCard from "./_components/LawsCard";
+
+export default async function MePage() {
+  const supabase = await createSessionClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect("/auth/login");
+
+  // 6 系統のクエリを Promise.allSettled で並列発行
+  // 1. profiles (self)         - createSessionClient
+  // 2. friend_requests accepted - createSessionClient
+  // 3. cases (verdict, own)    - createSessionClient
+  // 4. law_members + laws     - createSessionClient
+  // 5. law_invitations pending - createSessionClient
+  // friend_profiles 解決(admin) - createAdminClient （friend ID 集合が空でなければ後段で）
+
+  // それぞれの result から props を組み立て、各 Card に渡す。
+
+  return (
+    <main className="min-h-screen bg-stone-50">
+      <div className="max-w-2xl mx-auto px-4 py-10 space-y-6">
+        <MeHeader displayName={...} avatarUrl={...} />
+        <ProfileCard ... />
+        <FriendsCard ... />
+        <CasesCard ... />
+        <LawsCard ... />
+      </div>
+    </main>
+  );
+}
 ```
 
-- `click` ではなく `mousedown` を使うこと（理由は design.md「開閉トリガ」節参照。`click` だとメニュー項目クリック時のバブル順で挙動が壊れる）。
-- `Escape` クローズ時はトリガにフォーカスを戻す（アクセシビリティ上のフォーカス迷子防止）。
-- 常時購読は避ける（`isOpen` 依存配列で開いている間だけ）。
+クエリ実装の注意:
 
-### Step 5: 人型 SVG アイコン
+- 各クエリは try-catch ではなく `Promise.allSettled` の `status === 'fulfilled' / 'rejected'` で分岐すると簡潔。`rejected` または `value.error` がある場合は `console.error("[me] <section> query failed:", ...)` でログを残し、当該セクションに空配列 / null を渡す。**throw しない**。ページ全体が 500 になるのを避ける。
+- `friend_requests` クエリの直後で `friendIds` を組み立て、空でなければ `admin.from("profiles").select("id, display_name, avatar_url").in("id", friendIds)` を発行する。`friendIds` が空配列の場合は admin 呼び出し自体をスキップする（無駄なクエリと不必要な admin 露出を避ける）。
+- 件数は全件取得後 `.length` で出し、ダイジェストは `.slice(0, 5)` で先頭 5 件。SELECT 列を最小化（`id` を必ず含み、表示に必要な列のみ）して転送量を抑える。
+- 法律ダイジェストはメンバーシップ + pending 招待を合算し、`joined_at` / `invited_at` の降順マージで先頭 5 件を取る。役割判定は `laws.owner_id === user.id` → "owner"、それ以外で `law_members` 行あり → "member"、`law_invitations.status = 'pending'` 行のみ → "invitee"。
+- `defense_custom_instruction` の 100 文字 truncate は素朴な `instruction.trim().slice(0, 100) + (instruction.trim().length > 100 ? "…" : "")` で十分。`lib/text-utils.ts` に 100 文字版 truncate がなくても新規追加は不要。
 
-外部ライブラリを入れずインライン SVG で実装する。heroicons 24/solid の `user` をリファレンスとした単純なシルエットでよい。
+### Step 4: `app/me/_components/` 配下の Server Component 群を新設
 
-- 同じ SVG リテラルを「認証時 + avatar 未設定」と「未認証時」の 2 箇所で使うため、ファイル先頭に小さなローカル関数 `function UserSilhouette({ className }: { className?: string })` を切ると重複が減る。
-- `aria-hidden="true"` を付与し、ラベル情報はトリガボタンの `aria-label` で表現する。
-- 新規 npm 依存（`@heroicons/react` 等）は **追加禁止**。SVG リテラルを直書きすること。
+順序:
 
-### Step 6: フォーカス・配色・トーンの当て込み
+1. `SectionCard.tsx`（先に作る。他の Card はこれを使うため）
+2. `MeHeader.tsx`（`UserSilhouette` SVG を `HeaderUserMenu.tsx` からコピーしてローカルに置く）
+3. `ProfileCard.tsx`
+4. `FriendsCard.tsx`
+5. `CasesCard.tsx`
+6. `LawsCard.tsx`
 
-- フォーカスリング：`focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-50` を基本に。
-- メニュー項目 hover：`hover:bg-stone-100 hover:text-stone-900`。
-- 配色は **stone と brand-700/800 のみ**。`brand-500` を絶対に使わないこと。
-- ログアウトは赤系 / rose 系を使わない（温かみトーン維持）。
-- breakpoint 修飾子（`sm:` `md:` `lg:` `xl:`）を一切付けないこと。Tailwind クラスはすべて無修飾の単一バリアントで書く。
+各ファイルは **Server Component**（`"use client"` を **付けない**）。client 化が必要なインタラクションは本対応にはない。
 
-### Step 7: 動作確認
+props 形状は design.md の各「コンポーネント設計」節を参照。`titleId` は安定文字列を `page.tsx` から渡す（`"me-section-profile"` / `"me-section-friends"` / `"me-section-cases"` / `"me-section-laws"`）。
 
-下記「動作確認シナリオ」を全件パスさせる。リードのチェック前に手元で全シナリオ自己確認すること。
+スタイル定数のヒント:
+
+- カード外枠: `bg-white border border-stone-200 rounded-2xl shadow-sm p-5`
+- 件数バッジ: `text-xs bg-stone-100 text-stone-500 rounded-full px-2 py-0.5`
+- もっと見るリンク: `text-sm text-brand-700 hover:text-brand-800 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-50`
+- 空状態本文: `text-stone-500 text-sm`
+- 空状態補助文: `text-stone-400 text-xs`
+- 法律役割バッジ:
+  - オーナー: `text-xs bg-stone-100 text-stone-700 rounded-full px-2 py-0.5`
+  - メンバー: `text-xs bg-stone-100 text-stone-600 rounded-full px-2 py-0.5`
+  - 招待中: `text-xs bg-amber-100 text-amber-700 rounded-full px-2 py-0.5`
+
+### Step 5: `app/components/HeaderUserMenu.tsx` のメニュー先頭に「マイページ」追加
+
+既存ファイル中の「過去のケース」 `<Link>` の **直前** に次を 1 ブロック挿入する:
+
+```tsx
+<Link
+  href="/me"
+  role="menuitem"
+  onClick={close}
+  className={menuItemClass}
+>
+  マイページ
+</Link>
+```
+
+差分位置の特定: `<Link href="/history"` の行を grep し、その直前に挿入する。`menuItemClass` 定数は同ファイルの既存定義をそのまま再利用。新規スタイル定義を追加しない。
+
+未認証分岐（ログイン / サインアップ）には何も追加しない。
+
+### Step 6: 動作確認（実機 + 軽微テスト）
+
+UI 変更なので `npm run dev` を立ち上げて実機で確認。AGENTS.md の方針通り、本バージョン Next.js の Server Component と `redirect()` の挙動は `node_modules/next/dist/docs/` を必要に応じて確認する。
 
 ---
 
-## 設計判断の理由
+## 各セクションの空状態テキスト案（確定済み）
 
-### Client / Server の分割を `HeaderUserMenu.tsx` 単位で切った理由
+| カード | 本文 | 補助文 |
+|-------|------|------|
+| プロフィール | 弁護人カスタム指示は未設定です | プロフィールでカスタム指示を編集できます |
+| フレンド | まだフレンドはいません | フレンドを追加すると、ここに最近の 5 人が表示されます |
+| 過去のケース | まだ判決が出たケースはありません | ホームからケースを作成して話し合いを始められます |
+| 参加中の法律 | まだ参加している法律はありません | 法律を作成するか、招待を受けるとここに表示されます |
 
-ドロップダウン開閉は完全にクライアント状態であり、`useState` / `useEffect` / `useRef` が必須。一方、`profiles` 取得は RLS 経由 SELECT を Server で済ませる方が安全（Client に余分な情報を持たせない）。Server で取得 → 表示に必要な最小 Props を Client に渡す形が最も自然で、責務境界も明瞭。
-
-### `createAdminClient` ではなく `createSessionClient` を使う理由
-
-MEDIUM-001 で確立済みの方針「Server Component の `profiles` 読み取りは RLS 二層防御」に整合させる。`avatar_url` / `display_name` は機微列ではないため、`profiles` の自分自身行ポリシー（FEAT-002 で設定済み）で通る。新規 RLS は不要。
-
-### 外側クリック検知に `mousedown` を使う理由
-
-`click` イベントでは、メニュー項目 `<Link>` クリック時にバブル順序の影響で「閉じる」が先に発火してから遷移処理が走るパターンがあり、項目挙動が不安定になりやすい。`mousedown` + `ref.contains` の組み合わせは React 系の慣用で安定し、外部ライブラリを足さずに済む。
-
-### 矢印キーナビゲーションを必須としない理由
-
-task.md の要件では「必須は Escape のみ」。完全な ARIA メニューパターン（roving tabindex + ↑↓ 移動）は実装コストが高く、Tab 移動でもアクセシビリティ最低限を満たす。本対応では Escape クローズと Tab 到達のみを必須とし、矢印キー対応は将来の改善余地として残す。
-
-### `next/image` ではなく素の `<img>` を使う理由
-
-Supabase Storage のホストを `next.config` の `images.domains` / `remotePatterns` に追加する変更が本対応のスコープ（UI のみ）を超える可能性がある。既存の `app/profile/page.tsx` 等が `<img>` で扱っているなら同じ流儀に揃える（実装時に既存挙動と整合させること）。
-
-### Props を最小集合に絞る理由
-
-Server → Client の境界を越える情報は最小限にする。`user.id` / `email` / `api_key_encrypted` 等を Client に流すと、表示に不要な機微情報がブラウザに露出する。`isAuthenticated` / `avatarUrl` / `displayName` の 3 値（すべて `string | null | boolean`）で UI 要件は満たせるため、それ以上は渡さない。
+各空状態の下に該当ディープリンク（プロフィール: `/profile`、フレンド: `/friends`、過去のケース: `/`、参加中の法律: `/laws`）を「もっと見る」リンクと別に置く必要は **ない**。「もっと見る」リンク自体が遷移先となっており、空状態時もカード右上の同リンクが機能する。
 
 ---
 
-## 実装上の注意事項
+## クエリ再利用 grep ヒント（既存 SELECT パターン）
 
-- **`supabase/` を開かない・触らない**。RLS / migration / スキーマは本 PR の対象外。
-- **`profiles` テーブル構造を変えない**。読み取りのみ。
-- **`middleware.ts` を変えない**。認証ガード挙動を不変とする。
-- **`tailwind.config.*` を変えない**。カラートークンの追加不可。
-- **`package.json` / `package-lock.json` を変えない**。新規 npm 依存禁止。
-- **breakpoint 修飾子（`sm:` `md:` `lg:` `xl:`）を一切使わない**。Tailwind クラスはすべて無修飾の単一バリアントで書くこと。
-- **`brand-500` を使わない**。`brand-700` / `brand-800` のみ。
-- **赤系 / rose 系をログアウト項目に使わない**。stone トーンで統一。
-- **`logout` の関数本体を変えない**。`app/actions/auth.ts` を編集する必要は基本ない（import 経路だけ確認すること）。
-- **Server → Client Props はシリアライズ可能な値のみ**。Supabase クライアント本体やオブジェクトを Props で渡さない。`string` / `null` / `boolean` に限定。
-- **`user.id` を Client に渡さない**。表示に必要な最小集合のみ。
-- **既存の Header 利用箇所（`app/layout.tsx`）を変えない**。`<Header />` のシグネチャ（引数なし）を維持。
-- **`app/components/HeaderUserMenu.tsx` の冒頭に `"use client";` を必ず書く**。
-- **`import { logout } from ...` の import パスは既存ファイルの慣習に合わせる**（相対 or `@/...`）。既存 Header.tsx の import 記法を流用するのが最も安全。
-- **`profiles` 取得失敗を例外として扱わない**。`null` フォールバックで握りつぶし、500 を投げない。
-- **インライン SVG 直書き**。`@heroicons/react` 等の依存追加は禁止。
+新規 RLS を一切追加しないため、既存ページ（`/friends`・`/laws`・`/history`）の SELECT 形式を踏襲する。下記コマンドで該当箇所を即座に見つけられる:
+
+- フレンド accepted: `grep -n 'eq("status", "accepted")' app/friends/page.tsx`
+- フレンドの自己関連 OR: `grep -n 'sender_id.eq\\|receiver_id.eq' app/friends/page.tsx`
+- ケースの verdict + 自己関連: `grep -n 'phase.*verdict\\|plaintiff_id.eq\\|defendant_id.eq' app/history/page.tsx`
+- 法律メンバーシップ: `grep -n 'law_members' app/laws/page.tsx`
+- 法律本体: `grep -n 'from("laws")' app/laws/page.tsx`
+- 法律 pending 招待: `grep -n 'law_invitations' app/laws/page.tsx`
+
+**注意**: `/history` および `/friends` の現行実装は `createAdminClient()` を使用しているが、本ページ `/me` では `createSessionClient()` に揃えること（design.md「データ取得設計」節）。`profiles` の cross-user 解決（フレンドの表示名・アバター）のみ `createAdminClient()` を使用してよい（MEDIUM-001 carve-out）。
 
 ---
 
-## 動作確認シナリオ
+## 実装上の注意点
 
-### 表示確認
+### profiles 跨ぎは admin のままで良い
 
-- **S1（認証時 + アバター画像あり）**: `profiles.avatar_url` が Supabase Storage の有効 URL に設定されているアカウントでログインし、ヘッダー右にアバター画像が丸型で表示されることを確認。
-- **S2（認証時 + アバター画像なし）**: `profiles.avatar_url = null` のアカウントでログインし、人型 SVG が `bg-stone-200` 丸型背景で表示されることを確認。
-- **S3（未認証）**: ログアウト状態でトップを開き、人型 SVG が `bg-stone-100` 丸型背景（より淡いトーン）で表示されることを確認。
-- **S4（画面幅 375px）**: DevTools で 375 × 667 にして、ロゴとアバターが横並びで干渉なく収まることを確認。横スクロール発生なし。
-- **S5（画面幅 768px / 1280px）**: タブレット / PC 幅でも同一 UI（breakpoint 差分なし）。
+task.md は「`createAdminClient` を使用しない」と書いているが、その根拠として参照されている MEDIUM-001 セクションは「profiles テーブルは本 PR では触らない」carve-out を明示している。本対応もこれを踏襲し、フレンドの `display_name` / `avatar_url` 取得には `createAdminClient()` を使う。これは task.md の精神（二層防御）と矛盾しない。
 
-### ドロップダウン開閉
+実装段階で疑義が生じた場合は **profiles RLS を独自に改修しないこと**。`supabase/` 配下を変更すれば task.md の絶対条件違反となる。
 
-- **S6（クリック開閉）**: アバターをクリック → メニュー表示。再度クリック → 閉じる。
-- **S7（外側クリック）**: メニュー開状態でメニュー外をクリック → 閉じる。
-- **S8（Escape）**: メニュー開状態で Escape 押下 → 閉じる。直後にトリガ（アバターボタン）にフォーカスが戻ることを確認（Tab を 1 回押すと次のフォーカス先に進むか）。
-- **S9（項目クリックで閉じる）**: メニュー項目 `<Link>` クリックで遷移後、新画面でドロップダウンが閉じている状態であることを確認。
+### `<img>` を使う（`next/image` ではない）
 
-### メニュー項目（認証時）
+アバター描画は `<img src={avatarUrl} alt={...} width={...} height={...} />` で行う。`next/image` を採用すると `next.config` の `images.remotePatterns` 等の調整が必要になり、スコープ外。FEAT-RESP-HEADER と同じ方針。`width` / `height` を明示してレイアウトシフトを抑止する。
 
-- **S10（過去のケース遷移）**: 「過去のケース」クリックで `/history` に遷移し従来通り動作。
-- **S11（フレンド遷移）**: 「フレンド」クリックで `/friends` に遷移し従来通り動作。
-- **S12（プロフィール遷移）**: 「プロフィール」クリックで `/profile` に遷移し従来通り動作。
-- **S13（ログアウト）**: 「ログアウト」押下で既存挙動どおりログアウト処理が走り、ルートまたは `/auth/login` にリダイレクトされる。再ログインも従来通り。
+### `UserSilhouette` SVG は `MeHeader.tsx` 内に直書きする
 
-### メニュー項目（未認証時）
+`HeaderUserMenu.tsx` から SVG コードを複製して `MeHeader.tsx` 内にローカル関数として置く。`app/components/UserSilhouette.tsx` への切り出しは **行わない**（本タスクのスコープを超える）。10 行 SVG 1 つの重複は許容する。
 
-- **S14（ログイン遷移）**: 「ログイン」クリックで `/auth/login` に遷移。
-- **S15（サインアップ遷移）**: 「サインアップ」クリックで `/auth/signup` に遷移。
+### `useId()` ではなく安定文字列で aria-labelledby を結ぶ
+
+Server Component 間で aria の id を渡すには安定文字列（`"me-section-profile"` 等）を `page.tsx` から渡す。`useId()` は Client 用途のため使わない。
+
+### Promise.allSettled を使う
+
+`Promise.all` を使うと 1 つのクエリ失敗で全セクションが落ちる。`Promise.allSettled` で各クエリの成否を独立評価し、失敗セクションのみ空状態にフォールバックする。
+
+### 件数バッジは `count = 0` でも「0件」と表示する
+
+`count === null`（取得失敗）のみバッジ非表示。`count === 0` は「0件」を可視テキストで出す。空状態とバッジの併存により「取得に失敗したのではなく純粋に 0 件である」ことを明示する。
+
+### `<form>` は一切置かない
+
+マイページは編集機能を持たない。`<form>`・`<input>`・`<button type="submit">`・Server Action を一切記述しないこと。
+
+---
+
+## リグレッション確認シナリオ
+
+実装後の動作確認チェックリスト:
+
+### マイページ本体（`/me`）
+
+- [ ] 認証済みユーザーが `/me` を開くとアイデンティティ行 + 4 カードが表示される
+- [ ] 未認証ユーザーが `/me` を直接叩くと `/auth/login` にリダイレクトされる
+- [ ] 未認証ユーザーが `/me/foo`（存在しないサブパス）を直接叩いても `/auth/login` にリダイレクトされる
+- [ ] アバター未設定ユーザーで人型シルエットが表示される
+- [ ] `defense_custom_instruction` 未設定ユーザーで空状態文が表示される
+- [ ] フレンドが 0 人のユーザーで空状態文が表示される
+- [ ] 判決済みケースが 0 件のユーザーで空状態文が表示される
+- [ ] 参加中の法律が 0 件のユーザーで空状態文が表示される
+- [ ] フレンドが 6 人以上いるユーザーで件数バッジが正しく、ダイジェストは 5 件で打ち切られる
+- [ ] 法律で「オーナー / メンバー / 招待中」の 3 役割すべてが正しく振り分けられる
+- [ ] 各カードの「もっと見る」リンクが対応する既存ページ（`/profile` / `/friends` / `/history` / `/laws`）に遷移する
+- [ ] 過去のケース行クリックで `/case/[id]` に遷移する
+- [ ] 法律メンバー行クリックで `/laws/[id]` に遷移する
+- [ ] 法律「招待中」行クリックで `/laws` に遷移する
+
+### 全画面サイズ（breakpoint なし確認）
+
+- [ ] 横幅 375px（スマホ）でレイアウトが崩れない
+- [ ] 横幅 768px（タブレット）でレイアウトが崩れない
+- [ ] 横幅 1280px 以上（PC）でレイアウトが崩れない（`max-w-2xl` で中央寄せされる）
+- [ ] 全画面サイズで同一の縦並び 1 カラムレイアウト
+
+### ヘッダードロップダウン
+
+- [ ] アバタークリックで認証時メニューが開き、先頭に「マイページ」が表示される
+- [ ] 「マイページ」クリックで `/me` に遷移する
+- [ ] 既存項目（過去のケース / フレンド / プロフィール / 区切り線 / ログアウト）の順序・スタイル・遷移先が不変
+- [ ] 未認証時メニュー（ログイン / サインアップ）に変更がない
+- [ ] Escape キーで閉じる、外側クリックで閉じる、項目クリックで閉じる挙動が不変
+
+### 既存ページの非リグレッション
+
+- [ ] `/profile` のレイアウト・編集機能が不変
+- [ ] `/friends` のレイアウト・検索・申請・承認機能が不変
+- [ ] `/history` のレイアウト・ケース一覧表示が不変
+- [ ] `/laws` のレイアウト・法律一覧・招待表示・「法律を作る」ボタンが不変
+- [ ] `/laws/[id]` の詳細・改定・退会機能が不変
+- [ ] `/auth/login` / `/auth/signup` への遷移挙動が不変
+- [ ] ログアウト動作（Server Action）が不変
 
 ### アクセシビリティ
 
-- **S16（aria-expanded）**: 開いている間はトリガに `aria-expanded="true"`、閉じている間は `"false"`（DevTools で確認）。
-- **S17（role 属性）**: ドロップダウンに `role="menu"`、各項目に `role="menuitem"`、区切り線に `role="separator"`。
-- **S18（キーボード到達）**: Tab だけでアバターまで到達できる。Enter / Space で開閉できる。Tab で項目間を移動できる。
-- **S19（スクリーンリーダー）**: VoiceOver / NVDA 等でトリガが「アカウントメニューを開く / メニューを開く」とアナウンスされる。
+- [ ] Tab キーで「マイページ」リンク → 各「もっと見る」リンク → 各セクション内リンクの順にフォーカス移動できる
+- [ ] フォーカスリングが `brand-700` のトーンで表示される
+- [ ] 各セクションが `<section aria-labelledby="me-section-...">` で見出しと結ばれている
+- [ ] スクリーンリーダーで「マイページ」配下の `<h1>{表示名}</h1>`・各 `<h2>{カード名}</h2>` が階層として読み上げられる
 
-### 配色・トーン
+### セキュリティ
 
-- **S20（カラー検証）**: DevTools の Computed Styles で hover / focus 時の色が `stone-100` / `stone-900` / `brand-700` の範囲内であることを確認。`brand-500` や赤系の混入なし。
-- **S21（既存配色との整合）**: 背景 `stone-50`、境界 `stone-200` がフッターや他ページのトーンと食い違わないことを確認。
-
-### リグレッション
-
-- **S22（middleware 認証ガード不変）**: 未認証で保護ルート（例 `/history`）を直接叩くと従来通り `/auth/login` にリダイレクト。
-- **S23（layout.tsx 不変）**: `<Header />` 呼び出し位置・Footer 表示位置に変化なし。
-- **S24（profiles の他列に影響なし）**: API キー登録画面（`/profile`）で API キーの登録状況表示が従来通り。
-- **S25（profiles 取得失敗時のフォールバック）**: 一時的にネットワークを切る等で `profiles` 取得に失敗させても、ヘッダーが 500 を出さず人型 SVG にフォールバックして描画される。
+- [ ] Network タブで `/me` の HTML レスポンスに `api_key_encrypted` 文字列が含まれていない
+- [ ] Network タブで `/me` の HTML レスポンスに他人の `display_name` / `avatar_url` 以外（メールアドレス・ID 以外の機微情報）が含まれていない
+- [ ] フレンドの `friendIds` が空のユーザーで admin クエリが発火しない（実装側のログまたは Supabase ダッシュボードで確認）
 
 ---
 
-## 未解決事項・要確認
+## 未解決事項 / 将来検討
 
-1. **アバター画像 `onError` フォールバック**: 初版では `avatarUrl !== null` だけで分岐し、画像読み込み失敗（URL 失効・CORS 等）に対する `onError` フォールバックは入れない。実機で失効頻度が高ければ別 backlog 項目として起票する判断をリードへ伝える。
-2. **ドロップダウン横幅**: 推奨は `w-48`。最終決定はビルドの実装時に表示崩れがないか実機確認の上、`w-44` / `w-52` 範囲で微調整可。判断したサイズは PR 説明に明記する。
-3. **メニュー上部の「ユーザー識別行」**: `displayName` をドロップダウン上部に小さく表示する案は **省略可**。最小実装ではメニュー項目のみで足り、表示するか否かは既存トーンとの馴染みを見て実装段階で判断してよい（どちらの選択でも task.md 要件は満たす）。判断結果は PR に書く。
-4. **`<form action={logout}>` のシグネチャ**: 本バージョン Next.js での Client Component → Server Action の呼び出し方が `node_modules/next/dist/docs/` のドキュメントと一致するか確認すること（`AGENTS.md` 方針）。既存の Server Action 利用箇所が他にあれば書き方を揃える。
-5. **`next/image` 採用可否**: 本対応では素の `<img>` を推奨したが、既存コードベースで Supabase Storage 画像を `next/image` で扱っている前例があればそれに揃える。`next.config` の `images` 設定を新規変更する場合はスコープ外として別タスク化する。
-6. **矢印キーナビゲーション**: 本対応のスコープ外。Tab 到達と Escape クローズで最低限のキーボードアクセシビリティを担保する。完全な ARIA メニューパターン（roving tabindex + ↑↓ 移動）が必要となった時点で別タスクで対応。
-7. **スコープ厳守**: マイページ（FEAT-005）、他ページのレスポンシブ調整、アバターアップロード機能の変更、`profiles` テーブル構造変更、RLS / migration / DB スキーマ変更、ロゴデザイン変更、新規 npm 依存追加、breakpoint 導入、`backlog.md` の他 LOW / FEAT / OPS / MON 項目はすべて本 PR スコープ外。混入させないこと。
+本対応スコープ外で、将来別タスク化が想定される項目:
+
+- **件数の精度上限**: 全件取得 → `.length` で件数を出すため、PostgREST デフォルトの 1000 行上限を超えるユーザーは件数が頭打ちになる。個人で 1000 件を超えるフレンド・ケース・法律を持つ段階は当面想定外だが、超え始めたら `count: "exact", head: true` への分離が必要。
+- **profiles RLS の本格整備**: 「自分なら全列、他人なら一部列のみ」を表現する RLS 整備は本タスクのスコープ外。バックログに別項目化されている扱いで進める。
+- **アバター画像読み込み失敗時の `onError` フォールバック**: 初版未実装。実機で失効頻度が高ければ別タスクで対応する。
+- **UserSilhouette のグローバル化**: 第 3 の利用者が出てきた段階で `app/components/UserSilhouette.tsx` に切り出す提案を別タスク化する。
+
+---
+
+## 何かあったら
+
+- task.md と本メモが矛盾する場合は **task.md を優先** すること（task.md の優先順位ルール）。
+- design.md と本メモが矛盾する場合はリードに上申すること。本メモは design.md の要約版であり、詳細根拠は design.md 末尾の「FEAT-005 対応」セクションが正本。
+- 「`createAdminClient` を使うのは違反では？」と疑問に思った場合の答え: profiles 跨ぎ参照だけは MEDIUM-001 carve-out で admin 維持が認められている。ドメインテーブル（friend_requests・cases・laws 系）には絶対に admin を使わないこと。
