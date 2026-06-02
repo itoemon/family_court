@@ -159,11 +159,12 @@ export default async function MePage() {
         }));
 
   // 法律ダイジェスト（メンバーシップ + pending 招待）
+  // 両方のクエリが成功したときだけ totalCount を出す（片方失敗時はバッジ非表示に揃える）。
   let lawsTotalCount: number | null = null;
   let lawsRecent: { id: string; name: string; role: LawRole }[] = [];
-  if (memberships !== null || pendingInvitations !== null) {
-    const safeMemberships = memberships ?? [];
-    const safeInvitations = pendingInvitations ?? [];
+  if (memberships !== null && pendingInvitations !== null) {
+    const safeMemberships = memberships;
+    const safeInvitations = pendingInvitations;
     lawsTotalCount = safeMemberships.length + safeInvitations.length;
 
     const memberLawIds = safeMemberships.map((m) => m.law_id);
@@ -209,7 +210,9 @@ export default async function MePage() {
       });
     }
 
-    candidates.sort((a, b) => (a.sortKey < b.sortKey ? 1 : -1));
+    // sortKey は ISO8601 文字列。降順（新しい順）で localeCompare すれば等値時 0 を返し
+    // 比較関数の反対称性/推移性を満たす。
+    candidates.sort((a, b) => b.sortKey.localeCompare(a.sortKey));
     lawsRecent = candidates
       .slice(0, DIGEST_LIMIT)
       .map(({ id, name, role }) => ({ id, name, role }));
