@@ -70,19 +70,6 @@
 
 ---
 
-#### [BUG-003] 判決画面の説得力スコアが常に 0% または空で表示される
-
-- **内容**:
-  - 判決画面に表示される説得力スコアが、常に 0% または空で表示される（正しい数値が出ない）。
-  - 着手時に切り分けが必要: スコア計算ロジック（API 側の判決生成処理）の不具合か、表示側（判決画面コンポーネント）の不具合か。
-- **想定実装範囲**:
-  - 判決画面のコンポーネント（`app/case/[id]/` 周辺）と、スコア計算ロジック（判決生成 API）。
-  - DB に保存されている値（cases / judge_messages 等）と画面表示の橋渡し部分。
-- **優先度**: 中（判決画面のコア要素、正しさに直結）
-- **由来**: 2026-06-02 ダイチ提案
-
----
-
 ### マネタイズ（MON）
 
 #### [MON-001] クレジット制課金（1 クレジット = 1 ケース）
@@ -154,5 +141,6 @@
 | PR #27 (LOW-002) | `PendingInvitations.tsx` の fetch ステータス検査・失敗時エラー表示とリフレッシュ抑止（由来: `docs/knowledge/archive/audit-log/audit_20260526_200752.md`） |
 | PR #31 (FEAT-RESP-HEADER) | ヘッダーをアバター起点のドロップダウンメニュー方式へ刷新（全画面サイズ統一、breakpoint 不使用）|
 | PR #32 (FEAT-005) | マイページ `/me` を新設（プロフィール / フレンド / 過去のケース / 参加中の法律 のダイジェスト、ヘッダー導線に「マイページ」追加）|
-| 本 PR (LOW-001) | `package.json` の `name` フィールド変更経緯を README に明示（PR #17 で `family_court` → `igiari` にリネーム済みの追跡性を回復、由来: `docs/knowledge/audit-log/audit_20260526_152517.md`） |
-| 本 PR (LOW-002) | `@upstash/core-analytics` の外部送信不可検証（`analytics: false` 設定時に Analytics クラス未インスタンス化 + `if (this.analytics)` ガードで record/ingest 実行経路なし、本番ビルドのバンドル含有はコードのみで動作経路なし、由来: `docs/knowledge/audit-log/audit_20260526_152517.md`） |
+| PR #33 (LOW-001) | `package.json` の `name` フィールド変更経緯を README に明示（PR #17 で `family_court` → `igiari` にリネーム済みの追跡性を回復、由来: `docs/knowledge/audit-log/audit_20260526_152517.md`） |
+| PR #33 (LOW-002) | `@upstash/core-analytics` の外部送信不可検証（`analytics: false` 設定時に Analytics クラス未インスタンス化 + `if (this.analytics)` ガードで record/ingest 実行経路なし、本番ビルドのバンドル含有はコードのみで動作経路なし、由来: `docs/knowledge/audit-log/audit_20260526_152517.md`） |
+| 本 PR (BUG-003) | 判決画面の説得力スコアが常に 0%/空になる現象を修正（`lib/case-response.ts` で verdict 行を snake_case のまま返していたのを camelCase へ明示マップ：`plaintiff_score → plaintiffScore` / `defendant_score → defendantScore` / `created_at → decidedAt`、他フィールドは単語 1 語で偶然動いていた、由来: 2026-06-02 ダイチ報告） |
