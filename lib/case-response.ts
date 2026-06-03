@@ -88,6 +88,15 @@ export async function buildCaseResponse(
       createdAt: jm.created_at,
     })),
     contradictionWarnings,
-    verdict: verdict ?? null,
+    verdict: verdict
+      ? {
+          winner: verdict.winner,
+          summary: verdict.summary,
+          reasoning: verdict.reasoning,
+          plaintiffScore: verdict.plaintiff_score,
+          defendantScore: verdict.defendant_score,
+          decidedAt: verdict.created_at,
+        }
+      : null,
   };
 }
