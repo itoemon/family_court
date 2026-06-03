@@ -55,21 +55,6 @@
 
 ---
 
-### バグ修正（BUG）
-
-#### [BUG-002] 過去のケース表示時、チャット画面が一瞬表示されてから判決画面へ自動遷移する
-
-- **内容**:
-  - 過去のケース（`/history` から個別ケースを開く）を表示する際、現状は「チャット画面が開く → 判決画面がロードされる → 自動遷移」という挙動になっている。
-  - 期待挙動: 既に判決確定済み（`phase === "verdict"` 相当）のケースを開く場合、最初から判決画面が表示される。チャット画面の一瞬の表示と自動遷移をなくす。
-- **想定実装範囲**:
-  - `app/case/[id]/page.tsx` 周辺のレンダリング初期 state とフェーズ分岐ロジック。
-  - Server Component 側で `phase` を判定して該当画面を直接出すか、あるいは判決画面用のサブルートへ Server Redirect する設計を検討する。
-- **優先度**: 中（既存機能の UX 劣化、データの正しさには影響なし）
-- **由来**: 2026-06-02 ダイチ提案
-
----
-
 ### マネタイズ（MON）
 
 #### [MON-001] クレジット制課金（1 クレジット = 1 ケース）
@@ -143,4 +128,5 @@
 | PR #32 (FEAT-005) | マイページ `/me` を新設（プロフィール / フレンド / 過去のケース / 参加中の法律 のダイジェスト、ヘッダー導線に「マイページ」追加）|
 | PR #33 (LOW-001) | `package.json` の `name` フィールド変更経緯を README に明示（PR #17 で `family_court` → `igiari` にリネーム済みの追跡性を回復、由来: `docs/knowledge/audit-log/audit_20260526_152517.md`） |
 | PR #33 (LOW-002) | `@upstash/core-analytics` の外部送信不可検証（`analytics: false` 設定時に Analytics クラス未インスタンス化 + `if (this.analytics)` ガードで record/ingest 実行経路なし、本番ビルドのバンドル含有はコードのみで動作経路なし、由来: `docs/knowledge/audit-log/audit_20260526_152517.md`） |
-| 本 PR (BUG-003) | 判決画面の説得力スコアが常に 0%/空になる現象を修正（`lib/case-response.ts` で verdict 行を snake_case のまま返していたのを camelCase へ明示マップ：`plaintiff_score → plaintiffScore` / `defendant_score → defendantScore` / `created_at → decidedAt`、他フィールドは単語 1 語で偶然動いていた、由来: 2026-06-02 ダイチ報告） |
+| PR #35 (BUG-003) | 判決画面の説得力スコアが常に 0%/空になる現象を修正（`lib/case-response.ts` で verdict 行を snake_case のまま返していたのを camelCase へ明示マップ：`plaintiff_score → plaintiffScore` / `defendant_score → defendantScore` / `created_at → decidedAt`、他フィールドは単語 1 語で偶然動いていた、由来: 2026-06-02 ダイチ報告） |
+| 本 PR (BUG-002) | 過去のケース表示時にチャット画面が一瞬出てから判決画面へ自動遷移する現象を修正（`app/case/[id]/page.tsx` を Server Component に変換し、`cases.phase === "verdict"` なら `redirect()` で即座に `/case/[id]/verdict` へ振り分け。既存のクライアント側ロジックは `CaseRoom.tsx` に分離。フェーズ進行に伴う in-session 遷移用の `router.push` は据置。由来: 2026-06-02 ダイチ報告） |
