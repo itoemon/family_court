@@ -42,8 +42,10 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   // 判決リクエストの多重発火ガード。
-  // ref を使い state を介さない（rule: 同期 setState in effect 回避 + 再 render 不要）。
-  const requestingVerdictRef = useRef(false);
+  // state にすることで失敗時 setRequestingVerdict(false) → effect 再実行 → リトライが
+  // 成立する設計（polling で phase=judging のまま卡らせないため）。同期 setState in
+  // effect は意図的（effect 再実行をトリガとして使う）。
+  const [requestingVerdict, setRequestingVerdict] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // 弁護人AI state
@@ -91,13 +93,24 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
   }, [fetchCase]);
 
   useEffect(() => {
-    if (caseData?.phase === "judging" && !requestingVerdictRef.current) {
-      requestingVerdictRef.current = true;
+    if (caseData?.phase === "judging" && !requestingVerdict) {
+      // ガードを立てる setRequestingVerdict は本効果の再実行（リトライ機会）を
+      // 成立させるための意図的な同期 setState。
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setRequestingVerdict(true);
       fetch(`/api/cases/${caseId}/verdict`, { method: "POST" })
-        .then(() => fetchCase())
-        .catch(() => { requestingVerdictRef.current = false; });
+        .then(async (res) => {
+          // fetch は 4xx/5xx で reject しないので res.ok を明示確認。
+          // 非 2xx ならガードを解除して次の polling で再試行可能にする。
+          if (!res.ok) {
+            setRequestingVerdict(false);
+            return;
+          }
+          await fetchCase();
+        })
+        .catch(() => setRequestingVerdict(false));
     }
-  }, [caseData?.phase, caseId, fetchCase]);
+  }, [caseData?.phase, caseId, fetchCase, requestingVerdict]);
 
   useEffect(() => {
     const count = (caseData?.arguments?.length ?? 0) + (caseData?.judgeMessages?.length ?? 0);
