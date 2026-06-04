@@ -6,16 +6,29 @@ import Link from "next/link";
 // Next.js のルートセグメントエラー境界。Server Component 内の `throw`
 // および render 中の例外をここで受ける。Client Component の handler 内
 // try/catch で local state に納められたエラーは別経路（ここに来ない）。
+//
+// props は Next.js が `unstable_retry` と `reset` の両方を渡す前提:
+//   - `unstable_retry`: 再 fetch + 再 render（SSR データを取り直す、主用途）
+//   - `reset`:          再 render のみ（fetch せず error 状態だけ clear）
+// API シグネチャが将来変わっても壊れないよう両方を optional で受け、
+// `unstable_retry` 優先・なければ `reset` にフォールバックする。
 export default function Error({
   error,
   unstable_retry,
+  reset,
 }: {
   error: Error & { digest?: string };
-  unstable_retry: () => void;
+  unstable_retry?: () => void;
+  reset?: () => void;
 }) {
+  const retry = unstable_retry ?? reset;
+
   useEffect(() => {
-    // dev 中の原因追跡用。本番では Vercel のログに出る。
-    console.error("[app/error.tsx]", error);
+    // dev でのみブラウザ console に詳細を出す。本番では digest 経由で
+    // サーバ側ログ（Vercel Functions logs 等）から追跡する想定。
+    if (process.env.NODE_ENV === "development") {
+      console.error("[app/error.tsx]", error);
+    }
   }, [error]);
 
   return (
@@ -39,12 +52,14 @@ export default function Error({
           )}
 
           <div className="space-y-3">
-            <button
-              onClick={() => unstable_retry()}
-              className="w-full bg-brand-700 hover:bg-brand-800 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
-            >
-              再試行する
-            </button>
+            {retry && (
+              <button
+                onClick={() => retry()}
+                className="w-full bg-brand-700 hover:bg-brand-800 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
+              >
+                再試行する
+              </button>
+            )}
             <Link
               href="/"
               className="block w-full bg-white hover:bg-stone-50 border border-stone-200 text-stone-600 font-medium py-3 rounded-xl transition-colors text-sm"
