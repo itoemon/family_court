@@ -8,7 +8,7 @@ OPS-001 Part 2 で導入した「E2E テストを本番 Supabase ではなくテ
 - **`.env.test`**: E2E 実行（`npm run dev:test` / Playwright）で使うテスト用 Supabase の接続情報
 - どちらも `.gitignore` 済み（`.env*` 除外、`.env*.example` のみコミット）
 
-E2E パイプラインの `scripts/agents.sh run_tester` は `TEST_MODE=1` を export してから `start_dev_server` を呼ぶ。`start_dev_server` は `TEST_MODE=1` 時に `npm run dev:test`（= `NODE_ENV=test next dev`）を使い、Next の env ローダが `.env.test` を読んで `.env.local` をスキップする。Playwright 側は `playwright.config.ts` の `loadEnvConfig` で同じく `.env.test` を読み、`process.env.E2E_TEST_*` を spec に渡す。
+E2E パイプライン（`scripts/agents.sh tester` サブコマンド）の内部では、`run_tester` 関数が `TEST_MODE=1` を export してから `start_dev_server` を呼ぶ。`start_dev_server` は `TEST_MODE=1` のとき `npm run dev:test`（= `NODE_ENV=test next dev`）を使い、Next の env ローダが `.env.test` を読んで `.env.local` をスキップする。Playwright 側は `playwright.config.ts` の `loadEnvConfig` で同じく `.env.test` を読み、`process.env.E2E_TEST_*` を spec に渡す。
 
 ## 初期セットアップ（一度だけ）
 

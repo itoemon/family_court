@@ -170,8 +170,9 @@ start_dev_server() {
   rm -f /tmp/dev_server.log
   # TEST_MODE=1 のとき NODE_ENV=test で dev サーバーを起動し、Next の env ローダに
   # `.env.test` を読ませて `.env.local`(本番) をスキップさせる。
+  # 値は明示的に "1" を要求する（"0" や任意の文字列で誤起動しないように）。
   local dev_script="dev"
-  if [[ -n "${TEST_MODE:-}" ]]; then
+  if [[ "${TEST_MODE:-}" == "1" ]]; then
     [[ -f "$REPO_ROOT/.env.test" ]] || die ".env.test が見つかりません。docs/operations/e2e-test-db.md を参照してセットアップしてください。"
     dev_script="dev:test"
     log "TEST_MODE=1: テスト DB ターゲットで dev サーバーを起動します（.env.test を使用）"
