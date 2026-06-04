@@ -41,10 +41,17 @@
   - 検証: 読み取り専用テスト（VISUAL-BRAND-001）を node20 サーバー + node18 playwright + chromium で実行し、chain が end-to-end で動作することを確認済み。
   - **追記 (PR #30 / 2026-06-02)**: 2026-05-30 の claude CLI ネイティブ版移行（node 非依存、`~/.local/bin/claude`）により、claude → 子プロセスへの node18 強制（`_VOLTA_TOOL_RECURSION` 経由）が消滅した。これに伴い PR #30 で `package.json` の `volta.node` pin を撤去し、要件は `engines.node: ">=20.9.0"` で表明する形へ切り替えた。`scripts/agents.sh` の PATH サニタイズおよび `_VOLTA_TOOL_RECURSION` 解除処理も併せて撤去し、`start_dev_server` は素の `setsid bash -c "npm run dev"` に簡素化した。停止側の PGID 特定ロジックおよびテスタの判定ロジックは本筋なので残置している。
 
-- **Part 2（E2E のターゲット DB）: 未対応**
-  - 現状 `.env.local` が**本番 Supabase** を指しており、laws/friends 系 spec が本番にテストデータを作りうる。テスト用 Supabase プロジェクト + `.env.test`、またはシード&クリーンアップ戦略の検討が必要。
-  - 暫定運用: 当面は従来どおり本番ターゲット（または読み取り系のみリードが手動検証）。
-- **優先度**: 中（Part 1 完了によりパイプラインで E2E が回せるようになった。残るは Part 2）
+- **Part 2（E2E のターゲット DB）: メカニズム整備済み（本 PR）/ テスト用 Supabase プロジェクト作成は手動作業として残る**
+  - 採用方針: テスト用 Supabase プロジェクト + `.env.test`（シード&クリーンアップ案は本番への漏れリスクが残るため不採用）
+  - 本 PR で整備した内容:
+    - `.env.test.example` テンプレを追加。`.env*` は既に gitignore 済み、`.env*.example` は例外として共有
+    - `package.json` に `dev:test` スクリプト追加（`NODE_ENV=test next dev` で `.env.local` をスキップさせ `.env.test` を読ませる）
+    - `playwright.config.ts` で `@next/env` の `loadEnvConfig` により spec へも `.env.test` を渡す
+    - `scripts/agents.sh` の `run_tester` が `TEST_MODE=1` を export、`start_dev_server` が `TEST_MODE` 時に `dev:test` を起動し `.env.test` 不在なら die
+    - `docs/agents/tester.md` の Playwright 実行手順を `.env.test` source へ更新
+    - `docs/operations/e2e-test-db.md` を新設し、テスト用 Supabase プロジェクト作成 → schema 適用 → ユーザー作成 → `.env.test` 投入 → 動作確認の手順を全て文書化
+  - 残作業（ダイチ手動）: テスト用 Supabase プロジェクトの作成・スキーマ適用・E2E ユーザー登録・`.env.test` の実値投入。docs/operations/e2e-test-db.md の手順通り。
+- **優先度**: 中（Part 1 完了によりパイプラインで E2E が回せる。Part 2 メカニズム整備済み、運用準備はダイチが docs に従って実施）
 - **由来**: 2026-05-29 LOW バッチ対応時に顕在化
 
 ---
