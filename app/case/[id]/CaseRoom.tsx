@@ -30,13 +30,21 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
   const supabase = createClient();
 
   const [caseData, setCaseData] = useState<Case | null>(null);
-  const [myRole, setMyRole] = useState<Role | null>(null);
+  // URL の ?role=plaintiff を初期値として 1 度だけ参照（マウント時のみ）。
+  // 以降の変更は join ハンドラからの setMyRole 経由。
+  const [myRole, setMyRole] = useState<Role | null>(() =>
+    searchParams.get("role") === "plaintiff" ? "plaintiff" : null
+  );
   const [joinName, setJoinName] = useState("");
   const [joinMode, setJoinMode] = useState<"choose" | "guest" | "login">("choose");
   const [argumentText, setArgumentText] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  // 判決リクエストの多重発火ガード。
+  // state にすることで失敗時 setRequestingVerdict(false) → effect 再実行 → リトライが
+  // 成立する設計（polling で phase=judging のまま卡らせないため）。同期 setState in
+  // effect は意図的（effect 再実行をトリガとして使う）。
   const [requestingVerdict, setRequestingVerdict] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -50,10 +58,6 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
   const [showDefenseTab, setShowDefenseTab] = useState(false);
 
   const roleParam = searchParams.get("role") as Role | null;
-
-  useEffect(() => {
-    if (roleParam === "plaintiff") setMyRole("plaintiff");
-  }, [roleParam]);
 
   useEffect(() => {
     if (roleParam === "plaintiff") return;
@@ -80,6 +84,9 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
   }, [caseId, router]);
 
   useEffect(() => {
+    // fetchCase は内部で await 後に setCaseData → setState は同期 cascading にはならない。
+    // react-hooks/set-state-in-effect は call site で保守的に flag するため意図を明示して disable。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchCase();
     const interval = setInterval(fetchCase, 2000);
     return () => clearInterval(interval);
@@ -87,9 +94,20 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
 
   useEffect(() => {
     if (caseData?.phase === "judging" && !requestingVerdict) {
+      // ガードを立てる setRequestingVerdict は本効果の再実行（リトライ機会）を
+      // 成立させるための意図的な同期 setState。
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setRequestingVerdict(true);
       fetch(`/api/cases/${caseId}/verdict`, { method: "POST" })
-        .then(() => fetchCase())
+        .then(async (res) => {
+          // fetch は 4xx/5xx で reject しないので res.ok を明示確認。
+          // 非 2xx ならガードを解除して次の polling で再試行可能にする。
+          if (!res.ok) {
+            setRequestingVerdict(false);
+            return;
+          }
+          await fetchCase();
+        })
         .catch(() => setRequestingVerdict(false));
     }
   }, [caseData?.phase, caseId, fetchCase, requestingVerdict]);
@@ -189,6 +207,8 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
   }, [caseId]);
 
   useEffect(() => {
+    // fetchDefenseMessages も await 後に setState（fetchCase と同じ理由で disable）。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchDefenseMessages();
   }, [fetchDefenseMessages]);
 
