@@ -168,7 +168,16 @@ run_engineer() {
 DEV_PGID=""
 start_dev_server() {
   rm -f /tmp/dev_server.log
-  setsid bash -c "cd '$REPO_ROOT' && npm run dev" > /tmp/dev_server.log 2>&1 &
+  # TEST_MODE=1 のとき NODE_ENV=test で dev サーバーを起動し、Next の env ローダに
+  # `.env.test` を読ませて `.env.local`(本番) をスキップさせる。
+  # 値は明示的に "1" を要求する（"0" や任意の文字列で誤起動しないように）。
+  local dev_script="dev"
+  if [[ "${TEST_MODE:-}" == "1" ]]; then
+    [[ -f "$REPO_ROOT/.env.test" ]] || die ".env.test が見つかりません。docs/operations/e2e-test-db.md を参照してセットアップしてください。"
+    dev_script="dev:test"
+    log "TEST_MODE=1: テスト DB ターゲットで dev サーバーを起動します（.env.test を使用）"
+  fi
+  setsid bash -c "cd '$REPO_ROOT' && npm run $dev_script" > /tmp/dev_server.log 2>&1 &
   DEV_PGID=$!
   log "dev サーバーを起動しています (PGID=$DEV_PGID)..."
   local i
@@ -228,6 +237,8 @@ run_tester() {
   fi
 
   # dev サーバーを起動。失敗時はテストを実施せず die。
+  # E2E は本番 DB を汚さないようテスト用 Supabase に向ける（OPS-001 Part 2）。
+  export TEST_MODE=1
   if ! start_dev_server; then
     die "dev サーバーを起動できませんでした。テストを実施できません。"
   fi

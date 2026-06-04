@@ -318,8 +318,10 @@ test('CRITICAL-M04: ゲスト被告が Cookie トークンで発言できる', a
 
 ```bash
 cd ${REPO_ROOT}
-# .env.local から E2E_TEST_* 変数を読み込んで実行
-set -a && source .env.local && set +a
+# .env.test から E2E_TEST_* 変数を読み込んで実行
+# （`.env.local` ではなく `.env.test`: OPS-001 Part 2 で本番 DB と分離。
+#   詳細は docs/operations/e2e-test-db.md を参照）
+set -a && source .env.test && set +a
 npx playwright test tests/e2e/ 2>&1 | tee /tmp/playwright_output.txt
 # JSON レポートは test-results/test_result.json に出力される（環境変数 PLAYWRIGHT_JSON_OUTPUT で上書き可能）
 ```
