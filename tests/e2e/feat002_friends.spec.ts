@@ -120,9 +120,8 @@ test('FEAT-002: フレンド一覧が表示される', async ({ browser }) => {
     const pageTitle = await pageA.locator('h1').first().textContent();
     expect(pageTitle).toContain('フレンド');
 
-    // 検索セクション・リクエスト一覧セクション・フレンド一覧セクションが存在することを確認
-    const hasSearchForm = await pageA.locator('input[placeholder="表示名またはメールアドレス"]').isVisible().catch(() => false);
-    expect(hasSearchForm).toBe(true);
+    // 検索フォームが存在することを確認（auto-wait 経由で hard assertion）
+    await expect(pageA.locator('input[placeholder="表示名またはメールアドレス"]')).toBeVisible();
   } finally {
     await ctxA.close();
   }
@@ -155,8 +154,9 @@ test('FEAT-002: API /api/users/search が動作する', async ({ browser }) => {
     // API が応答するまで待機
     await pageA.waitForTimeout(2000);
 
-    // API が 200 OK または 4xx/5xx で応答することを確認（0 = リクエスト未送信）
-    expect(apiStatus).toBeGreaterThan(0);
+    // 認証済み状態での検索 API は 200 を返すことを確認
+    // （0 = 未送信、4xx/5xx = 異常、はいずれも失敗扱い）
+    expect(apiStatus).toBe(200);
   } finally {
     await ctxA.close();
   }
