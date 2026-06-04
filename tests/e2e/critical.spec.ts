@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 // ────────────────────────────────────────────────────────────
 // 環境変数チェック
@@ -21,7 +21,7 @@ test.beforeEach(() => {
 // ヘルパー
 // ────────────────────────────────────────────────────────────
 
-async function loginAs(page: any, email: string, password: string) {
+async function loginAs(page: Page, email: string, password: string) {
   await page.goto('/auth/login');
   // ページロード完了まで待つ
   await page.waitForSelector('input[type="email"]', { timeout: 15_000 });
@@ -32,7 +32,7 @@ async function loginAs(page: any, email: string, password: string) {
 }
 
 // 原告がログイン済みの状態で呼び出す。/case/:id（クエリなし）を返す。
-async function createCase(page: any, topic: string): Promise<string> {
+async function createCase(page: Page, topic: string): Promise<string> {
   await page.goto('/');
   await page.fill('input[type="text"]', topic);
   await page.click('button:has-text("はじめる")');
@@ -45,7 +45,7 @@ async function createCase(page: any, topic: string): Promise<string> {
 // 2. 「ログインして参加する」→ PATCH /api/cases/:id が実行される
 // 参加完了後は opening フェーズ・原告のターンのため、被告側の textarea は出ない。
 // 代わりに「{opponentName} さんの返答を待っています」が表示されることを確認する（部分一致: `text=さんの返答を待っています`）。
-async function joinAsAccount(page: any) {
+async function joinAsAccount(page: Page) {
   await page.click('button:has-text("アカウントでログインして参加")');
   await page.click('button:has-text("ログインして参加する")');
   await page.waitForSelector('text=さんの返答を待っています', { timeout: 10_000 });

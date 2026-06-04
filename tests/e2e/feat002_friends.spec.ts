@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 // ────────────────────────────────────────────────────────────
 // 環境変数チェック
@@ -21,7 +21,7 @@ test.beforeEach(() => {
 // ヘルパー
 // ────────────────────────────────────────────────────────────
 
-async function loginAs(page: any, email: string, password: string) {
+async function loginAs(page: Page, email: string, password: string) {
   await page.goto('/auth/login');
   await page.fill('input[type="email"]', email);
   await page.fill('input[type="password"]', password);
@@ -29,7 +29,7 @@ async function loginAs(page: any, email: string, password: string) {
   await page.waitForURL('/', { timeout: 10_000 });
 }
 
-async function navigateToFriends(page: any) {
+async function navigateToFriends(page: Page) {
   await page.goto('/friends');
   await page.waitForSelector('h1:has-text("フレンド")', { timeout: 10_000 });
 }

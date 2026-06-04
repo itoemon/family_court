@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 // ────────────────────────────────────────────────────────────
 // B-1・B-2 修正テスト
@@ -20,7 +20,7 @@ test.beforeEach(() => {
 // ヘルパー
 // ────────────────────────────────────────────────────────────
 
-async function loginAs(page: any, email: string, password: string) {
+async function loginAs(page: Page, email: string, password: string) {
   await page.goto('/auth/login');
   await page.fill('input[type="email"]', email);
   await page.fill('input[type="password"]', password);
@@ -28,7 +28,7 @@ async function loginAs(page: any, email: string, password: string) {
   await page.waitForURL('/', { timeout: 10_000 });
 }
 
-async function createCase(page: any, topic: string): Promise<string> {
+async function createCase(page: Page, topic: string): Promise<string> {
   await page.goto('/');
   await page.fill('input[type="text"]', topic);
   await page.click('button:has-text("はじめる")');

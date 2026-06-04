@@ -30,14 +30,20 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
   const supabase = createClient();
 
   const [caseData, setCaseData] = useState<Case | null>(null);
-  const [myRole, setMyRole] = useState<Role | null>(null);
+  // URL の ?role=plaintiff を初期値として 1 度だけ参照（マウント時のみ）。
+  // 以降の変更は join ハンドラからの setMyRole 経由。
+  const [myRole, setMyRole] = useState<Role | null>(() =>
+    searchParams.get("role") === "plaintiff" ? "plaintiff" : null
+  );
   const [joinName, setJoinName] = useState("");
   const [joinMode, setJoinMode] = useState<"choose" | "guest" | "login">("choose");
   const [argumentText, setArgumentText] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
-  const [requestingVerdict, setRequestingVerdict] = useState(false);
+  // 判決リクエストの多重発火ガード。
+  // ref を使い state を介さない（rule: 同期 setState in effect 回避 + 再 render 不要）。
+  const requestingVerdictRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // 弁護人AI state
@@ -50,10 +56,6 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
   const [showDefenseTab, setShowDefenseTab] = useState(false);
 
   const roleParam = searchParams.get("role") as Role | null;
-
-  useEffect(() => {
-    if (roleParam === "plaintiff") setMyRole("plaintiff");
-  }, [roleParam]);
 
   useEffect(() => {
     if (roleParam === "plaintiff") return;
@@ -80,19 +82,22 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
   }, [caseId, router]);
 
   useEffect(() => {
+    // fetchCase は内部で await 後に setCaseData → setState は同期 cascading にはならない。
+    // react-hooks/set-state-in-effect は call site で保守的に flag するため意図を明示して disable。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchCase();
     const interval = setInterval(fetchCase, 2000);
     return () => clearInterval(interval);
   }, [fetchCase]);
 
   useEffect(() => {
-    if (caseData?.phase === "judging" && !requestingVerdict) {
-      setRequestingVerdict(true);
+    if (caseData?.phase === "judging" && !requestingVerdictRef.current) {
+      requestingVerdictRef.current = true;
       fetch(`/api/cases/${caseId}/verdict`, { method: "POST" })
         .then(() => fetchCase())
-        .catch(() => setRequestingVerdict(false));
+        .catch(() => { requestingVerdictRef.current = false; });
     }
-  }, [caseData?.phase, caseId, fetchCase, requestingVerdict]);
+  }, [caseData?.phase, caseId, fetchCase]);
 
   useEffect(() => {
     const count = (caseData?.arguments?.length ?? 0) + (caseData?.judgeMessages?.length ?? 0);
@@ -189,6 +194,8 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
   }, [caseId]);
 
   useEffect(() => {
+    // fetchDefenseMessages も await 後に setState（fetchCase と同じ理由で disable）。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchDefenseMessages();
   }, [fetchDefenseMessages]);
 

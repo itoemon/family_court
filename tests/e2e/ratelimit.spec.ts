@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 // ────────────────────────────────────────────────────────────
 // 環境変数チェック
@@ -23,7 +23,7 @@ test.beforeEach(() => {
 // ヘルパー
 // ────────────────────────────────────────────────────────────
 
-async function loginAs(page: any, email: string, password: string) {
+async function loginAs(page: Page, email: string, password: string) {
   await page.goto('/auth/login');
   await page.fill('input[type="email"]', email);
   await page.fill('input[type="password"]', password);
@@ -35,9 +35,9 @@ async function loginAs(page: any, email: string, password: string) {
  * 同一 BrowserContext のセッション Cookie を使って /api/users/search を直接呼び出す。
  */
 async function callSearchAPI(
-  page: any,
+  page: Page,
   query: string
-): Promise<{ status: number; body: any; headers: any }> {
+): Promise<{ status: number; body: unknown; headers: Record<string, string | null> }> {
   const response = await page.request.get(`/api/users/search?q=${encodeURIComponent(query)}`);
   let body = null;
   try { body = await response.json(); } catch { /* ignore */ }
@@ -118,10 +118,8 @@ test('CRITICAL-RL02: 429レスポンスに X-RateLimit-* ヘッダーが含ま�
   expect(result.status).toBe(429);
   expect(result.headers['x-ratelimit-limit']).toBe('30');
   expect(result.headers['x-ratelimit-remaining']).toBe('0');
-  expect(result.headers['x-ratelimit-reset']).toBeTruthy();
-  expect(/^\d+$/.test(result.headers['x-ratelimit-reset'])).toBe(true);
-  expect(result.headers['retry-after']).toBeTruthy();
-  expect(/^\d+$/.test(result.headers['retry-after'])).toBe(true);
+  expect(result.headers['x-ratelimit-reset']).toMatch(/^\d+$/);
+  expect(result.headers['retry-after']).toMatch(/^\d+$/);
 });
 
 // ────────────────────────────────────────────────────────────
