@@ -24,6 +24,28 @@
 
 ---
 
+#### [FEAT-006] チャット回数の仕様変更（柔軟なラウンド制御 + 固定挨拶メッセージ）
+
+- **現状**: ケース作成時に「2 回 / 3 回 / 5 回」の 3 パターンから `max_rounds` を選択。ユーザーが各ラウンドで挨拶含め自由入力。
+- **変更内容**:
+  - **デフォルト**: `max_rounds = 3` に固定（選択肢の撤廃）
+  - **早期終了**: 3 回に満たなくても、両者の合意があればいつでも終了し判決へ進める仕組みを追加
+  - **延長**: 3 回終了後、判決画面へ進む前に「更に 3 回追加するか」の選択ステップを挿入。**どちらか一方でも「続けたい」を選択すると 3 回追加**（OR 条件、AND ではない）。追加後も同じ流れを繰り返せる
+  - **挨拶の自動化**: 開始と終了の挨拶は固定メッセージとし、ユーザーの入力ではなくシステムが自動投入
+    - 開始時デフォルト: 「よろしくお願いします」
+    - 終了時デフォルト: 「ありがとうございました。」
+    - マイページから設定変更可能（プロフィール単位）
+- **設計上の論点**（実装時に整理）:
+  - 「両者合意で終了」「3 回追加するかの選択」の UI/UX（モーダルか、ターン交代時のインラインボタンか）
+  - 既存ケースの `max_rounds`（2/5 を選んだ過去ケース）との後方互換（既存ケースはそのまま走らせる想定）
+  - 固定挨拶メッセージの保存先（profiles に 2 カラム追加 or 別テーブル）
+  - 挨拶メッセージがラウンドカウントに含まれるか、別扱いか
+  - 「続けたい / 終わりたい」の選択を判決画面の `verdicts` 計算に含めるか
+- **優先度**: 中
+- **由来**: 2026-06-12 ダイチ依頼
+
+---
+
 ### 運用・テスト基盤（OPS）
 
 #### [OPS-001] E2E 実行基盤の運用見直し
@@ -53,6 +75,26 @@
   - 残作業（ダイチ手動）: テスト用 Supabase プロジェクトの作成・スキーマ適用・E2E ユーザー登録・`.env.test` の実値投入。docs/operations/e2e-test-db.md の手順通り。
 - **優先度**: 中（Part 1 完了によりパイプラインで E2E が回せる。Part 2 メカニズム整備済み、運用準備はダイチが docs に従って実施）
 - **由来**: 2026-05-29 LOW バッチ対応時に顕在化
+
+---
+
+#### [OPS-002] テスト DB スキーマソースの整合性回復（schema.sql / migrations / docs 不整合）
+
+- **背景**: OPS-001 Part 2 のセットアップ自走時（2026-06-10）に、`supabase/schema.sql` と `supabase/migrations/*.sql` の重複が原因で「schema.sql → migrations 全実行」を docs 通りに素直にやると最初の migration で停止することが判明。
+- **症状**:
+  - `supabase/schema.sql` が「初期スキーマ」ではなく **本番 DB の現スナップショット**になっており、`profiles.avatar_url` / `profiles.defense_custom_instruction` 列と `judge_messages` テーブルが既に含まれている
+  - 一方 `supabase/migrations/20260524000000_create_judge_messages.sql` と `supabase/migrations/20260526000001_feat002_phase1_profiles.sql` の前半（ALTER TABLE profiles ADD COLUMN）は schema.sql と重複
+  - `docs/operations/e2e-test-db.md` 通りに「schema.sql → migrations 全実行」を素直にやると 1 件目で `42710: policy "誰でも裁判官メッセージを参照可" for table "judge_messages" already exists` で停止する
+  - 2026-06-10 のセットアップはサージカル対応（`20260524000000` 全スキップ、`20260526000001` は `sed -n '10,$p'` で storage 部分のみ流す）で完走させたが、再現性のある手順ではない
+- **対応案**:
+  - **A) schema.sql を初期スキーマ（migration 0 番目）に戻す**: 本番に流した履歴を後から書き換える形になるので OPS リスク要確認。ただし「migrations が完全な履歴」になり最も筋がいい
+  - **B) migrations を冪等化**: `CREATE TABLE IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS` / `DROP POLICY IF EXISTS ... → CREATE POLICY` 等で重複実行を許容する。実装は軽いが「履歴の純度」は犠牲
+  - **C) docs を分離**: `schema.sql` は「冷凍庫」と明示し、新規セットアップ向けに `supabase/setup.sql`（schema + migrations の合成版）を別途用意。docs を「冷凍庫運用」前提に整理
+- **副作用 / 設計上の論点**:
+  - 本番 DB の `supabase_migrations.schema_migrations` テーブルに既適用の migration ID が記録されているか確認が必要（記録あれば履歴改変のリスク）
+  - 採用方針によって `scripts/setup-test-db.sh` 化（前セッションで構想）の難易度が変わる
+- **優先度**: 中（テスト DB セットアップはサージカル手順で済む状態だが、`scripts/setup-test-db.sh` 化や次回プロジェクト立ち上げ時に再現性が壊れる）
+- **由来**: 2026-06-10 OPS-001 Part 2 セットアップ自走中に発見
 
 ---
 
