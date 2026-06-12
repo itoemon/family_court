@@ -6,6 +6,54 @@ import { buildCaseResponse } from "@/lib/case-response";
 import { generateJudgeMessage } from "@/lib/judge";
 import { decryptApiKey } from "@/lib/crypto";
 import { isUuid } from "@/lib/text-utils";
+import { resolveOpeningGreeting } from "@/lib/greetings";
+
+type AdminClient = ReturnType<typeof createAdminClient>;
+
+async function insertOpeningGreetings(
+  admin: AdminClient,
+  caseId: string,
+  plaintiffId: string,
+  defendantUserId: string | null
+) {
+  // 原告の挨拶
+  const { data: plaintiffProfile } = await admin
+    .from("profiles")
+    .select("opening_greeting")
+    .eq("id", plaintiffId)
+    .single();
+  const plaintiffOpening = resolveOpeningGreeting(plaintiffProfile?.opening_greeting ?? null);
+
+  // 被告の挨拶（ゲストの場合はサーバ既定文）
+  let defendantOpening = resolveOpeningGreeting(null);
+  if (defendantUserId) {
+    const { data: defendantProfile } = await admin
+      .from("profiles")
+      .select("opening_greeting")
+      .eq("id", defendantUserId)
+      .single();
+    defendantOpening = resolveOpeningGreeting(defendantProfile?.opening_greeting ?? null);
+  }
+
+  await admin.from("arguments").insert([
+    {
+      case_id: caseId,
+      role: "plaintiff",
+      phase: "opening",
+      round: 0,
+      content: plaintiffOpening,
+      is_greeting: true,
+    },
+    {
+      case_id: caseId,
+      role: "defendant",
+      phase: "opening",
+      round: 0,
+      content: defendantOpening,
+      is_greeting: true,
+    },
+  ]);
+}
 
 export async function GET(
   req: NextRequest,
@@ -94,6 +142,7 @@ export async function PATCH(
       return NextResponse.json({ error: "自分自身とは話し合いできません" }, { status: 409 });
     }
     await admin.from("cases").update({ defendant_id: user.id, phase: "opening" }).eq("id", id);
+    await insertOpeningGreetings(admin, id, c.plaintiff_id, user.id);
     const { data: profile } = await admin.from("profiles").select("display_name").eq("id", user.id).single();
     try {
       const { data: plaintiffProfile } = await admin
@@ -142,6 +191,7 @@ export async function PATCH(
     );
   }
   await admin.from("cases").update({ defendant_guest_name: body.defendantName.trim(), phase: "opening" }).eq("id", id);
+  await insertOpeningGreetings(admin, id, c.plaintiff_id, null);
   try {
     const { data: plaintiffProfile } = await admin
       .from("profiles")

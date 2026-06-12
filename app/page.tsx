@@ -9,7 +9,6 @@ export default function Home() {
   const router = useRouter();
   const supabase = createClient();
   const [topic, setTopic] = useState("");
-  const [maxRounds, setMaxRounds] = useState(3);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -41,7 +40,7 @@ export default function Home() {
       const res = await fetch("/api/cases", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topic, maxRounds }),
+        body: JSON.stringify({ topic }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -96,21 +95,6 @@ export default function Home() {
               className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-transparent transition text-sm"
             />
             <p className="text-right text-xs text-stone-400 mt-0.5">{topic.length}/200</p>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-stone-400 uppercase tracking-wider mb-1.5">
-              やりとりの回数
-            </label>
-            <select
-              value={maxRounds}
-              onChange={(e) => setMaxRounds(Number(e.target.value))}
-              className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-700 focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-transparent transition text-sm"
-            >
-              <option value={2}>2回（さらっと）</option>
-              <option value={3}>3回（ちょうどよく）</option>
-              <option value={5}>5回（じっくりと）</option>
-            </select>
           </div>
 
           {error && (

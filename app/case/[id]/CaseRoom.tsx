@@ -15,6 +15,7 @@ const PHASE_LABELS: Record<string, string> = {
   opening: "はじめのひとこと",
   argument: "主張・反論",
   closing: "最後のひとこと",
+  extension_voting: "もう少し話し合うか確認中",
   judging: "AI が審議中...",
   verdict: "判決済み",
 };
@@ -56,6 +57,10 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
   const [draftText, setDraftText] = useState<string | null>(null);
   const [draftLoading, setDraftLoading] = useState(false);
   const [showDefenseTab, setShowDefenseTab] = useState(false);
+
+  // FEAT-006: 終了提案 / 延長投票の in-flight ガード
+  const [endProposalInFlight, setEndProposalInFlight] = useState(false);
+  const [extensionVoteInFlight, setExtensionVoteInFlight] = useState(false);
 
   const roleParam = searchParams.get("role") as Role | null;
 
@@ -354,11 +359,70 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
   ].sort((a, b) => new Date(a.data.createdAt).getTime() - new Date(b.data.createdAt).getTime());
 
   const isMyTurn = myRole && caseData.currentTurn === myRole;
-  const canSpeak = isMyTurn && !["waiting", "judging", "verdict"].includes(caseData.phase);
+  const canSpeak =
+    isMyTurn && !["waiting", "extension_voting", "judging", "verdict"].includes(caseData.phase);
   const opponentName = myRole === "plaintiff" ? caseData.defendant?.name : caseData.plaintiff?.name;
   const warningMap = new Map(
     (caseData.contradictionWarnings ?? []).map((w) => [w.argumentId, w])
   );
+
+  // FEAT-006: 終了提案 / 延長投票の自分側状態算出
+  const endProposedBy = caseData.endProposedBy;
+  const isMyEndProposal =
+    !!endProposedBy &&
+    ((myRole === "plaintiff" && endProposedBy === "plaintiff") ||
+      (myRole === "defendant" && (endProposedBy === "defendant" || endProposedBy === "guest")));
+  const isOpponentEndProposal = !!endProposedBy && !isMyEndProposal && !!myRole;
+
+  const myExtensionVote =
+    myRole === "plaintiff"
+      ? caseData.extensionVotePlaintiff
+      : myRole === "defendant"
+      ? caseData.extensionVoteDefendant
+      : null;
+  const opponentExtensionVote =
+    myRole === "plaintiff"
+      ? caseData.extensionVoteDefendant
+      : myRole === "defendant"
+      ? caseData.extensionVotePlaintiff
+      : null;
+
+  // 提案 / 撤回 / 同意トグル（API 1 本でサーバ側分岐）
+  async function handleToggleEndProposal() {
+    if (!myRole || endProposalInFlight) return;
+    setEndProposalInFlight(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/cases/${caseId}/end-proposal`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setCaseData(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "エラーが発生しました");
+    } finally {
+      setEndProposalInFlight(false);
+    }
+  }
+
+  async function handleExtensionVote(vote: "continue" | "finish") {
+    if (!myRole || extensionVoteInFlight) return;
+    setExtensionVoteInFlight(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/cases/${caseId}/extension-vote`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vote }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setCaseData(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "エラーが発生しました");
+    } finally {
+      setExtensionVoteInFlight(false);
+    }
+  }
 
   return (
     <main className="min-h-screen bg-stone-50 flex flex-col">
@@ -395,6 +459,31 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
           isMe={myRole === "defendant"}
         />
       </div>
+
+      {isOpponentEndProposal && (
+        <div className="max-w-2xl mx-auto w-full px-4 pt-2">
+          <div className="bg-stone-100 border border-stone-300 text-stone-700 rounded-xl px-4 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm">
+              {opponentName ?? "相手"}さんが話し合いの終了を提案しています。
+            </p>
+            <button
+              onClick={handleToggleEndProposal}
+              disabled={endProposalInFlight}
+              className="bg-brand-700 hover:bg-brand-800 disabled:bg-stone-200 disabled:text-stone-400 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
+            >
+              {endProposalInFlight ? "送信中..." : "同意して終了"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {isMyEndProposal && (
+        <div className="max-w-2xl mx-auto w-full px-4 pt-2">
+          <p className="text-xs text-stone-600 bg-stone-100 border border-stone-200 rounded-lg px-3 py-2">
+            あなたが終了を提案中です。相手の同意で判決へ進みます。撤回するには下のアイコンをもう一度押してください。
+          </p>
+        </div>
+      )}
 
       {showDefenseTab && myRole && (
         <div className="max-w-2xl mx-auto w-full px-4 pt-3 flex gap-2">
@@ -456,13 +545,23 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
               const isPlaintiff = arg.role === "plaintiff";
               const name = isPlaintiff ? caseData.plaintiff?.name : caseData.defendant?.name;
               const warning = myRole === arg.role ? warningMap.get(arg.id) : undefined;
+              const greetingLabel = arg.isGreeting
+                ? arg.phase === "closing"
+                  ? "終了の挨拶"
+                  : "開始の挨拶"
+                : null;
               return (
                 <div key={arg.id}>
                   <div className={`flex flex-col ${isPlaintiff ? "items-start" : "items-end"}`}>
                     <p className={`text-xs mb-1 px-1 ${isPlaintiff ? "text-brand-600" : "text-rose-400"}`}>
                       {name}
                       <span className="text-stone-300 ml-1.5">
-                        {PHASE_LABELS[arg.phase]}{arg.phase === "argument" && ` ${arg.round}回目`}
+                        {greetingLabel ?? (
+                          <>
+                            {PHASE_LABELS[arg.phase]}
+                            {arg.phase === "argument" && ` ${arg.round}回目`}
+                          </>
+                        )}
                       </span>
                     </p>
                     <div className={`max-w-sm rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap shadow-sm ${isPlaintiff ? "bg-brand-50 text-brand-900 rounded-tl-sm" : "bg-rose-50 text-rose-900 rounded-tr-sm"}`}>
@@ -494,12 +593,21 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
           {canSpeak && myRole && (
             <div className="bg-white border-t border-stone-100 sticky bottom-0">
               <form onSubmit={handleSubmitArgument} className="max-w-2xl mx-auto px-4 py-4 space-y-2">
-                <p className="text-xs text-stone-400">
-                  あなたの番です
-                  <span className={`ml-1.5 font-semibold ${myRole === "plaintiff" ? "text-brand-600" : "text-rose-400"}`}>
-                    （{PHASE_LABELS[caseData.phase]}）
-                  </span>
-                </p>
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-stone-400">
+                    あなたの番です
+                    <span className={`ml-1.5 font-semibold ${myRole === "plaintiff" ? "text-brand-600" : "text-rose-400"}`}>
+                      （{PHASE_LABELS[caseData.phase]}）
+                    </span>
+                  </p>
+                  {caseData.phase === "argument" && (
+                    <EndProposalButton
+                      active={isMyEndProposal}
+                      disabled={endProposalInFlight}
+                      onClick={handleToggleEndProposal}
+                    />
+                  )}
+                </div>
                 <textarea
                   value={argumentText}
                   onChange={(e) => setArgumentText(e.target.value)}
@@ -522,15 +630,24 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
             </div>
           )}
 
-          {!canSpeak && myRole && !["waiting", "judging", "verdict"].includes(caseData.phase) && (
+          {!canSpeak && myRole && !["waiting", "extension_voting", "judging", "verdict"].includes(caseData.phase) && (
             <div className="bg-white border-t border-stone-100 sticky bottom-0">
-              <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-center gap-2">
-                <p className="text-stone-400 text-sm">{opponentName ?? "相手"} さんの返答を待っています</p>
-                <span className="inline-flex items-center gap-0.5">
-                  <span className="w-1 h-1 rounded-full bg-stone-400 animate-bounce" style={{ animationDelay: "0ms" }} />
-                  <span className="w-1 h-1 rounded-full bg-stone-400 animate-bounce" style={{ animationDelay: "150ms" }} />
-                  <span className="w-1 h-1 rounded-full bg-stone-400 animate-bounce" style={{ animationDelay: "300ms" }} />
-                </span>
+              <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <p className="text-stone-400 text-sm truncate">{opponentName ?? "相手"} さんの返答を待っています</p>
+                  <span className="inline-flex items-center gap-0.5 shrink-0">
+                    <span className="w-1 h-1 rounded-full bg-stone-400 animate-bounce" style={{ animationDelay: "0ms" }} />
+                    <span className="w-1 h-1 rounded-full bg-stone-400 animate-bounce" style={{ animationDelay: "150ms" }} />
+                    <span className="w-1 h-1 rounded-full bg-stone-400 animate-bounce" style={{ animationDelay: "300ms" }} />
+                  </span>
+                </div>
+                {caseData.phase === "argument" && (
+                  <EndProposalButton
+                    active={isMyEndProposal}
+                    disabled={endProposalInFlight}
+                    onClick={handleToggleEndProposal}
+                  />
+                )}
               </div>
             </div>
           )}
@@ -544,7 +661,118 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
           onCancel={() => setDraftText(null)}
         />
       )}
+
+      {caseData.phase === "extension_voting" && myRole && (
+        <ExtensionVotingModal
+          myVote={myExtensionVote}
+          opponentVote={opponentExtensionVote}
+          disabled={extensionVoteInFlight}
+          onVote={handleExtensionVote}
+        />
+      )}
     </main>
+  );
+}
+
+function EndProposalButton({
+  active,
+  disabled,
+  onClick,
+}: {
+  active: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-pressed={active}
+      aria-label={active ? "終了の提案を取り下げる" : "話し合いの終了を提案する"}
+      className={`shrink-0 inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
+        active
+          ? "bg-stone-200 text-stone-800"
+          : "bg-stone-100 hover:bg-stone-200 text-stone-600"
+      }`}
+    >
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <rect x="3" y="3" width="13" height="18" rx="1" />
+        <path d="M16 12h6" />
+        <path d="M19 9l3 3-3 3" />
+      </svg>
+      {active ? "提案を取り下げる" : "終了を提案"}
+    </button>
+  );
+}
+
+function ExtensionVotingModal({
+  myVote,
+  opponentVote,
+  disabled,
+  onVote,
+}: {
+  myVote: "continue" | "finish" | null;
+  opponentVote: "continue" | "finish" | null;
+  disabled: boolean;
+  onVote: (vote: "continue" | "finish") => void;
+}) {
+  const voted = myVote !== null;
+  return (
+    <div className="fixed inset-0 z-30 bg-stone-900/40 flex items-center justify-center p-4">
+      <div className="bg-white rounded-3xl shadow-xl border border-stone-100 max-w-sm w-full p-6 space-y-4">
+        <div className="text-center">
+          <p className="text-2xl mb-2">🌿</p>
+          <h2 className="text-lg font-bold text-stone-800">話し合いを続けますか？</h2>
+        </div>
+        {voted ? (
+          <div className="space-y-3">
+            <p className="text-sm text-stone-600 leading-relaxed">
+              あなたの判断は
+              <span className="font-semibold mx-1 text-stone-800">
+                「{myVote === "continue" ? "続ける" : "終わる"}」
+              </span>
+              でした。{opponentVote === null ? "相手の投票を待っています…" : "結果を反映中です…"}
+            </p>
+            <p className="text-xs text-stone-400 text-center">一度選んだ判断は取り消せません</p>
+          </div>
+        ) : (
+          <>
+            <p className="text-sm text-stone-600 leading-relaxed">
+              ここまでの議論が終わりました。もう少し話し合いたい場合は「続ける」、ここで判決に進む場合は「終わる」を選んでください。一度選ぶと取り消せません。
+            </p>
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={() => onVote("continue")}
+                disabled={disabled}
+                className="w-full bg-brand-700 hover:bg-brand-800 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
+              >
+                続ける（+3 回）
+              </button>
+              <button
+                type="button"
+                onClick={() => onVote("finish")}
+                disabled={disabled}
+                className="w-full bg-stone-200 hover:bg-stone-300 disabled:bg-stone-100 disabled:text-stone-400 text-stone-700 font-semibold py-3 rounded-xl transition-colors text-sm"
+              >
+                終わる（判決へ）
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 

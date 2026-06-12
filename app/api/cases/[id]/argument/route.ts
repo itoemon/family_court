@@ -20,7 +20,7 @@ export async function POST(
 
   const { data: c } = await admin.from("cases").select("*").eq("id", id).single();
   if (!c) return NextResponse.json({ error: "ケースが見つかりません" }, { status: 404 });
-  if (["waiting", "judging", "verdict"].includes(c.phase)) {
+  if (["waiting", "extension_voting", "judging", "verdict"].includes(c.phase)) {
     return NextResponse.json({ error: "現在は発言できないフェーズです" }, { status: 409 });
   }
 
@@ -100,7 +100,8 @@ export async function POST(
       nextPhase = "closing";
       nextRound = 1;
     } else if (c.phase === "closing") {
-      nextPhase = "judging";
+      // FEAT-006: closing 終了で直接 judging には行かず、両者の延長投票を挟む。
+      nextPhase = "extension_voting";
     }
   }
 
@@ -123,7 +124,7 @@ export async function POST(
 
   try {
     if (!plaintiffApiKey) {
-      console.warn(`[judge] ${nextPhase === "judging" ? "closing" : "turn"}: plaintiff ${c.plaintiff_id} has no api_key_encrypted`);
+      console.warn(`[judge] ${nextPhase === "extension_voting" ? "closing" : "turn"}: plaintiff ${c.plaintiff_id} has no api_key_encrypted`);
     } else {
       let defendantName = "反対者";
       if (c.defendant_id) {
@@ -136,7 +137,8 @@ export async function POST(
       } else if (c.defendant_guest_name) {
         defendantName = c.defendant_guest_name;
       }
-      const triggerType = nextPhase === "judging" ? "closing" : "turn";
+      // closing 完了 → extension_voting への遷移時に「最終陳述後の総括」judge_message を出す。
+      const triggerType = nextPhase === "extension_voting" ? "closing" : "turn";
       const content = await generateJudgeMessage({
         trigger: triggerType,
         topic: c.topic,

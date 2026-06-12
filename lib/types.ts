@@ -10,12 +10,16 @@ export interface JudgeMessage {
 }
 
 export type Phase =
-  | "waiting"      // 被告の参加待ち
-  | "opening"      // 冒頭陳述
-  | "argument"     // 主張・反論
-  | "closing"      // 最終弁論
-  | "judging"      // AI審議中
-  | "verdict";     // 判決済み
+  | "waiting"          // 被告の参加待ち
+  | "opening"          // 冒頭陳述
+  | "argument"         // 主張・反論
+  | "closing"          // 最終弁論
+  | "extension_voting" // 延長投票（両者が続行 / 終了を選択）
+  | "judging"          // AI審議中
+  | "verdict";         // 判決済み
+
+export type EndProposalActor = "plaintiff" | "defendant" | "guest";
+export type ExtensionVote = "continue" | "finish";
 
 export interface Argument {
   id: string;
@@ -23,6 +27,7 @@ export interface Argument {
   phase: Phase;
   round: number;
   content: string;
+  isGreeting: boolean;
   createdAt: string;
 }
 
@@ -51,6 +56,9 @@ export interface Case {
   currentTurn: Role;
   round: number;
   maxRounds: number;
+  endProposedBy: EndProposalActor | null;
+  extensionVotePlaintiff: ExtensionVote | null;
+  extensionVoteDefendant: ExtensionVote | null;
   verdict: Verdict | null;
   createdAt: string;
   updatedAt: string;
@@ -68,7 +76,6 @@ export interface Verdict {
 export interface CreateCaseRequest {
   topic: string;
   plaintiffName: string;
-  maxRounds?: number;
 }
 
 export interface JoinCaseRequest {
@@ -100,6 +107,8 @@ export interface Profile {
   api_key_encrypted: string | null;
   avatar_url: string | null;
   defense_custom_instruction: string | null;
+  opening_greeting: string | null;
+  closing_greeting: string | null;
   created_at: string;
   updated_at: string;
 }

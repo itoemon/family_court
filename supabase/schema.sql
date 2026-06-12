@@ -11,6 +11,10 @@ create table public.profiles (
   avatar_url    text,               -- アバター画像 URL（Supabase Storage）
   defense_custom_instruction text   -- 弁護人AIへのカスタム指示（最大200文字）
     check (defense_custom_instruction is null or char_length(defense_custom_instruction) <= 200),
+  opening_greeting text             -- 開始時の固定挨拶（NULL=サーバ既定文を使用、1〜125文字）
+    check (opening_greeting is null or (char_length(opening_greeting) between 1 and 125)),
+  closing_greeting text             -- 終了時の固定挨拶（NULL=サーバ既定文を使用、1〜125文字）
+    check (closing_greeting is null or (char_length(closing_greeting) between 1 and 125)),
   created_at    timestamptz default now() not null,
   updated_at    timestamptz default now() not null
 );
@@ -60,11 +64,19 @@ create table public.cases (
   defendant_id         uuid references public.profiles(id),           -- 反対者（認証済みの場合）
   defendant_guest_name text,                                          -- 反対者（ゲストの場合）
   phase                text not null default 'waiting'
-                         check (phase in ('waiting','opening','argument','closing','judging','verdict')),
+                         check (phase in ('waiting','opening','argument','closing','extension_voting','judging','verdict')),
   current_turn         text not null default 'plaintiff'
                          check (current_turn in ('plaintiff','defendant')),
   round                int not null default 1,
   max_rounds           int not null default 3,
+  -- 終了提案者のロール（NULL=未提案）。ゲスト被告対応のため uuid ではなく text + check で表現。
+  end_proposed_by      text
+                         check (end_proposed_by is null or end_proposed_by in ('plaintiff','defendant','guest')),
+  -- 延長投票の確定値（NULL=未投票）。両者揃ったら集計後 NULL に戻して次の延長サイクルへ。
+  extension_vote_plaintiff text
+                         check (extension_vote_plaintiff is null or extension_vote_plaintiff in ('continue','finish')),
+  extension_vote_defendant text
+                         check (extension_vote_defendant is null or extension_vote_defendant in ('continue','finish')),
   created_at           timestamptz default now() not null,
   updated_at           timestamptz default now() not null,
   -- 被告は「認証済みアカウント」か「ゲスト名」のどちらか一方のみ
@@ -93,6 +105,8 @@ create table public.arguments (
   phase     text not null,
   round     int not null,
   content   text not null,
+  -- 固定挨拶 row を識別。true の場合 round=0 で INSERT し、ラウンドカウントから除外される。
+  is_greeting boolean not null default false,
   created_at timestamptz default now() not null
 );
 

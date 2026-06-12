@@ -5,6 +5,11 @@ import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import LogoutButton from "@/app/components/LogoutButton";
+import {
+  DEFAULT_OPENING_GREETING,
+  DEFAULT_CLOSING_GREETING,
+  MAX_GREETING_LENGTH,
+} from "@/lib/greetings";
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -25,6 +30,12 @@ export default function ProfilePage() {
   const [savingCustom, setSavingCustom] = useState(false);
   const [customMessage, setCustomMessage] = useState("");
   const [customIsError, setCustomIsError] = useState(false);
+  // null = サーバ側既定文を使う未設定状態。string = ユーザー設定済み。
+  const [openingGreeting, setOpeningGreeting] = useState<string | null>(null);
+  const [closingGreeting, setClosingGreeting] = useState<string | null>(null);
+  const [savingGreeting, setSavingGreeting] = useState(false);
+  const [greetingMessage, setGreetingMessage] = useState("");
+  const [greetingIsError, setGreetingIsError] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -33,7 +44,7 @@ export default function ProfilePage() {
 
       const { data: profile } = await supabase
         .from("profiles")
-        .select("display_name, api_key_encrypted, avatar_url, defense_custom_instruction")
+        .select("display_name, api_key_encrypted, avatar_url, defense_custom_instruction, opening_greeting, closing_greeting")
         .eq("id", user.id)
         .single();
 
@@ -42,6 +53,8 @@ export default function ProfilePage() {
         setHasApiKey(!!profile.api_key_encrypted);
         setAvatarUrl(profile.avatar_url ?? null);
         setCustomInstruction(profile.defense_custom_instruction ?? "");
+        setOpeningGreeting(profile.opening_greeting ?? null);
+        setClosingGreeting(profile.closing_greeting ?? null);
       }
       setLoading(false);
     }
@@ -115,6 +128,54 @@ export default function ProfilePage() {
       setUploading(false);
       e.target.value = "";
     }
+  }
+
+  async function patchGreetings(payload: {
+    openingGreeting?: string | null;
+    closingGreeting?: string | null;
+  }) {
+    setSavingGreeting(true);
+    setGreetingMessage("");
+    setGreetingIsError(false);
+    try {
+      const res = await fetch("/api/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error ?? "保存に失敗しました");
+      }
+      const data = await res.json();
+      if ("openingGreeting" in data) setOpeningGreeting(data.openingGreeting ?? null);
+      if ("closingGreeting" in data) setClosingGreeting(data.closingGreeting ?? null);
+      setGreetingMessage("保存しました");
+    } catch (err: unknown) {
+      setGreetingIsError(true);
+      setGreetingMessage(err instanceof Error ? err.message : "保存中にエラーが発生しました");
+    } finally {
+      setSavingGreeting(false);
+    }
+  }
+
+  async function handleSaveGreetings() {
+    // 空欄は API 側で 400 になるため、UI 側でも事前に弾く（UX）。
+    if (openingGreeting !== null && openingGreeting.trim() === "") {
+      setGreetingIsError(true);
+      setGreetingMessage(
+        `開始時の挨拶は空欄では保存できません。デフォルト（${DEFAULT_OPENING_GREETING}）に戻すには「デフォルトに戻す」を押してください`
+      );
+      return;
+    }
+    if (closingGreeting !== null && closingGreeting.trim() === "") {
+      setGreetingIsError(true);
+      setGreetingMessage(
+        `終了時の挨拶は空欄では保存できません。デフォルト（${DEFAULT_CLOSING_GREETING}）に戻すには「デフォルトに戻す」を押してください`
+      );
+      return;
+    }
+    await patchGreetings({ openingGreeting, closingGreeting });
   }
 
   async function handleSaveCustomInstruction() {
@@ -274,6 +335,81 @@ export default function ProfilePage() {
               className="w-full bg-brand-700 hover:bg-brand-800 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
             >
               {savingCustom ? "保存中..." : "AIへの指示を保存"}
+            </button>
+          </div>
+
+          <div className="pt-5 border-t border-stone-100 space-y-4">
+            <div>
+              <div className="flex items-baseline justify-between mb-1.5">
+                <label className="block text-xs font-semibold text-stone-400 uppercase tracking-wider">
+                  開始時の挨拶
+                </label>
+                {openingGreeting !== null && (
+                  <button
+                    type="button"
+                    onClick={() => patchGreetings({ openingGreeting: null })}
+                    disabled={savingGreeting}
+                    className="text-stone-500 hover:text-stone-700 text-xs underline disabled:opacity-50"
+                  >
+                    デフォルトに戻す
+                  </button>
+                )}
+              </div>
+              <input
+                type="text"
+                value={openingGreeting ?? ""}
+                onChange={(e) => setOpeningGreeting(e.target.value)}
+                maxLength={MAX_GREETING_LENGTH}
+                placeholder={DEFAULT_OPENING_GREETING}
+                className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-transparent transition text-sm"
+              />
+              <p className="text-xs text-stone-400 mt-1">
+                話し合いの最初に自動で送られます。未設定時は「{DEFAULT_OPENING_GREETING}」を使います。
+              </p>
+            </div>
+
+            <div>
+              <div className="flex items-baseline justify-between mb-1.5">
+                <label className="block text-xs font-semibold text-stone-400 uppercase tracking-wider">
+                  終了時の挨拶
+                </label>
+                {closingGreeting !== null && (
+                  <button
+                    type="button"
+                    onClick={() => patchGreetings({ closingGreeting: null })}
+                    disabled={savingGreeting}
+                    className="text-stone-500 hover:text-stone-700 text-xs underline disabled:opacity-50"
+                  >
+                    デフォルトに戻す
+                  </button>
+                )}
+              </div>
+              <input
+                type="text"
+                value={closingGreeting ?? ""}
+                onChange={(e) => setClosingGreeting(e.target.value)}
+                maxLength={MAX_GREETING_LENGTH}
+                placeholder={DEFAULT_CLOSING_GREETING}
+                className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-transparent transition text-sm"
+              />
+              <p className="text-xs text-stone-400 mt-1">
+                判決前に自動で送られます。未設定時は「{DEFAULT_CLOSING_GREETING}」を使います。
+              </p>
+            </div>
+
+            {greetingMessage && (
+              <p className={`text-sm rounded-xl px-4 py-2 ${greetingIsError ? "text-rose-500 bg-rose-50 border border-rose-100" : "text-emerald-600 bg-emerald-50 border border-emerald-100"}`}>
+                {greetingMessage}
+              </p>
+            )}
+
+            <button
+              type="button"
+              onClick={handleSaveGreetings}
+              disabled={savingGreeting}
+              className="w-full bg-brand-700 hover:bg-brand-800 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
+            >
+              {savingGreeting ? "保存中..." : "挨拶を保存"}
             </button>
           </div>
 

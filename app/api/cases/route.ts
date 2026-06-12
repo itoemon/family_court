@@ -24,12 +24,12 @@ export async function POST(req: NextRequest) {
     .eq("id", user.id)
     .single();
 
+  // max_rounds は DB default (3) に委ねる。FEAT-006 で固定値となったため明示指定しない。
   const { data, error } = await admin
     .from("cases")
     .insert({
       topic: body.topic.trim(),
       plaintiff_id: user.id,
-      max_rounds: body.maxRounds ?? 3,
     })
     .select()
     .single();
