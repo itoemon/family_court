@@ -1787,3 +1787,475 @@ FEAT-RESP-HEADER で確立したトーンに揃える。`brand-500` は使用し
 - **`Promise.all` vs `Promise.allSettled`**: 本設計は `Promise.allSettled` を採用する。1 つのセクションのクエリ失敗で全ページが落ちる挙動を避けるため。result は `result.status === 'fulfilled' ? result.value : null` 等で分岐させる。
 - **件数表示の精度**: 全件取得して `.length` で件数を求める方針なので、Supabase の暗黙的な行数上限（PostgREST デフォルト 1000）に達するほどユーザーが大量に持つ場合は件数が頭打ちになる。本タスクのフェーズではこの上限を超えるユーザーは想定外（個人がフレンド数千・ケース数千を持つ段階で別タスクで count クエリ分離・ページング導入）。
 
+---
+
+## FEAT-006 対応: チャット回数仕様の柔軟化と固定挨拶の導入
+
+### 概要
+
+ケースのチャット回数を「2 回 / 3 回 / 5 回の事前選択」から「3 回デフォルト + 両者合意による早期終了 + 双方の意思での 3 回延長」に切り替える。あわせて開始時 / 終了時の挨拶を **システム自動投入の固定文** とし、ユーザーは `/profile` で文面を上書き設定できる。
+
+#### 背景
+
+- 現行 UI（`app/page.tsx` の 2/3/5 セレクター）は、最初に固定値を選ばせるため摩擦が大きく、また「挨拶もカウントに含まれる」ことで実質の議論ラウンドが目減りしていた。
+- 解決策として、(a) 開始は常に 3 ラウンドで固定、(b) 早期終了は会話中の両者合意で発火、(c) 3 ラウンド終了直前に「続けたい / 終わりたい」の 2 択を両者に提示し OR 条件で +3 ラウンド延長、(d) 挨拶はラウンド外の固定文として扱う、という構造に再設計する。
+
+#### 方針の根幹（task.md 由来）
+
+- **旧データ全削除統一**: 本番 DB は現状テストデータのみのため、後方互換ロジックは作らない。マイグレーションの最初のステップで `cases` 全行を削除し、cascade で `arguments` / `verdicts` / `judge_messages` も一掃する。`profiles` / `friend_requests` / `laws` / `law_*` は保持する。
+- **延長回数の上限なし**: ダイチ判断により上限は設けない。`max_rounds` カラムは残し、延長のたびに `+= 3` で履歴を間接保持する。
+- **配色制約**: 既存 `stone-*` / `brand-700` / `brand-800` のみ。`brand-500` 不使用。breakpoint 不採用。
+- **AI 不変**: 弁護人 AI のプロンプト・出力契約は変更しない。挨拶は AI 経由で生成せず、システム固定文を直接挿入する。
+- **ポーリング前提**: リアルタイム push は導入せず、既存の CaseRoom polling 機構（phase / round / 状態）に乗せる。
+
+### 影響範囲
+
+| カテゴリ | パス | 変更種別 |
+| --- | --- | --- |
+| migration | `supabase/migrations/20260612NNNNNN_feat006_chat_rounds_and_greetings.sql` | 新規（旧データ削除 + カラム追加 + check 制約更新 + RLS 追記） |
+| schema 反映 | `supabase/schema.sql` | 追記（FEAT-002 と同じく snapshot 方針に乗る）。`cases.phase` の check 値を更新、`cases.end_proposed_by` / `cases.extension_vote_*` 追加、`profiles.opening_greeting` / `closing_greeting` 追加、`arguments.is_greeting` 追加 |
+| ケース作成 UI | `app/page.tsx` | `maxRounds` の `useState` / `<select>` ブロック / POST body のキーを削除 |
+| ケース作成 API | `app/api/cases/route.ts` | POST body の `maxRounds` 受領を撤去し、INSERT 時の `max_rounds` 列は default に委ねる（明示指定もしない） |
+| ケースルーム | `app/case/[id]/CaseRoom.tsx` | 終了提案アイコン + 状態表示、延長投票モーダル、固定挨拶 row のレンダリング、polling 反映の拡張 |
+| 新規 API | `app/api/cases/[id]/end-proposal/route.ts` | POST: 終了提案のトグル（提案 / 撤回 / 合意成立判定） |
+| 新規 API | `app/api/cases/[id]/extension-vote/route.ts` | POST: 延長投票（`continue` / `finish` を 1 回確定） |
+| プロフィール UI | `app/profile/page.tsx` | 「開始時の挨拶」「終了時の挨拶」テキスト入力欄を追加 |
+| プロフィール API | `app/api/profile/route.ts`（既存実装位置に合わせる） | PATCH で `openingGreeting` / `closingGreeting` を受領 |
+| ラウンド遷移 / 開始挨拶投入 | `app/api/cases/[id]/start/route.ts` または `app/api/cases/[id]/argument/route.ts` のいずれか既存の opening 進入点 | opening phase 開始時に両者の `opening_greeting` を `arguments` に `is_greeting = true` で挿入 |
+| フェーズラベル | `lib/types.ts` / `PHASE_LABELS` 定義箇所 | `"extension_voting"` を追加 |
+| 型定義 | `lib/types.ts` | `Case` 型に `endProposedBy` / `extensionVotePlaintiff` / `extensionVoteDefendant` 追加、`Profile` 型に `openingGreeting` / `closingGreeting` 追加、`Argument` 型に `isGreeting` 追加、`phase` リテラルに `"extension_voting"` 追加 |
+| snake→camel マップ | `lib/case-response.ts` | 新カラムのキー変換を追加（BUG-003 同様の事故防止） |
+
+### API 仕様
+
+#### POST `/api/cases/[id]/end-proposal`
+
+- **用途**: 「終了を提案」アイコンのトグル。提案 → 撤回 → 提案 → 相手の合意で確定、までを 1 エンドポイントで扱う。
+- **認可**: 当該ケースの `plaintiff_id` または `defendant_id` と一致する認証ユーザー、もしくは有効な guest token（被告ゲスト）を持つ呼び出し元のみ受け付ける。
+- **冪等性**: トグル意味論のためサーバ側で現在状態を読んで分岐する。クライアントが同じ操作を 2 度送れば「提案 → 撤回」と進む点に注意。
+- **リクエスト**: ボディなし。
+- **サーバ処理**:
+  - `cases` を `SELECT id, plaintiff_id, defendant_id, end_proposed_by, phase FOR UPDATE`（admin client + ロックは Postgres の `select … for update` を Supabase の RPC 不可前提では「楽観的更新」で代替: `update … where end_proposed_by IS [old]`）。
+  - 呼び出し元の actor identifier（認証ユーザーなら `auth.uid()`、ゲストなら `cases.defendant_id IS NULL` 配下で `'defendant_guest'` を表す sentinel）の決定:
+    - 認証ユーザー（原告）: `actorId = plaintiff_id`
+    - 認証ユーザー（被告）: `actorId = defendant_id`
+    - ゲスト（被告）: `actorId` には UUID を入れられないため、`cases` 側のカラムを `uuid null` ではなく **`text null`** にする（後述 [データモデル] 参照）。`actorId = 'guest'` 固定。
+  - 分岐:
+    1. `end_proposed_by IS NULL` → `actorId` をセット。レスポンス: `{ state: "proposed", proposedBy: "plaintiff"|"defendant" }`
+    2. `end_proposed_by = actorId` → `NULL` に戻す（撤回）。レスポンス: `{ state: "withdrawn" }`
+    3. `end_proposed_by != actorId` → 相手が提案中で、自分が同意した状態。`phase = 'judging'` に更新し、判決生成キューに乗せる既存処理を呼び出す。レスポンス: `{ state: "accepted", phase: "judging" }`
+- **エラー**:
+  - 401 / 403: 認証または ケース当事者でない
+  - 409: `phase` が `argument` 以外（`waiting` / `opening` / `closing` / `extension_voting` / `judging` / `verdict`）の状態で提案された場合（提案できるフェーズは `argument` のみ）
+  - 500: 楽観的更新失敗が連続したとき（リトライ案内）
+
+#### POST `/api/cases/[id]/extension-vote`
+
+- **用途**: 延長投票（`continue` / `finish` の 1 回限り）。
+- **認可**: end-proposal と同じ。
+- **リクエスト**: `{ vote: "continue" | "finish" }`
+- **サーバ処理**:
+  - `cases.phase === 'extension_voting'` でない場合は 409。
+  - 投票者は自分側のカラムのみ書き込み可（原告 → `extension_vote_plaintiff`、被告 → `extension_vote_defendant`）。すでに値が入っているなら 409（投票後の取り消し不可）。
+  - 書き込み後に両者の vote 状況を判定:
+    - 片側だけ → そのまま `phase = 'extension_voting'` を維持し、レスポンス `{ state: "awaiting_opponent", myVote, opponentVote: null }`
+    - 両者揃った場合:
+      - どちらかが `continue` → `max_rounds = max_rounds + 3`、`extension_vote_plaintiff = NULL`、`extension_vote_defendant = NULL`、`phase = 'argument'`、`round = max_rounds_pre + 1`（延長分の最初）、`current_turn = 'plaintiff'`。レスポンス: `{ state: "extended", newMaxRounds }`
+      - 両者 `finish` → `phase = 'judging'` に遷移し既存の判決生成フローを起動。レスポンス: `{ state: "finalized", phase: "judging" }`
+- **エラー**:
+  - 400: `vote` 値が不正
+  - 401 / 403: 認可エラー
+  - 409: フェーズ不一致 / 自分の票がすでに確定済み
+
+#### PATCH `/api/profile`（既存）
+
+- **追加項目**:
+  - `openingGreeting?: string | null`
+  - `closingGreeting?: string | null`
+- **バリデーション**:
+  - 文字列長は **既存 argument の上限 500 文字 / 4** = **125 文字** を上限とする（短い挨拶を想定し、暴発防止）。
+  - 空文字 (`""`) は 400 で拒否（NULL 化したい場合は明示的に `null` を送る = 「デフォルトに戻す」ボタンの動作）。
+  - 改行は 1 文字までを許容（複数行挨拶は UX 上不要）。`/\n.*\n/.test(value)` で拒否。
+  - 既存 `escapeXml` をプロンプト挿入時に流用するため、保存時点での過剰な sanitize は行わない（React 描画側で自動 escape されるため）。
+
+#### POST `/api/cases/[id]/start`（既存があれば。なければ opening 進入点ロジック）
+
+- **追加処理**: opening phase に遷移するタイミングで、原告と被告の `profiles.opening_greeting`（NULL なら SQL のデフォルト「よろしくお願いします」）を `arguments` テーブルに `role = plaintiff/defendant`、`phase = 'opening'`、`round = 0`、`content = 挨拶文`、`is_greeting = true` で 2 行 INSERT する。被告がゲストの場合は **被告側の挨拶はサーバデフォルト固定文**（プロフィールが存在しないため）。
+- **同じく** closing phase 終了タイミング（判決生成直前）に、`profiles.closing_greeting` を `phase = 'closing'`、`round = 0`、`is_greeting = true` で 2 行 INSERT する。
+
+### データモデル
+
+#### 1. `cases` への追加カラム
+
+```sql
+alter table public.cases
+  add column end_proposed_by text null
+    check (end_proposed_by is null or end_proposed_by in ('plaintiff','defendant','guest')),
+  add column extension_vote_plaintiff text null
+    check (extension_vote_plaintiff is null or extension_vote_plaintiff in ('continue','finish')),
+  add column extension_vote_defendant text null
+    check (extension_vote_defendant is null or extension_vote_defendant in ('continue','finish'));
+```
+
+##### `end_proposed_by` を `uuid` ではなく `text` にした理由
+
+- task.md は「`end_proposed_by uuid null`」を例示しているが、被告がゲストの場合 `user_id` 相当の UUID が存在しない（`defendant_id IS NULL` かつ `defendant_guest_name` 経由でのみ識別される）。
+- これを `uuid` のまま運用すると、ゲスト被告は終了提案を出せない（NULL を入れると未提案と区別不能）か、無理やり原告の UUID を流用するなどの破綻が出る。
+- **roleベース**（`'plaintiff'` / `'defendant'` / `'guest'`）に変更することで、認証被告とゲスト被告を同じ意味論で扱える。ロール識別は API 側の認証情報から確定する（クライアント送信値を信用しない）。
+- ロールが 1 ケース内で複数被告を持たない前提（要件定義書通り）なので、`'defendant'` と `'guest'` を分けるか統一するかは選択肢があるが、本設計では `cases.defendant_id IS NULL` の場合に `'guest'`、それ以外で `'defendant'` を使う。実装側で `defendant_id IS NULL ? 'guest' : 'defendant'` と一義に決定できる。
+
+##### 延長投票の保存方式（案 A: cases 2 カラム / 案 B: 別テーブル）
+
+| 観点 | 案 A（cases に 2 カラム） | 案 B（`case_extension_votes` 別テーブル） |
+| --- | --- | --- |
+| マイグレーション量 | 小（ALTER 2 列） | 大（CREATE TABLE + INDEX + RLS + GRANT） |
+| 状態取得 | `cases` 1 行で完結 | JOIN または別クエリ必要 |
+| 投票後リセット | カラムを NULL に戻すだけ | 履歴行が残るため最新を取り直すロジックが必要 |
+| 複数延長の履歴 | 残らない（max_rounds の総和でラウンド数のみ復元可） | 全延長の票が時系列で残る |
+| RLS 追加 | 既存 `cases` ポリシーに自動追従 | 新テーブル用ポリシーを 2 件追加 |
+| 投票取消 | 「カラム書込後は変更不可」を API 側で担保 | INSERT のみ許可、UPDATE/DELETE 禁止で表現可能 |
+
+**推奨: 案 A**。理由:
+
+1. task.md「投票後の取り消しは許可しない（一度押したら確定）」を満たしつつ、両者投票後に「リセット → 次の延長サイクル」を素直に行うには A の方が状態管理が単純（次の `extension_voting` フェーズ突入時にカラムが空になっている状態が保証される）。
+2. 複数延長の票履歴は、`arguments.round` が `max_rounds` の遷移と整合しているため、必要なら `max_rounds` の最終値とラウンドの境界（3, 6, 9, ...）から「延長は何回行われたか」を間接的に復元できる。生の票履歴の保存は **YAGNI**。
+3. RLS の追加範囲が `cases` 既存ポリシーで全て賄え、攻撃面が増えない。
+4. 将来「票履歴の監査」が要件化された場合、`case_extension_votes` テーブルを追加し、書き込み経路だけ二重化すれば良い（後付けで案 B に移行可能）。
+
+#### 2. `profiles` への追加カラム
+
+```sql
+alter table public.profiles
+  add column opening_greeting text null
+    check (opening_greeting is null or (char_length(opening_greeting) between 1 and 125)),
+  add column closing_greeting text null
+    check (closing_greeting is null or (char_length(closing_greeting) between 1 and 125));
+```
+
+- 既存 `defense_custom_instruction` と同じく nullable + check 制約パターン。
+- 空文字 (`""`) は length 0 のため check 制約で拒否される（API 層と多重防御）。
+- 文字数上限 125 は arguments 上限 500 の 1/4 を採用（短い挨拶を想定）。
+- 既定値は **DB 側に持たせない**（NULL = 未設定 = サーバ側でアプリ既定文を採用 の意味論）。サーバ側既定文を `lib/case-response.ts` または別の `lib/greetings.ts` に集約する。
+
+##### 既定文の保管場所
+
+```typescript
+// lib/greetings.ts
+export const DEFAULT_OPENING_GREETING = "よろしくお願いします";
+export const DEFAULT_CLOSING_GREETING = "ありがとうございました。";
+
+export function resolveOpeningGreeting(profileValue: string | null): string {
+  return profileValue ?? DEFAULT_OPENING_GREETING;
+}
+
+export function resolveClosingGreeting(profileValue: string | null): string {
+  return profileValue ?? DEFAULT_CLOSING_GREETING;
+}
+```
+
+理由: SQL の `default` リテラルとアプリ側既定文が二重定義になると更新時のドリフトが起きる。「NULL → アプリ側既定」一本に統一する。
+
+#### 3. `arguments` への追加カラム（挨拶記録方式の確定）
+
+##### 候補比較
+
+| 観点 | 案 1: `arguments.is_greeting` | 案 2: `judge_messages` 流用 | 案 3: 別テーブル `case_greetings` |
+| --- | --- | --- | --- |
+| 既存 SELECT 経路への影響 | `is_greeting = false` フィルタを追加するだけ | `judge_messages` に「ユーザー挨拶」が混入し、`trigger_type` の意味が崩壊 | 新テーブル分の SELECT 経路を追加 |
+| 表示順序の整合 | `created_at` で他発言と一意に時系列ソート可 | `judge_messages` と `arguments` を UNION して並べる必要があり既存ロジックの大改修 | UNION 必要 |
+| ラウンドカウント除外 | `WHERE is_greeting = false` で round count から除外可 | judge_messages はもともとカウント対象外なので簡単だが、新挨拶ロールの role / phase 表現が不能 | テーブル分離なので自然 |
+| migration 量 | 小（ALTER 1 列） | 中（`judge_messages.trigger_type` check 緩和、表示 UI 改修） | 大（CREATE + RLS + GRANT + UI） |
+| 「ユーザーの発言」としての意味論 | 自然（実際にユーザーが何を言うかをサーバが代行投入しただけ） | 不自然（裁判官メッセージではない） | 自然 |
+
+**推奨: 案 1**。理由:
+
+1. 表示順序（時系列の吹き出し並び）が既存の `arguments` SELECT パスにそのまま乗る。CaseRoom の描画ロジックは「`is_greeting === true` のときラベル `「開始の挨拶」` / `「終了の挨拶」` を吹き出し上部に小さく付ける」だけの差分で済む。
+2. round カウントは既存の round 集計クエリに `.eq("is_greeting", false)` を 1 行足すだけで除外できる（あるいはサーバ側で `arguments.round = 0` のレコードを集計から除外する規約とする）。
+3. 弁護人 AI 生成（`/api/cases/[id]/defense/draft`）は `arguments` を読んで対話履歴を構築するため、挨拶も自然に履歴に入る。これは AI 動作にとって自然な振る舞い（実際の対話の入口・出口を AI も見える）。task.md「弁護人 AI の挙動・プロンプト・出力契約は変更しない」と矛盾しないが、AI に挨拶が見えること自体は許容範囲（出力契約は変わらない）。
+4. 案 2 / 案 3 は表示の UNION や新テーブル新設の差分が大きく、レビュー / 検証コストに見合わない。
+
+##### `arguments.is_greeting` の DDL
+
+```sql
+alter table public.arguments
+  add column is_greeting boolean not null default false;
+```
+
+- `round = 0` は挨拶行の規約値とする。既存の `round` カラムには制約がない（`int not null`）ので、`is_greeting = true ⇒ round = 0` をアプリ側で担保する。check 制約まで張るかは選択肢があるが、過剰防衛のため初版では入れない（必要なら次の migration で追加）。
+
+#### 4. `cases.phase` の check 制約更新
+
+`phase` は ENUM ではなく `text + check`。
+
+```sql
+alter table public.cases drop constraint if exists cases_phase_check;
+alter table public.cases add constraint cases_phase_check
+  check (phase in ('waiting','opening','argument','closing','extension_voting','judging','verdict'));
+```
+
+ENUM ではないため `ALTER TYPE ADD VALUE` 不要。`drop constraint → add constraint` で 1 トランザクション内で安全に切替できる。
+
+#### 5. PHASE_LABELS 更新
+
+```typescript
+// 既存定義位置（lib/types.ts もしくは lib/phase.ts）に "extension_voting" を追加
+export const PHASE_LABELS: Record<Phase, string> = {
+  waiting: "参加待ち",
+  opening: "冒頭陳述",
+  argument: "本論",
+  closing: "最終弁論",
+  extension_voting: "延長投票",
+  judging: "判決生成中",
+  verdict: "判決",
+};
+```
+
+ラベル文言「延長投票」は既存トーン（漢字 4 文字、簡潔）に揃える。
+
+#### 6. 旧データ削除と migration の段取り
+
+##### 候補比較
+
+| 観点 | 案 A（1 migration に集約） | 案 B（削除と DDL を分離） |
+| --- | --- | --- |
+| 原子性 | 高（途中で止まれば全ロールバック） | 低（削除後に DDL が失敗するとデータだけ消えた中途半端な状態） |
+| レビュー見通し | コメント区分で十分対応可 | 良（1 ファイル 1 関心） |
+| 履歴の読み解きやすさ | 「feat006 一括」で意味明確 | 2 ファイルで意図が分散 |
+| ロールバック | 1 ファイル削除 + revert で済む | 2 ファイル順序を考慮して revert |
+
+**推奨: 案 A**。理由: 本タスクの DDL は 1 つの目的（FEAT-006 仕様への移行）に紐付き、削除 → DDL → RLS の各ステップは互いに依存している。途中失敗時のデータ整合性を最優先し、1 ファイルにまとめる。レビュー見通しは SQL コメントで区分する。
+
+##### 削除順序
+
+- 既存 cascade 設定の確認: `arguments` / `verdicts` / `judge_messages` はいずれも `case_id ... on delete cascade` で定義済み（schema.sql:91, 108, 126）。
+- したがって **`delete from public.cases;` 1 文** で下流テーブルも自動的に空になる。明示的な順次 DELETE は不要。
+- ただし、レビュー時の意図を明確にするためコメントで「cascade により arguments / verdicts / judge_messages も同時に削除される」と書く。
+
+##### migration ファイル名
+
+`supabase/migrations/20260612NNNNNN_feat006_chat_rounds_and_greetings.sql`
+
+`NNNNNN` は配置時の HHMMSS。複数 migration を出す予定がないため 1 ファイルのみ。
+
+### API 設計（詳細）
+
+#### 認証 / 認可パターン
+
+- 認証ユーザー: `createSessionClient()` で `auth.getUser()` を呼び、`user.id === plaintiff_id || user.id === defendant_id` をチェック。
+- ゲスト被告: 既存の `verifyGuestToken(case_id, token)` を呼び（`lib/guest-token.ts`）、検証成功なら `actorRole = 'guest'` として処理。
+- 失敗時は 401 / 403 を返す。
+- DB 書き込みは `createAdminClient()` を使い、サーバ側で確認した actor 情報のみ書き込む（クライアント送信値を信用しない）。
+
+#### 状態遷移と排他
+
+- `end-proposal` の楽観的更新パターン:
+
+```typescript
+// 簡略化した擬似コード
+const { data: current } = await admin
+  .from("cases")
+  .select("end_proposed_by, phase")
+  .eq("id", caseId)
+  .single();
+
+if (current.phase !== "argument") {
+  return error(409, "phase_not_acceptable");
+}
+
+if (current.end_proposed_by === null) {
+  const { error } = await admin
+    .from("cases")
+    .update({ end_proposed_by: actorRole })
+    .eq("id", caseId)
+    .is("end_proposed_by", null);
+  if (error || ...) return retry();
+  return ok({ state: "proposed" });
+}
+// ... 同様に「自分が提案中 → 撤回」と「相手が提案中 → 同意」を分岐
+```
+
+- 「自分が提案 → 即同時に相手も提案」が同時刻に発生した場合、楽観的更新の WHERE 条件で片方が失敗してリトライする。リトライ時は最新状態を読み直し、`'相手が提案中'` 経路で同意 → judging に進む（事故にならない）。
+
+#### 冪等性
+
+- `extension-vote` は **一度入った値の上書き禁止**を `WHERE extension_vote_<side> IS NULL` で表現する。クライアントの 2 度押しは 2 回目が 409 になる。
+- `end-proposal` はトグルなので「同じ操作の 2 度押し」は意味的に「提案 → 撤回」と進む。クライアント UI 側でアイコン状態を最新化することで誤操作を抑える。
+
+### コンポーネント設計
+
+#### `app/page.tsx`（ケース作成画面）
+
+- 削除:
+  - `const [maxRounds, setMaxRounds] = useState(3)` 相当の state
+  - `<label>議論ラウンド数</label>` 配下の `<select>` ブロック
+  - `body: JSON.stringify({ topic, maxRounds, ... })` から `maxRounds` キー
+- 保持:
+  - `topic` 入力、被告選択フロー、submit ロジック
+- 追加なし。
+
+#### `app/case/[id]/CaseRoom.tsx`
+
+##### 終了提案アイコンの配置
+
+- レイアウト: 自分側の入力欄ヘッダー（入力フォームの右上または送信ボタン左隣）に **常設**。チャット欄の長辺に沿って配置するのではなく、自分が操作するエリアの近接位置に置く。これは「終了提案＝自分の意思表示」という UX 意味論に揃える。
+- アイコン: SVG（`stroke-current text-stone-500`）。新規 npm 依存なしのため、`HeaderUserMenu.tsx::UserSilhouette` と同じパターンでインライン SVG を `CaseRoom.tsx` 内に直書きする。アイコンの図柄は「下向き矢印付きドア（exit）」や「丸に中黒（停止）」など中立的なもの。**配色は `stone-500`（未提案）/ `stone-700`（自分が提案中、押下状態）**。`brand-500` 不使用、`brand-700` も終了系の文脈には強いので不採用。
+- ホバー: `hover:bg-stone-100 rounded`。プレス時は `active:bg-stone-200`。
+- アクセシブル名: `aria-label="話し合いの終了を提案する"`（押下状態時は `"終了の提案を取り下げる"`）。
+
+##### 状態表示
+
+- 自分が提案中: アイコン背景 `bg-stone-200`、`aria-pressed="true"`。隣に小さく `「あなたが終了を提案中」` のテキスト（`text-xs text-stone-600`）。
+- 相手が提案中: 画面上部に **dismiss 不可のバナー**を出す。文言: `「相手が話し合いの終了を提案しています。同意する場合は終了を提案を押してください」`。配色 `bg-stone-100 border-stone-300 text-stone-700`。CTA としてバナー内に **「同意して終了」ボタン**（`bg-brand-700 hover:bg-brand-800 text-white`）も配置し、ボタンが押された場合の挙動はサイドアイコン押下と同じ（end-proposal API を叩く）。
+  - 撤回は提案者本人のサイドアイコンからのみ可能。バナー側からの「拒否」ボタンは設けない（要件にないため）。
+
+##### 延長投票モーダル
+
+- 発火条件: polling 結果の `phase === "extension_voting"` を検出した時点でモーダルを開く。
+- モーダル内容:
+  - タイトル: `「話し合いを続けますか？」`
+  - 説明: `「3 回の議論が終わりました。もう少し話し合いたい場合は「続ける」、ここで判決に進む場合は「終わる」を選んでください。一度選ぶと取り消せません」`
+  - ボタン 2 つ:
+    - `「続ける（+3 回）」`: `bg-brand-700 hover:bg-brand-800 text-white`
+    - `「終わる（判決へ）」`: `bg-stone-200 hover:bg-stone-300 text-stone-700`
+  - 配置: モーダル中央。閉じる × ボタンは設けない（投票を強制するため）。
+- 投票後:
+  - 自分の投票が反映されていない（API レスポンス `state: "awaiting_opponent"`）の場合、モーダルを `「相手の投票を待っています」` の表示に切り替えて保持。`my vote` の表示と「自分の判断を取り消すことはできません」の注記を入れる。
+  - 両者投票完了 → polling で `phase` が `argument` または `judging` に切り替わる → モーダルを閉じる。
+- 既存の polling 周期（5〜10 秒）で十分。新たな `useInterval` を設けない。
+
+##### 固定挨拶の表示
+
+- 通常の発言 row と同じ吹き出しコンポーネントを再利用。
+- 吹き出し上部に小さくラベル: `「開始の挨拶」` または `「終了の挨拶」`（`text-xs text-stone-500 mb-1`）。
+- `arguments` の SELECT 経路で `is_greeting` をそのまま受け取り、各 row の描画時に分岐する。
+- ラウンドカウンタ（画面上部の「ラウンド X / Y」表示など）は `is_greeting = false` の行のみ集計する。
+
+##### 状態管理に追加するもの
+
+- polling 経由で `cases` から取得する追加フィールド: `endProposedBy`, `extensionVotePlaintiff`, `extensionVoteDefendant`, `phase`（`"extension_voting"` を含む）
+- ローカル `useState`: モーダル開閉フラグ、終了提案 API の in-flight フラグ（重複押下抑止）
+- fetch サイクル: 既存 polling に新カラムを差し込むだけで、新規 interval は不要
+
+#### `app/profile/page.tsx`
+
+- 既存のフォーム（`display_name`, API キー, アバター, `defense_custom_instruction`）に **2 つのテキスト入力**を追加:
+  - 「開始時の挨拶」: `<input type="text" maxLength={125}>` + placeholder `「よろしくお願いします」`
+  - 「終了時の挨拶」: 同様
+- 値が空のままで保存しようとした場合、クライアント側でも `「空欄では保存できません。デフォルト（よろしくお願いします）に戻すには「デフォルトに戻す」を押してください」` を出す。
+- 「デフォルトに戻す」ボタンを各入力の隣に小さく配置（`text-stone-500 hover:text-stone-700 text-xs underline`）。押下で当該フィールドを **NULL** として PATCH を送る。
+- 保存 / リセット時の loading / success / error の UX は既存のプロフィール編集パターンを踏襲する（新規パターン導入なし）。
+
+#### `app/api/profile/route.ts` 系
+
+- PATCH body の zod / バリデーション層に `openingGreeting?: string | null` / `closingGreeting?: string | null` を追加。
+- バリデーション:
+  1. `value === null` → そのまま NULL を UPDATE 対象に
+  2. `typeof value === 'string'` で長さ 1〜125、改行は 1 つまで → そのまま UPDATE
+  3. 空文字 `""` → 400 `validation_error` with `field: "openingGreeting"` 等
+- 既存の `defense_custom_instruction` のバリデーション実装を雛形にする。
+
+#### `lib/types.ts` / `lib/case-response.ts`
+
+```typescript
+export type Phase = "waiting" | "opening" | "argument" | "closing" | "extension_voting" | "judging" | "verdict";
+
+export interface Case {
+  // 既存フィールド
+  endProposedBy: "plaintiff" | "defendant" | "guest" | null;
+  extensionVotePlaintiff: "continue" | "finish" | null;
+  extensionVoteDefendant: "continue" | "finish" | null;
+}
+
+export interface Profile {
+  // 既存
+  openingGreeting: string | null;
+  closingGreeting: string | null;
+}
+
+export interface ArgumentRow {
+  // 既存
+  isGreeting: boolean;
+}
+```
+
+`lib/case-response.ts` は BUG-003 で学んだとおり、snake → camel を **明示マップ** する。新カラム 3 つを必ず手動で写像する。
+
+### セキュリティ設計
+
+#### RLS 追加
+
+- `cases` の SELECT は既存「誰でもケースを参照可」(`using (true)`) で新カラムも自動的に SELECT 可能。新規ポリシー不要。
+- `cases` の UPDATE は現状 RLS ポリシーが定義されていない（書き込みは API Route 経由で admin client）。本対応も書き込みは admin client 経由なので RLS 追加不要。
+- `arguments.is_greeting` の SELECT は既存「誰でも発言を参照可」(`using (true)`) で問題なし。INSERT は admin client 経由なので RLS 不要。
+- `profiles.opening_greeting` / `closing_greeting` の SELECT: 既存「自分のプロフィールのみ参照可」で本人 SELECT のみ許可されている。他人の挨拶を取り出すのは **判定済みケース当事者がサーバ側で admin client 経由で読む** 用途のみで、クライアント直接アクセス経路はないため追加ポリシー不要。
+- `profiles.opening_greeting` / `closing_greeting` の UPDATE: 既存「自分のプロフィールのみ更新可」で本人 UPDATE のみ許可される。**ただし** 既存ポリシーは行レベルで「自分の行のみ UPDATE 可」を保証するだけで、列単位の制限はない。本対応で UPDATE 経路が API Route 経由（`/api/profile`）であれば、列単位の安全性は API 層が担保する。
+
+#### 入力検証 / XSS
+
+- 挨拶テキストは既存 `escapeXml`（`lib/text-utils.ts` 等）を AI プロンプト挿入時に適用。
+- DB 保存時は escape しない（React 描画側で自動 escape）。
+- 文字数上限は DB check 制約 + API バリデーションの二重防御。
+
+#### API 認可
+
+- 終了提案 / 延長投票 / プロフィール更新の各エンドポイントで、認証ユーザーまたはゲストトークンの検証を必ず行う。検証失敗時は処理開始前に return。
+- DB 書き込みは確認済み actor の identity でのみ。クライアント送信値（user_id 等）を信用しない。
+
+#### CSRF / リプレイ
+
+- 既存の Supabase セッションクッキー + Next.js の SameSite 既定値に乗る。本対応で新規追加なし。
+- ゲストトークンは既存の HMAC nonce 方式（PR #16 / `guest_tokens`）に乗る。
+
+### 制約・前提条件
+
+#### 絶対条件（task.md 由来）
+
+- `design.md` は永続資料。既存 FEAT-001〜FEAT-005、MEDIUM-001、LOW バッチ、FEAT-RESP-HEADER、BUG-002/003 のセクションを削除・短縮しない。本セクションは末尾追記のみ。
+- 旧データ全削除前提。後方互換ロジックを一切書かない（既存 `max_rounds = 2/5` のケースを残す処理、`is_greeting` を持たない arguments を扱う分岐などは不要）。
+- 新規 npm 依存追加禁止。アイコンは SVG インライン。モーダルは既存 Tailwind ユーティリティで素朴に組む。
+- breakpoint 導入禁止。全画面サイズで同一 UI。
+- 配色は `stone-*` / `brand-700` / `brand-800` の範囲。`brand-500` は終了系・延長 CTA 双方で使用しない。
+- 弁護人 AI のプロンプト・出力契約変更なし。挨拶は AI 経由生成せず、システム固定文を直接 INSERT する。
+- ヘッダー本体（`Header.tsx`）のレイアウト変更なし。マイページ (`/me`) 本体に挨拶設定 UI を追加しない（`/profile` のみ）。
+- 延長回数の上限は設けない。
+
+#### 前提条件
+
+- `cases.phase` は `text + check` 制約（ENUM ではない）。`ALTER TABLE ... DROP CONSTRAINT / ADD CONSTRAINT` で値追加する。
+- `arguments` / `verdicts` / `judge_messages` の `case_id` は `on delete cascade`（schema.sql 確認済み）。`DELETE FROM cases` 1 文で下流が掃ける。
+- ゲスト被告の識別は既存 `verifyGuestToken` 経由。ゲストには `profiles` 行が存在しないため、ゲスト被告の挨拶はサーバ既定文を採用する。
+- `profiles.id = auth.users.id` の 1:1 関係は維持。
+- Next.js 16.2.6 / React 19.2.4 / Tailwind 4.x / Supabase 2.105.4 の現行スタック（[[environment.md]]）。
+
+#### スコープ外
+
+- 終了提案のリアルタイム push（既存 polling で十分）
+- 判決画面 UI 改修
+- 挨拶設定の i18n / 国際化
+- 既存ケースのデータ補正 / 移行（削除のみで対応）
+- マイページ `/me` への挨拶 UI 追加（`/profile` のみ）
+- ケース作成画面の他項目（topic、被告選択フロー）変更
+- 弁護人 AI の挙動 / プロンプト / 出力契約変更
+- 延長回数の上限
+- 配色トーンの追加（既存範囲のみで完結）
+- breakpoint 導入
+- 「終了を提案」のリッチアニメーション / トースト通知
+- 延長投票モーダルの閉じる × ボタン（強制投票）
+- `case_extension_votes` 別テーブル化（案 A 採用のため）
+- 挨拶記録の `judge_messages` 流用 / 別テーブル新設（案 1 採用のため）
+
+#### 注意事項（曖昧要件の明示・実装段階で迷ったときの判断指針）
+
+- **`end_proposed_by` の型を `text` に変えた理由**: task.md は `uuid null` を例示しているが、ゲスト被告の UUID が存在しないため、`text` (`'plaintiff'` / `'defendant'` / `'guest'`) に変更している。これは task.md の意図（「誰が提案中かを保存し、相手が押したら確定」）を実装で破綻なく満たすための判断であり、リード判断を要する場合は実装着手前に上申すること。
+- **挨拶を AI 履歴に含めるか**: 案 1 採用により `arguments` テーブルに挨拶が混在するため、`/api/cases/[id]/defense/draft` が `arguments` を読んで AI に渡す経路で挨拶も自然に AI 入力に含まれる。これは「AI の挙動・プロンプト・出力契約を変更しない」と矛盾しない（プロンプト構造とテンプレは不変、入力データの中身が増えるだけ）。AI が挨拶を「弁論」と誤解する懸念がある場合、`is_greeting = true` の行を defense/draft 側で除外する案も取り得る。**初版では除外せず**、ダイチ判断で品質劣化が観察されたら次の PR で除外する。
+- **`extension_voting` 移行のタイミング**: `phase === 'argument'` で `round === max_rounds` の最終ターンが終了した直後、判決生成キューに乗せる前に `phase = 'extension_voting'` へ書き換える。実装上は既存の「`closing` → `judging`」遷移ロジックの直前に分岐を入れる形でよいが、要件には「`closing` フェーズの扱い」が明示されていない。本設計では **closing フェーズは廃止せず維持** し、`closing` 終了 → `extension_voting` → (continue) `argument` 再開 または (両者 finish) `judging` の順序とする。closing フェーズ中の挨拶（終了挨拶）は `extension_voting` 突入時点ではまだ投入しない。両者 finish 確定 → `judging` 遷移時点で終了挨拶を INSERT する。
+- **既存ケース作成 API の互換**: task.md は「body の `maxRounds` を受け取っている場合、当該フィールドは無視する」と書いているが、より明快に、`app/api/cases/route.ts` の POST ハンドラから `maxRounds` の参照を完全に撤去する（無視ではなく非読み取り）。クライアント (`app/page.tsx`) から送らない以上、サーバが「受領しない」と表明することで仕様の明確性が増す。
+- **「同意して終了」CTA の二重押下**: 相手側バナーの CTA とサイドアイコンの両方が end-proposal API を叩くため、ボタン押下後は両方とも disable する。in-flight フラグを 1 つ持って共通制御する。
+- **既存 `max_rounds` カラムを残す理由**: 値そのものは「現在の上限ラウンド数」を表現するため、延長のたびに `+= 3` する形で実体は意味を保つ。仕様変更で `max_rounds` 自体を撤去する案も考えられるが、判決生成側で「現在何ラウンド消化したか」をクエリで使う既存箇所があるため、カラム削除は破壊変更が大きい。**残置 + 加算更新** が最小侵襲。
+- **`round` の初期値と挨拶 row の関係**: 挨拶 row は `round = 0` で INSERT する。既存ケースの SELECT クエリで `round = 1` から始まる前提の箇所がある場合、`is_greeting = false` フィルタを明示的に追加する（または `round > 0` で代替）。実装時に grep で `from("arguments")` を全件チェックすること。
+- **migration の transaction 単位**: Supabase の migration は 1 ファイル 1 トランザクション。本対応は `DELETE FROM cases;` + DDL を 1 ファイルに集約するため、途中失敗時は全ロールバックされる。BEGIN/COMMIT を明示する必要はない（暗黙のトランザクション）。
+- **PostgREST GRANT**: 新カラムは元テーブルへの GRANT を継承するため、追加 GRANT 不要。新テーブルを作る案 B / 案 3 を採用しなかった理由の一つでもある。
+- **延長後の `round` リセット**: 「両者の片方が continue → +3 ラウンド」の遷移で、`round` は **加算前 `max_rounds + 1`**（例: 元 3 → 延長後 max_rounds 6 → 次の round は 4）にする。「延長後の最初のターンは原告から」を採用するため `current_turn = 'plaintiff'` にリセットする。これは task.md に明示はないが、各延長サイクルの起点を一貫させるための判断。
+- **`closing` 挨拶のタイミング**: 判決生成が走る直前（`phase = 'judging'` に遷移する直前）に終了挨拶を INSERT する。延長で `argument` に戻る場合は終了挨拶を入れない。延長最終確定（両者 finish）の処理内で INSERT を行う。
+- **「終了を提案」中の延長投票**: `phase === 'argument'` で終了提案が既に乗っている状態で最終ラウンドに到達した場合、終了提案を維持したまま `extension_voting` に遷移する。`extension_voting` フェーズに入った時点で `end_proposed_by` を NULL にリセットする（投票結果が `argument` への復帰なら過去の終了提案は意味を失うため、開始状態に戻すのが UX として自然）。実装は extension_voting 遷移処理内で `end_proposed_by = NULL` も同時更新。
+- **配色補足**: 「終了を提案」自体は重い意思決定だが、サイドアイコンは「常設」のため目立たせすぎないトーン（`stone-500`）を採用。押下確定後のバナー・CTA は「相手側の合意誘導」のため `brand-700` を採用（既存プライマリ）。延長 CTA の「続ける」も `brand-700`、「終わる」は中立的な `stone-200`。これらは task.md の制約「stone-* / brand-700 / brand-800 の範囲」に収まる。

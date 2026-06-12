@@ -3,7 +3,7 @@ import { createAdminClient, createSessionClient } from "@/lib/supabase/server";
 import { verifyGuestToken } from "@/lib/guest-token";
 import { buildCaseResponse } from "@/lib/case-response";
 import { isUuid } from "@/lib/text-utils";
-import { resolveClosingGreeting, DEFAULT_CLOSING_GREETING } from "@/lib/greetings";
+import { insertClosingGreetingsForCase } from "@/lib/greetings";
 
 type Actor = "plaintiff" | "defendant" | "guest";
 
@@ -100,66 +100,40 @@ export async function POST(
     return NextResponse.json(caseData);
   }
 
-  // 相手が提案中 → 同意 → 終了挨拶を投入してから judging へ
-  await insertClosingGreetings(admin, c);
-  const { error: judgingError } = await admin
+  // 相手が提案中 → 同意 → judging へ
+  // 楽観ロックで「相手の提案がまだ生きていて、かつフェーズが argument のまま」を再確認する。
+  // 撤回 / 別経路での遷移と競合した場合は更新件数 0 になるので 409 を返す（MEDIUM-003）。
+  const { data: judgingUpdated, error: judgingError } = await admin
     .from("cases")
     .update({
       phase: "judging",
       end_proposed_by: null,
       updated_at: new Date().toISOString(),
     })
-    .eq("id", id);
+    .eq("id", id)
+    .eq("end_proposed_by", current)
+    .eq("phase", "argument")
+    .select("id");
   if (judgingError) {
     return NextResponse.json({ error: "判決フェーズへの遷移に失敗しました" }, { status: 500 });
   }
+  if (!judgingUpdated || judgingUpdated.length === 0) {
+    return NextResponse.json(
+      { error: "相手が提案を取り下げたため終了できません" },
+      { status: 409 }
+    );
+  }
+  // UPDATE 成功確認後にのみ終了挨拶を INSERT（MEDIUM-001）。
+  const { error: greetingError } = await insertClosingGreetingsForCase(admin, {
+    caseId: id,
+    plaintiffId: c.plaintiff_id,
+    defendantId: c.defendant_id,
+  });
+  if (greetingError) {
+    console.error("[end-proposal] closing greeting insert failed:", greetingError);
+    return NextResponse.json({ error: "終了挨拶の保存に失敗しました" }, { status: 500 });
+  }
   const caseData = await buildCaseResponse(admin, id);
   return NextResponse.json(caseData);
-}
-
-type AdminClient = ReturnType<typeof createAdminClient>;
-
-interface CaseRow {
-  id: string;
-  plaintiff_id: string;
-  defendant_id: string | null;
-}
-
-async function insertClosingGreetings(admin: AdminClient, c: CaseRow) {
-  const { data: plaintiffProfile } = await admin
-    .from("profiles")
-    .select("closing_greeting")
-    .eq("id", c.plaintiff_id)
-    .single();
-  const plaintiffClosing = resolveClosingGreeting(plaintiffProfile?.closing_greeting ?? null);
-
-  let defendantClosing = DEFAULT_CLOSING_GREETING;
-  if (c.defendant_id) {
-    const { data: defendantProfile } = await admin
-      .from("profiles")
-      .select("closing_greeting")
-      .eq("id", c.defendant_id)
-      .single();
-    defendantClosing = resolveClosingGreeting(defendantProfile?.closing_greeting ?? null);
-  }
-
-  await admin.from("arguments").insert([
-    {
-      case_id: c.id,
-      role: "plaintiff",
-      phase: "closing",
-      round: 0,
-      content: plaintiffClosing,
-      is_greeting: true,
-    },
-    {
-      case_id: c.id,
-      role: "defendant",
-      phase: "closing",
-      round: 0,
-      content: defendantClosing,
-      is_greeting: true,
-    },
-  ]);
 }
 

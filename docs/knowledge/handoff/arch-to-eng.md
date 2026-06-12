@@ -1,304 +1,273 @@
-# アーキ → ビルド 引き継ぎメモ（FEAT-005）
+# アーキ → ビルド 引き継ぎメモ（FEAT-006）
 
-## タスク概要
-
-ログインユーザー本人のためのダイジェスト型統合ハブ `/me` を新設する **UI + Server Component** の改修。あわせてヘッダードロップダウンの先頭に「マイページ」項目を追加する。バックログ ID `FEAT-005`。
-
-詳細設計は `docs/knowledge/design.md` 末尾の **「FEAT-005 対応: マイページ（自分専用統合ハブ）の新設」** セクションを参照すること。task.md の内容と矛盾するものは書いていない。task.md と本メモが矛盾する場合は task.md を優先せよ。
-
-**最重要事項（絶対条件）**:
-
-- RLS / migration / DB スキーマには **一切** 触らない（`supabase/` 配下不可侵）。
-- 新規 npm 依存を追加しない（heroicons パッケージ等を含む）。
-- breakpoint（`sm:` `md:` `lg:` `xl:`）を導入しない（全画面サイズで同一 UI）。
-- 配色は `stone-*` / `brand-700` / `brand-800` のみ。「招待中」バッジに限り既存 `/laws` の `amber-100` / `amber-700` を流用してよい。`brand-500` は使わない。
-- マイページから編集・追加・削除を一切行わない（form 不可、Server Action 不可、API Route 追加不可）。
-- 既存ページ `/profile`・`/friends`・`/history`・`/laws` のレイアウト・挙動を一切変えない。
-- `app/components/Header.tsx` 本体は変更しない。`HeaderUserMenu.tsx` のメニュー項目を 1 行追加するのみ。
-- `app/actions/auth.ts`・`tailwind.config.*`・`package.json`・`next.config.*` を変更しない。
+このメモは `docs/knowledge/design.md` 末尾の `## FEAT-006 対応` セクションと併読すること。
+矛盾があれば `task.md` → `design.md` → 本メモの順で優先する。
 
 ---
 
-## 実装順序
+## 設計上の主要判断と理由
 
-順序を守ると各ステップ単体で検証しやすい。
+### 1. `end_proposed_by` の型を `uuid` → `text` に変更した
 
-### Step 1: 既存パターンの把握（読み取りのみ）
+- **判断**: task.md の例示は `uuid null` だが、ゲスト被告には `user_id` 相当の UUID が存在しないため、`text` で `'plaintiff'` / `'defendant'` / `'guest'` のロール識別子を保存する形に変更した。
+- **理由**: ゲスト被告が終了提案を出せる経路を保ちつつ、認証被告とゲスト被告を同じ意味論で扱うため。
+- **実装上の注意**: クライアントから送られてきた role 値は信用せず、サーバ側で認証情報（`auth.getUser()` または `verifyGuestToken`）から actor を確定すること。
 
-実装の前に次の既存ファイルを Read で把握する:
+### 2. 延長投票は `cases` の 2 カラム方式（案 A）
 
-1. `middleware.ts`（`PROTECTED_PATH_PREFIXES` 配列の位置と判定ロジック構造）
-2. `app/components/HeaderUserMenu.tsx`（メニュー項目の配置と `menuItemClass` 定数の値）
-3. `app/history/page.tsx`（`cases` の自己関連クエリ・`opponentName` の解決パターン。本ページではトピックと日付のみ取得するので opponent 名解決は **コピーしない**）
-4. `app/friends/page.tsx`（`friend_requests` の accepted クエリ + `profiles` cross-user 解決パターン）
-5. `app/laws/page.tsx`（`law_members` → `laws` のメンバーシップクエリ + `law_invitations` の pending クエリ + 役割判定の参考。本ページは `PendingInvitations` Client Component を再利用 **しない**、ダイジェストのみ）
-6. `app/profile/page.tsx`（`defense_custom_instruction` フィールドの存在確認）
-7. `app/components/HeaderUserMenu.tsx` の `UserSilhouette` SVG（`MeHeader` に複製するため）
-8. `lib/supabase/server.ts`（`createSessionClient` / `createAdminClient` のシグネチャ）
-9. `lib/types.ts`（既存型 `Profile`・`FriendListItem`・`HistoryCase`・`Law` 等。プロップス型は本ページ内に閉じて新規定義する判断でよい — `lib/types.ts` に新規 export を追加する必要はない）
+- **判断**: `extension_vote_plaintiff text` / `extension_vote_defendant text` を `cases` に追加。別テーブル不要。
+- **理由**: 両者投票後にカラムを NULL に戻して次の延長サイクルへ進める状態管理が単純。RLS / GRANT 追加が不要。
+- **トレードオフ**: 票履歴が残らない。必要になったら次タスクで `case_extension_votes` テーブル追加に移行可能。
 
-ターゲットを把握する grep ヒント:
+### 3. 挨拶記録は `arguments.is_greeting boolean` で表現（案 1）
 
-| 探したい場所 | コマンド |
-|------------|----------|
-| `friend_requests` の自己関連 select パターン | `grep -n "friend_requests" app/friends/page.tsx` |
-| `cases` の自己関連 select パターン | `grep -n "plaintiff_id\\|defendant_id" app/history/page.tsx` |
-| `law_members` / `laws` のメンバーシップ select パターン | `grep -n "law_members\\|laws" app/laws/page.tsx` |
-| `law_invitations` の pending select パターン | `grep -n "law_invitations" app/laws/page.tsx` |
-| 既存 `menuItemClass` の定義 | `grep -n "menuItemClass" app/components/HeaderUserMenu.tsx` |
-| 既存 `PROTECTED_PATH_PREFIXES` | `grep -n "PROTECTED_PATH_PREFIXES" middleware.ts` |
-| `UserSilhouette` の SVG | `grep -n "UserSilhouette" app/components/HeaderUserMenu.tsx` |
+- **判断**: `arguments` に `is_greeting boolean not null default false` を追加。挨拶 row は `round = 0`、`phase = 'opening'` または `'closing'` で INSERT。
+- **理由**: 既存の SELECT / 表示ロジックにそのまま乗る。round 集計は `WHERE is_greeting = false`（または `round > 0`）で除外。
+- **AI 影響**: `/api/cases/[id]/defense/draft` が `arguments` を読む際に挨拶も含まれることになるが、初版では除外せず採用する。AI の出力品質が落ちたら次タスクで除外検討。
 
-### Step 2: middleware.ts に `/me` を保護パスに追加
+### 4. migration は 1 ファイルに集約（案 A）
 
-`PROTECTED_PATH_PREFIXES` 配列に `"/me"` を 1 件追加するだけ。配列の他要素・順序・直後の `pathname === "/"` / `"/case/new"` 判定・matcher 設定はそのまま。
+- **判断**: 削除 → カラム追加 → check 制約更新 を 1 つの migration にまとめる。
+- **理由**: 1 トランザクションでの原子性を最優先。中途半端な「データだけ消えた状態」を防ぐ。
+- **ファイル名**: `supabase/migrations/20260612NNNNNN_feat006_chat_rounds_and_greetings.sql`（NNNNNN は配置時の HHMMSS）。
 
-```typescript
-const PROTECTED_PATH_PREFIXES = ["/history", "/profile", "/friends", "/laws", "/me"];
+### 5. `cases.phase` は ENUM ではなく `text + check`
+
+- **判断**: `ALTER TABLE cases DROP CONSTRAINT cases_phase_check; ADD CONSTRAINT ... CHECK (phase IN (..., 'extension_voting', ...));`
+- **理由**: 現行 schema.sql で確認済み。ENUM ではないため `ALTER TYPE ADD VALUE` 不要、`DROP/ADD CONSTRAINT` で安全に値追加できる。
+
+---
+
+## 実装の順序（推奨）
+
+1. **migration 作成**: `supabase/migrations/20260612NNNNNN_feat006_chat_rounds_and_greetings.sql` を新規作成。下記 DDL ドラフトに従う。
+2. **schema.sql 反映**: 本番 snapshot 方針に揃え、新カラム / check 制約更新を schema.sql に追記。
+3. **型定義更新**: `lib/types.ts` の `Phase` / `Case` / `Profile` / `ArgumentRow`（実名に応じて） に新フィールド追加。
+4. **snake→camel マップ**: `lib/case-response.ts` に新カラム 3 つ（cases）の写像を明示追加（BUG-003 の教訓）。
+5. **既定挨拶モジュール**: `lib/greetings.ts`（新規）に `DEFAULT_OPENING_GREETING` / `DEFAULT_CLOSING_GREETING` / `resolveOpeningGreeting` / `resolveClosingGreeting` を実装。
+6. **PHASE_LABELS 更新**: 既存定義位置（`lib/types.ts` か `lib/phase.ts`）に `extension_voting: "延長投票"` を追加。
+7. **プロフィール API 改修**: `app/api/profile/route.ts`（既存実装位置に揃える）の PATCH に `openingGreeting` / `closingGreeting` 受領を追加。バリデーション: NULL 可、空文字 NG、長さ 1〜125、改行は 1 つまで。
+8. **プロフィール画面 UI**: `app/profile/page.tsx` に 2 つのテキスト入力 + 「デフォルトに戻す」ボタンを追加。
+9. **ケース作成画面の縮退**: `app/page.tsx` から `maxRounds` state / `<select>` / body 送信を削除。
+10. **ケース作成 API**: `app/api/cases/route.ts` POST から `maxRounds` の参照を完全撤去（無視ではなく非読み取り）。
+11. **opening 進入点に挨拶 INSERT**: 既存の opening 開始ロジック（場所は実装側で grep 確認）に、原告 / 被告の opening_greeting を 2 行 INSERT する処理を追加。
+12. **新規 API: end-proposal**: `app/api/cases/[id]/end-proposal/route.ts` を新設。
+13. **新規 API: extension-vote**: `app/api/cases/[id]/extension-vote/route.ts` を新設。
+14. **CaseRoom UI 拡張**: `app/case/[id]/CaseRoom.tsx` にサイドアイコン、相手側バナー、延長投票モーダル、挨拶 row 表示を追加。polling 周期は既存に乗せる。
+15. **closing → extension_voting 遷移ロジック**: 既存の closing → judging 遷移コードに分岐を入れて、`round === max_rounds` 到達時に `phase = 'extension_voting'` へ。
+16. **judging 遷移時の終了挨拶 INSERT**: 両者 finish 確定時の処理内で終了挨拶を 2 行 INSERT してから `phase = 'judging'` に遷移。
+
+---
+
+## migration DDL ドラフト
+
+```sql
+-- supabase/migrations/20260612NNNNNN_feat006_chat_rounds_and_greetings.sql
+-- FEAT-006: チャット回数仕様の柔軟化と固定挨拶導入
+-- 1) 旧データ全削除（cascade で arguments/verdicts/judge_messages も掃ける）
+-- 2) cases に新カラム追加（end_proposed_by, extension_vote_*）
+-- 3) profiles に挨拶 2 カラム追加
+-- 4) arguments.is_greeting 追加
+-- 5) cases.phase の check 制約に 'extension_voting' を追加
+
+-- ============ 1. 旧データ削除 ============
+-- cases に on delete cascade が設定済みのため、
+-- DELETE FROM cases; で arguments / verdicts / judge_messages も同時削除される。
+delete from public.cases;
+
+-- ============ 2. cases に新カラム追加 ============
+alter table public.cases
+  add column end_proposed_by text null
+    check (end_proposed_by is null or end_proposed_by in ('plaintiff','defendant','guest')),
+  add column extension_vote_plaintiff text null
+    check (extension_vote_plaintiff is null or extension_vote_plaintiff in ('continue','finish')),
+  add column extension_vote_defendant text null
+    check (extension_vote_defendant is null or extension_vote_defendant in ('continue','finish'));
+
+-- ============ 3. profiles に挨拶カラム追加 ============
+alter table public.profiles
+  add column opening_greeting text null
+    check (opening_greeting is null or (char_length(opening_greeting) between 1 and 125)),
+  add column closing_greeting text null
+    check (closing_greeting is null or (char_length(closing_greeting) between 1 and 125));
+
+-- ============ 4. arguments.is_greeting ============
+alter table public.arguments
+  add column is_greeting boolean not null default false;
+
+-- ============ 5. cases.phase check 制約更新 ============
+alter table public.cases drop constraint if exists cases_phase_check;
+alter table public.cases add constraint cases_phase_check
+  check (phase in ('waiting','opening','argument','closing','extension_voting','judging','verdict'));
 ```
 
-これにより `/me` 単独 / `/me/...` 両方が `pathname === p || pathname.startsWith(p + "/")` で保護される。
+- 既存テーブルへの GRANT は元テーブルから継承するため追加不要。
+- RLS ポリシーは既存ポリシーで新カラムも自動カバー（`cases` SELECT `using (true)`、`profiles` SELECT/UPDATE `auth.uid() = id`、`arguments` SELECT `using (true)`）。新規ポリシー追加なし。
 
-このステップで一度 `npm run dev` を起動し、未ログイン状態で `/me` を開くと `/auth/login` にリダイレクトされることを目視確認しておくと良い（page.tsx をまだ作っていない段階なので 404 でも middleware が先に走るかは確認しておく）。
+---
 
-### Step 3: `app/me/page.tsx` 新設（Server Component・データ取得オーケストレータ）
+## 新規 API ハンドラの認証パターン
 
-ファイルの大枠:
+両エンドポイントとも以下のパターンで実装する:
 
 ```typescript
-import { redirect } from "next/navigation";
+// app/api/cases/[id]/end-proposal/route.ts（および extension-vote）
 import { createSessionClient, createAdminClient } from "@/lib/supabase/server";
-import MeHeader from "./_components/MeHeader";
-import ProfileCard from "./_components/ProfileCard";
-import FriendsCard from "./_components/FriendsCard";
-import CasesCard from "./_components/CasesCard";
-import LawsCard from "./_components/LawsCard";
+import { verifyGuestToken } from "@/lib/guest-token";
+import { NextResponse } from "next/server";
 
-export default async function MePage() {
-  const supabase = await createSessionClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect("/auth/login");
+export async function POST(req: Request, { params }: { params: { id: string } }) {
+  const caseId = params.id;
+  // UUID バリデーション（既存 UUID_REGEX を流用）
+  if (!UUID_REGEX.test(caseId)) return NextResponse.json({ error: "invalid_id" }, { status: 400 });
 
-  // 6 系統のクエリを Promise.allSettled で並列発行
-  // 1. profiles (self)         - createSessionClient
-  // 2. friend_requests accepted - createSessionClient
-  // 3. cases (verdict, own)    - createSessionClient
-  // 4. law_members + laws     - createSessionClient
-  // 5. law_invitations pending - createSessionClient
-  // friend_profiles 解決(admin) - createAdminClient （friend ID 集合が空でなければ後段で）
+  const admin = createAdminClient();
+  const { data: caseRow, error } = await admin
+    .from("cases")
+    .select("id, plaintiff_id, defendant_id, phase, end_proposed_by, extension_vote_plaintiff, extension_vote_defendant, max_rounds, round")
+    .eq("id", caseId)
+    .single();
+  if (error || !caseRow) return NextResponse.json({ error: "not_found" }, { status: 404 });
 
-  // それぞれの result から props を組み立て、各 Card に渡す。
+  // actor 識別
+  let actorRole: "plaintiff" | "defendant" | "guest" | null = null;
+  try {
+    const session = createSessionClient();
+    const { data: { user } } = await session.auth.getUser();
+    if (user?.id === caseRow.plaintiff_id) actorRole = "plaintiff";
+    else if (user?.id === caseRow.defendant_id) actorRole = "defendant";
+  } catch { /* ignore */ }
 
-  return (
-    <main className="min-h-screen bg-stone-50">
-      <div className="max-w-2xl mx-auto px-4 py-10 space-y-6">
-        <MeHeader displayName={...} avatarUrl={...} />
-        <ProfileCard ... />
-        <FriendsCard ... />
-        <CasesCard ... />
-        <LawsCard ... />
-      </div>
-    </main>
-  );
+  if (!actorRole && caseRow.defendant_id === null) {
+    // ゲスト被告経路: 既存の verifyGuestToken
+    const cookieToken = /* cookies().get("guest_token_" + caseId)?.value */ "...";
+    if (cookieToken && await verifyGuestToken(caseId, cookieToken)) {
+      actorRole = "guest";
+    }
+  }
+
+  if (!actorRole) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+
+  // ... 以下、設計書記載の状態遷移分岐
 }
 ```
 
-クエリ実装の注意:
+- `createSessionClient()` の try-catch 保護は既存パターン（LOW-001）に揃える。
+- 書き込みは必ず `createAdminClient()` 経由。
+- 楽観的更新（`WHERE end_proposed_by IS [old]` / `WHERE extension_vote_<side> IS NULL`）で同時実行時の競合を抑える。
 
-- 各クエリは try-catch ではなく `Promise.allSettled` の `status === 'fulfilled' / 'rejected'` で分岐すると簡潔。`rejected` または `value.error` がある場合は `console.error("[me] <section> query failed:", ...)` でログを残し、当該セクションに空配列 / null を渡す。**throw しない**。ページ全体が 500 になるのを避ける。
-- `friend_requests` クエリの直後で `friendIds` を組み立て、空でなければ `admin.from("profiles").select("id, display_name, avatar_url").in("id", friendIds)` を発行する。`friendIds` が空配列の場合は admin 呼び出し自体をスキップする（無駄なクエリと不必要な admin 露出を避ける）。
-- 件数は全件取得後 `.length` で出し、ダイジェストは `.slice(0, 5)` で先頭 5 件。SELECT 列を最小化（`id` を必ず含み、表示に必要な列のみ）して転送量を抑える。
-- 法律ダイジェストはメンバーシップ + pending 招待を合算し、`joined_at` / `invited_at` の降順マージで先頭 5 件を取る。役割判定は `laws.owner_id === user.id` → "owner"、それ以外で `law_members` 行あり → "member"、`law_invitations.status = 'pending'` 行のみ → "invitee"。
-- `defense_custom_instruction` の 100 文字 truncate は素朴な `instruction.trim().slice(0, 100) + (instruction.trim().length > 100 ? "…" : "")` で十分。`lib/text-utils.ts` に 100 文字版 truncate がなくても新規追加は不要。
+---
 
-### Step 4: `app/me/_components/` 配下の Server Component 群を新設
+## CaseRoom 状態管理に追加するもの
 
-順序:
+- polling で取得する case フィールドに以下を追加:
+  - `endProposedBy: "plaintiff" | "defendant" | "guest" | null`
+  - `extensionVotePlaintiff: "continue" | "finish" | null`
+  - `extensionVoteDefendant: "continue" | "finish" | null`
+  - `phase` リテラルに `"extension_voting"` を含める
+- 追加 `useState`:
+  - `isProposingEnd`（in-flight 抑止）
+  - `isVotingExtension`（in-flight 抑止）
+  - `extensionModalState`: `"closed" | "voting" | "awaiting_opponent"`
+- 新規 interval は不要（既存 polling に乗る）。
+- 自分側のロール特定は既存のロジック（plaintiff_id / defendant_id / ゲストトークン）に揃える。
 
-1. `SectionCard.tsx`（先に作る。他の Card はこれを使うため）
-2. `MeHeader.tsx`（`UserSilhouette` SVG を `HeaderUserMenu.tsx` からコピーしてローカルに置く）
-3. `ProfileCard.tsx`
-4. `FriendsCard.tsx`
-5. `CasesCard.tsx`
-6. `LawsCard.tsx`
+---
 
-各ファイルは **Server Component**（`"use client"` を **付けない**）。client 化が必要なインタラクションは本対応にはない。
+## フェーズラベル定義の更新
 
-props 形状は design.md の各「コンポーネント設計」節を参照。`titleId` は安定文字列を `page.tsx` から渡す（`"me-section-profile"` / `"me-section-friends"` / `"me-section-cases"` / `"me-section-laws"`）。
+grep ヒント:
 
-スタイル定数のヒント:
-
-- カード外枠: `bg-white border border-stone-200 rounded-2xl shadow-sm p-5`
-- 件数バッジ: `text-xs bg-stone-100 text-stone-500 rounded-full px-2 py-0.5`
-- もっと見るリンク: `text-sm text-brand-700 hover:text-brand-800 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 focus-visible:ring-offset-2 focus-visible:ring-offset-stone-50`
-- 空状態本文: `text-stone-500 text-sm`
-- 空状態補助文: `text-stone-400 text-xs`
-- 法律役割バッジ:
-  - オーナー: `text-xs bg-stone-100 text-stone-700 rounded-full px-2 py-0.5`
-  - メンバー: `text-xs bg-stone-100 text-stone-600 rounded-full px-2 py-0.5`
-  - 招待中: `text-xs bg-amber-100 text-amber-700 rounded-full px-2 py-0.5`
-
-### Step 5: `app/components/HeaderUserMenu.tsx` のメニュー先頭に「マイページ」追加
-
-既存ファイル中の「過去のケース」 `<Link>` の **直前** に次を 1 ブロック挿入する:
-
-```tsx
-<Link
-  href="/me"
-  role="menuitem"
-  onClick={close}
-  className={menuItemClass}
->
-  マイページ
-</Link>
+```bash
+# PHASE_LABELS の定義箇所を特定
+grep -rn "PHASE_LABELS" lib/ app/
+# Phase 型の定義箇所を特定
+grep -rn "type Phase" lib/
+grep -rn '"verdict"' lib/  # phase リテラルが羅列されている箇所
 ```
 
-差分位置の特定: `<Link href="/history"` の行を grep し、その直前に挿入する。`menuItemClass` 定数は同ファイルの既存定義をそのまま再利用。新規スタイル定義を追加しない。
-
-未認証分岐（ログイン / サインアップ）には何も追加しない。
-
-### Step 6: 動作確認（実機 + 軽微テスト）
-
-UI 変更なので `npm run dev` を立ち上げて実機で確認。AGENTS.md の方針通り、本バージョン Next.js の Server Component と `redirect()` の挙動は `node_modules/next/dist/docs/` を必要に応じて確認する。
+更新時は **labels と type literal の両方** に `"extension_voting"` を加える。type literal が漏れると TypeScript エラーで気付ける。
 
 ---
 
-## 各セクションの空状態テキスト案（確定済み）
+## `app/page.tsx` から削除する箇所
 
-| カード | 本文 | 補助文 |
-|-------|------|------|
-| プロフィール | 弁護人カスタム指示は未設定です | プロフィールでカスタム指示を編集できます |
-| フレンド | まだフレンドはいません | フレンドを追加すると、ここに最近の 5 人が表示されます |
-| 過去のケース | まだ判決が出たケースはありません | ホームからケースを作成して話し合いを始められます |
-| 参加中の法律 | まだ参加している法律はありません | 法律を作成するか、招待を受けるとここに表示されます |
+特定方法:
 
-各空状態の下に該当ディープリンク（プロフィール: `/profile`、フレンド: `/friends`、過去のケース: `/`、参加中の法律: `/laws`）を「もっと見る」リンクと別に置く必要は **ない**。「もっと見る」リンク自体が遷移先となっており、空状態時もカード右上の同リンクが機能する。
+```bash
+grep -n "maxRounds" app/page.tsx
+```
 
----
+削除対象:
 
-## クエリ再利用 grep ヒント（既存 SELECT パターン）
-
-新規 RLS を一切追加しないため、既存ページ（`/friends`・`/laws`・`/history`）の SELECT 形式を踏襲する。下記コマンドで該当箇所を即座に見つけられる:
-
-- フレンド accepted: `grep -n 'eq("status", "accepted")' app/friends/page.tsx`
-- フレンドの自己関連 OR: `grep -n 'sender_id.eq\\|receiver_id.eq' app/friends/page.tsx`
-- ケースの verdict + 自己関連: `grep -n 'phase.*verdict\\|plaintiff_id.eq\\|defendant_id.eq' app/history/page.tsx`
-- 法律メンバーシップ: `grep -n 'law_members' app/laws/page.tsx`
-- 法律本体: `grep -n 'from("laws")' app/laws/page.tsx`
-- 法律 pending 招待: `grep -n 'law_invitations' app/laws/page.tsx`
-
-**注意**: `/history` および `/friends` の現行実装は `createAdminClient()` を使用しているが、本ページ `/me` では `createSessionClient()` に揃えること（design.md「データ取得設計」節）。`profiles` の cross-user 解決（フレンドの表示名・アバター）のみ `createAdminClient()` を使用してよい（MEDIUM-001 carve-out）。
+- `maxRounds` の `useState`
+- `<label>議論ラウンド数</label>` 配下の `<select>` ブロック
+- `fetch(..., { body: JSON.stringify({ topic, maxRounds, ... }) })` の `maxRounds` キー
+- 関連する import や型注釈で `maxRounds` だけのために残っているもの
 
 ---
 
-## 実装上の注意点
+## リグレッション確認シナリオ（必須）
 
-### profiles 跨ぎは admin のままで良い
-
-task.md は「`createAdminClient` を使用しない」と書いているが、その根拠として参照されている MEDIUM-001 セクションは「profiles テーブルは本 PR では触らない」carve-out を明示している。本対応もこれを踏襲し、フレンドの `display_name` / `avatar_url` 取得には `createAdminClient()` を使う。これは task.md の精神（二層防御）と矛盾しない。
-
-実装段階で疑義が生じた場合は **profiles RLS を独自に改修しないこと**。`supabase/` 配下を変更すれば task.md の絶対条件違反となる。
-
-### `<img>` を使う（`next/image` ではない）
-
-アバター描画は `<img src={avatarUrl} alt={...} width={...} height={...} />` で行う。`next/image` を採用すると `next.config` の `images.remotePatterns` 等の調整が必要になり、スコープ外。FEAT-RESP-HEADER と同じ方針。`width` / `height` を明示してレイアウトシフトを抑止する。
-
-### `UserSilhouette` SVG は `MeHeader.tsx` 内に直書きする
-
-`HeaderUserMenu.tsx` から SVG コードを複製して `MeHeader.tsx` 内にローカル関数として置く。`app/components/UserSilhouette.tsx` への切り出しは **行わない**（本タスクのスコープを超える）。10 行 SVG 1 つの重複は許容する。
-
-### `useId()` ではなく安定文字列で aria-labelledby を結ぶ
-
-Server Component 間で aria の id を渡すには安定文字列（`"me-section-profile"` 等）を `page.tsx` から渡す。`useId()` は Client 用途のため使わない。
-
-### Promise.allSettled を使う
-
-`Promise.all` を使うと 1 つのクエリ失敗で全セクションが落ちる。`Promise.allSettled` で各クエリの成否を独立評価し、失敗セクションのみ空状態にフォールバックする。
-
-### 件数バッジは `count = 0` でも「0件」と表示する
-
-`count === null`（取得失敗）のみバッジ非表示。`count === 0` は「0件」を可視テキストで出す。空状態とバッジの併存により「取得に失敗したのではなく純粋に 0 件である」ことを明示する。
-
-### `<form>` は一切置かない
-
-マイページは編集機能を持たない。`<form>`・`<input>`・`<button type="submit">`・Server Action を一切記述しないこと。
+1. **新規ケース作成 → 3 回まで普通に進行 → 延長投票で両者 finish → 判決画面に到達**
+   - ラウンド数表示は 0 から数えず 1〜3 で進行すること
+   - 終了挨拶 2 行が判決画面前に表示されていること
+2. **新規ケース作成 → 2 回目で原告が終了提案 → 被告が「同意して終了」 → 判決画面**
+   - 自分が提案中表示が原告側に出ること
+   - 相手側バナーが被告側に出ること
+   - 判決が生成され、それまでの arguments が判決入力に使われていること
+3. **新規ケース作成 → 終了提案を出して撤回 → 普通に 3 回まで進行**
+   - 撤回後、相手側のバナーが消えること
+4. **新規ケース作成 → 3 回終了後の延長投票で原告 continue / 被告 finish → max_rounds が 6 に → 6 回目まで進行**
+   - 4 回目開始時に current_turn が plaintiff にリセットされていること
+   - max_rounds が 6 になったことが画面表示にも反映されていること
+5. **延長後さらに 6 回終了 → 同じ流れで再度延長**
+   - 上限なしを確認
+6. **profile 編集画面で挨拶を変更 → 新ケース開始時に反映**
+   - 旧ケースの挨拶は変わらないこと（既に INSERT 済みのため）
+   - 空文字保存で 400 エラーになること
+   - 「デフォルトに戻す」でカラムが NULL に戻り、新ケースで「よろしくお願いします」が表示されること
+7. **ゲスト被告のケース**
+   - ゲスト被告の挨拶はサーバ既定文「よろしくお願いします」/「ありがとうございました。」が表示されること
+   - ゲスト被告も終了提案アイコンが押せること
+   - ゲスト被告も延長投票モーダルで投票できること
+8. **既存機能の regression なし**
+   - 認証 / フレンド / 法律機能 / プロフィール他項目編集 / アバター変更 / API キー登録
+   - マイページ (`/me`) の表示 / 過去のケースダイジェスト
+   - 旧データ削除後の動作（`/history` などで旧ケースが消えていることを確認）
 
 ---
 
-## リグレッション確認シナリオ
+## 未解決事項 / 実装で迷ったら
 
-実装後の動作確認チェックリスト:
-
-### マイページ本体（`/me`）
-
-- [ ] 認証済みユーザーが `/me` を開くとアイデンティティ行 + 4 カードが表示される
-- [ ] 未認証ユーザーが `/me` を直接叩くと `/auth/login` にリダイレクトされる
-- [ ] 未認証ユーザーが `/me/foo`（存在しないサブパス）を直接叩いても `/auth/login` にリダイレクトされる
-- [ ] アバター未設定ユーザーで人型シルエットが表示される
-- [ ] `defense_custom_instruction` 未設定ユーザーで空状態文が表示される
-- [ ] フレンドが 0 人のユーザーで空状態文が表示される
-- [ ] 判決済みケースが 0 件のユーザーで空状態文が表示される
-- [ ] 参加中の法律が 0 件のユーザーで空状態文が表示される
-- [ ] フレンドが 6 人以上いるユーザーで件数バッジが正しく、ダイジェストは 5 件で打ち切られる
-- [ ] 法律で「オーナー / メンバー / 招待中」の 3 役割すべてが正しく振り分けられる
-- [ ] 各カードの「もっと見る」リンクが対応する既存ページ（`/profile` / `/friends` / `/history` / `/laws`）に遷移する
-- [ ] 過去のケース行クリックで `/case/[id]` に遷移する
-- [ ] 法律メンバー行クリックで `/laws/[id]` に遷移する
-- [ ] 法律「招待中」行クリックで `/laws` に遷移する
-
-### 全画面サイズ（breakpoint なし確認）
-
-- [ ] 横幅 375px（スマホ）でレイアウトが崩れない
-- [ ] 横幅 768px（タブレット）でレイアウトが崩れない
-- [ ] 横幅 1280px 以上（PC）でレイアウトが崩れない（`max-w-2xl` で中央寄せされる）
-- [ ] 全画面サイズで同一の縦並び 1 カラムレイアウト
-
-### ヘッダードロップダウン
-
-- [ ] アバタークリックで認証時メニューが開き、先頭に「マイページ」が表示される
-- [ ] 「マイページ」クリックで `/me` に遷移する
-- [ ] 既存項目（過去のケース / フレンド / プロフィール / 区切り線 / ログアウト）の順序・スタイル・遷移先が不変
-- [ ] 未認証時メニュー（ログイン / サインアップ）に変更がない
-- [ ] Escape キーで閉じる、外側クリックで閉じる、項目クリックで閉じる挙動が不変
-
-### 既存ページの非リグレッション
-
-- [ ] `/profile` のレイアウト・編集機能が不変
-- [ ] `/friends` のレイアウト・検索・申請・承認機能が不変
-- [ ] `/history` のレイアウト・ケース一覧表示が不変
-- [ ] `/laws` のレイアウト・法律一覧・招待表示・「法律を作る」ボタンが不変
-- [ ] `/laws/[id]` の詳細・改定・退会機能が不変
-- [ ] `/auth/login` / `/auth/signup` への遷移挙動が不変
-- [ ] ログアウト動作（Server Action）が不変
-
-### アクセシビリティ
-
-- [ ] Tab キーで「マイページ」リンク → 各「もっと見る」リンク → 各セクション内リンクの順にフォーカス移動できる
-- [ ] フォーカスリングが `brand-700` のトーンで表示される
-- [ ] 各セクションが `<section aria-labelledby="me-section-...">` で見出しと結ばれている
-- [ ] スクリーンリーダーで「マイページ」配下の `<h1>{表示名}</h1>`・各 `<h2>{カード名}</h2>` が階層として読み上げられる
-
-### セキュリティ
-
-- [ ] Network タブで `/me` の HTML レスポンスに `api_key_encrypted` 文字列が含まれていない
-- [ ] Network タブで `/me` の HTML レスポンスに他人の `display_name` / `avatar_url` 以外（メールアドレス・ID 以外の機微情報）が含まれていない
-- [ ] フレンドの `friendIds` が空のユーザーで admin クエリが発火しない（実装側のログまたは Supabase ダッシュボードで確認）
+1. **AI 履歴から挨拶を除外するか**: 案 1 採用で `arguments` に挨拶が混在するため、AI 入力にも挨拶が入る。初版では除外しない。AI 品質劣化が観察された場合のみ次タスクで対応する。判断は実装後の動作確認時にダイチへ。
+2. **closing フェーズの存続**: 本設計では closing フェーズを廃止せず、closing → extension_voting → (continue) argument 再開 または (finish) judging の順序を採用。closing 中の自由弁論ターンが本当に残るべきかは曖昧、要件定義書通り維持する判断。
+3. **「同意して終了」CTA の二重押下**: バナー CTA とサイドアイコンが同一 API を叩くため、共通の `isProposingEnd` フラグで両方 disable する。
+4. **延長後 `round` の値**: 加算前 `max_rounds + 1`（例: max 3 → 延長後 6、次 round は 4）を採用、`current_turn = 'plaintiff'` にリセット。task.md 明示なし、UX 一貫性のための判断。
+5. **延長突入時の `end_proposed_by` リセット**: extension_voting 突入時に `end_proposed_by = NULL` も同時更新する（過去の終了提案は意味を失うため）。
+6. **挨拶 row の `phase` 値**: 開始挨拶 = `'opening'`、終了挨拶 = `'closing'`（直前のフェーズに揃える）。`'argument'` は使わない。
+7. **`round = 0` を使う既存箇所の確認**: 実装時に `from("arguments")` を全件 grep し、`round = 1` から始まる前提を持つ箇所があれば `is_greeting = false` フィルタを明示追加すること。
 
 ---
 
-## 未解決事項 / 将来検討
+## やってはいけないこと（再掲）
 
-本対応スコープ外で、将来別タスク化が想定される項目:
-
-- **件数の精度上限**: 全件取得 → `.length` で件数を出すため、PostgREST デフォルトの 1000 行上限を超えるユーザーは件数が頭打ちになる。個人で 1000 件を超えるフレンド・ケース・法律を持つ段階は当面想定外だが、超え始めたら `count: "exact", head: true` への分離が必要。
-- **profiles RLS の本格整備**: 「自分なら全列、他人なら一部列のみ」を表現する RLS 整備は本タスクのスコープ外。バックログに別項目化されている扱いで進める。
-- **アバター画像読み込み失敗時の `onError` フォールバック**: 初版未実装。実機で失効頻度が高ければ別タスクで対応する。
-- **UserSilhouette のグローバル化**: 第 3 の利用者が出てきた段階で `app/components/UserSilhouette.tsx` に切り出す提案を別タスク化する。
+- 既存 `design.md` セクションを削除・短縮しない。
+- 旧データの後方互換ロジックを書かない（`max_rounds = 2/5` のケース対応、`is_greeting` を持たない arguments の分岐などは不要）。
+- 新規 npm 依存を追加しない（アイコン用ライブラリ・モーダル用ライブラリ等）。
+- breakpoint を導入しない。
+- `brand-500` を使わない。
+- 弁護人 AI のプロンプト / 出力契約を変更しない。
+- ヘッダー本体 (`Header.tsx`) のレイアウトを変更しない。
+- マイページ (`/me`) 本体に挨拶設定 UI を追加しない（`/profile` のみ）。
 
 ---
 
-## 何かあったら
+## 関連ドキュメント
 
-- task.md と本メモが矛盾する場合は **task.md を優先** すること（task.md の優先順位ルール）。
-- design.md と本メモが矛盾する場合はリードに上申すること。本メモは design.md の要約版であり、詳細根拠は design.md 末尾の「FEAT-005 対応」セクションが正本。
-- 「`createAdminClient` を使うのは違反では？」と疑問に思った場合の答え: profiles 跨ぎ参照だけは MEDIUM-001 carve-out で admin 維持が認められている。ドメインテーブル（friend_requests・cases・laws 系）には絶対に admin を使わないこと。
+- `docs/knowledge/task.md`（最優先）
+- `docs/knowledge/design.md` の `## FEAT-006 対応` セクション（本メモと併読）
+- `docs/knowledge/requirements.md`
+- `docs/knowledge/environment.md`
+- `docs/decisions/003-db-design.md`（RLS 方針）
+- `docs/backlog.md` の FEAT-006

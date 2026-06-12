@@ -1,3 +1,8 @@
+import type { createAdminClient } from "@/lib/supabase/server";
+import type { PostgrestError } from "@supabase/supabase-js";
+
+type AdminClient = ReturnType<typeof createAdminClient>;
+
 export const DEFAULT_OPENING_GREETING = "よろしくお願いします";
 export const DEFAULT_CLOSING_GREETING = "ありがとうございました。";
 
@@ -9,6 +14,75 @@ export function resolveOpeningGreeting(profileValue: string | null | undefined):
 
 export function resolveClosingGreeting(profileValue: string | null | undefined): string {
   return profileValue ?? DEFAULT_CLOSING_GREETING;
+}
+
+interface InsertGreetingsArgs {
+  caseId: string;
+  plaintiffId: string;
+  defendantId: string | null; // null = ゲスト被告（サーバ既定文を使用）
+}
+
+async function resolvePairForCase(
+  admin: AdminClient,
+  args: InsertGreetingsArgs,
+  column: "opening_greeting" | "closing_greeting",
+  defaultText: string
+): Promise<{ plaintiff: string; defendant: string }> {
+  const { data: plaintiffProfile } = await admin
+    .from("profiles")
+    .select(column)
+    .eq("id", args.plaintiffId)
+    .single();
+  const plaintiff = (plaintiffProfile?.[column] as string | null | undefined) ?? defaultText;
+
+  let defendant = defaultText;
+  if (args.defendantId) {
+    const { data: defendantProfile } = await admin
+      .from("profiles")
+      .select(column)
+      .eq("id", args.defendantId)
+      .single();
+    defendant = (defendantProfile?.[column] as string | null | undefined) ?? defaultText;
+  }
+  return { plaintiff, defendant };
+}
+
+// opening phase 進入時に両者の開始挨拶を arguments に INSERT する。
+// 戻り値の error が null でなければ呼び出し側でエラー応答すること。
+export async function insertOpeningGreetingsForCase(
+  admin: AdminClient,
+  args: InsertGreetingsArgs
+): Promise<{ error: PostgrestError | null }> {
+  const { plaintiff, defendant } = await resolvePairForCase(
+    admin,
+    args,
+    "opening_greeting",
+    DEFAULT_OPENING_GREETING
+  );
+  const { error } = await admin.from("arguments").insert([
+    { case_id: args.caseId, role: "plaintiff", phase: "opening", round: 0, content: plaintiff, is_greeting: true },
+    { case_id: args.caseId, role: "defendant", phase: "opening", round: 0, content: defendant, is_greeting: true },
+  ]);
+  return { error };
+}
+
+// closing 確定時に両者の終了挨拶を arguments に INSERT する。
+// 呼び出し側は UPDATE 成功確認後にのみ本関数を呼ぶ責務がある（早期 INSERT は重複の元）。
+export async function insertClosingGreetingsForCase(
+  admin: AdminClient,
+  args: InsertGreetingsArgs
+): Promise<{ error: PostgrestError | null }> {
+  const { plaintiff, defendant } = await resolvePairForCase(
+    admin,
+    args,
+    "closing_greeting",
+    DEFAULT_CLOSING_GREETING
+  );
+  const { error } = await admin.from("arguments").insert([
+    { case_id: args.caseId, role: "plaintiff", phase: "closing", round: 0, content: plaintiff, is_greeting: true },
+    { case_id: args.caseId, role: "defendant", phase: "closing", round: 0, content: defendant, is_greeting: true },
+  ]);
+  return { error };
 }
 
 export type GreetingValidationResult =

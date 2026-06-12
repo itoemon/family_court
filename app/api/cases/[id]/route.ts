@@ -6,54 +6,7 @@ import { buildCaseResponse } from "@/lib/case-response";
 import { generateJudgeMessage } from "@/lib/judge";
 import { decryptApiKey } from "@/lib/crypto";
 import { isUuid } from "@/lib/text-utils";
-import { resolveOpeningGreeting } from "@/lib/greetings";
-
-type AdminClient = ReturnType<typeof createAdminClient>;
-
-async function insertOpeningGreetings(
-  admin: AdminClient,
-  caseId: string,
-  plaintiffId: string,
-  defendantUserId: string | null
-) {
-  // 原告の挨拶
-  const { data: plaintiffProfile } = await admin
-    .from("profiles")
-    .select("opening_greeting")
-    .eq("id", plaintiffId)
-    .single();
-  const plaintiffOpening = resolveOpeningGreeting(plaintiffProfile?.opening_greeting ?? null);
-
-  // 被告の挨拶（ゲストの場合はサーバ既定文）
-  let defendantOpening = resolveOpeningGreeting(null);
-  if (defendantUserId) {
-    const { data: defendantProfile } = await admin
-      .from("profiles")
-      .select("opening_greeting")
-      .eq("id", defendantUserId)
-      .single();
-    defendantOpening = resolveOpeningGreeting(defendantProfile?.opening_greeting ?? null);
-  }
-
-  await admin.from("arguments").insert([
-    {
-      case_id: caseId,
-      role: "plaintiff",
-      phase: "opening",
-      round: 0,
-      content: plaintiffOpening,
-      is_greeting: true,
-    },
-    {
-      case_id: caseId,
-      role: "defendant",
-      phase: "opening",
-      round: 0,
-      content: defendantOpening,
-      is_greeting: true,
-    },
-  ]);
-}
+import { insertOpeningGreetingsForCase } from "@/lib/greetings";
 
 export async function GET(
   req: NextRequest,
@@ -141,8 +94,31 @@ export async function PATCH(
     if (user.id === c.plaintiff_id) {
       return NextResponse.json({ error: "自分自身とは話し合いできません" }, { status: 409 });
     }
-    await admin.from("cases").update({ defendant_id: user.id, phase: "opening" }).eq("id", id);
-    await insertOpeningGreetings(admin, id, c.plaintiff_id, user.id);
+    // LOW-001: 挨拶 INSERT を先に行い、成功した場合のみ参加 UPDATE に進む。
+    // 参加 UPDATE が失敗した場合は挨拶 row を rollback で削除し、再参加可能な状態に戻す。
+    const { error: openingGreetingError } = await insertOpeningGreetingsForCase(admin, {
+      caseId: id,
+      plaintiffId: c.plaintiff_id,
+      defendantId: user.id,
+    });
+    if (openingGreetingError) {
+      console.error("[cases PATCH] opening greeting insert failed (auth):", openingGreetingError);
+      return NextResponse.json({ error: "開始挨拶の保存に失敗しました" }, { status: 500 });
+    }
+    const { error: joinError } = await admin
+      .from("cases")
+      .update({ defendant_id: user.id, phase: "opening" })
+      .eq("id", id);
+    if (joinError) {
+      console.error("[cases PATCH] join update failed (auth):", joinError);
+      await admin
+        .from("arguments")
+        .delete()
+        .eq("case_id", id)
+        .eq("is_greeting", true)
+        .eq("phase", "opening");
+      return NextResponse.json({ error: "参加処理に失敗しました" }, { status: 500 });
+    }
     const { data: profile } = await admin.from("profiles").select("display_name").eq("id", user.id).single();
     try {
       const { data: plaintiffProfile } = await admin
@@ -190,8 +166,30 @@ export async function PATCH(
       { status: 500 }
     );
   }
-  await admin.from("cases").update({ defendant_guest_name: body.defendantName.trim(), phase: "opening" }).eq("id", id);
-  await insertOpeningGreetings(admin, id, c.plaintiff_id, null);
+  // LOW-001: 挨拶 INSERT を先に行い、成功した場合のみ参加 UPDATE に進む（ゲスト経路も同様）。
+  const { error: openingGreetingError } = await insertOpeningGreetingsForCase(admin, {
+    caseId: id,
+    plaintiffId: c.plaintiff_id,
+    defendantId: null,
+  });
+  if (openingGreetingError) {
+    console.error("[cases PATCH] opening greeting insert failed (guest):", openingGreetingError);
+    return NextResponse.json({ error: "開始挨拶の保存に失敗しました" }, { status: 500 });
+  }
+  const { error: guestJoinError } = await admin
+    .from("cases")
+    .update({ defendant_guest_name: body.defendantName.trim(), phase: "opening" })
+    .eq("id", id);
+  if (guestJoinError) {
+    console.error("[cases PATCH] join update failed (guest):", guestJoinError);
+    await admin
+      .from("arguments")
+      .delete()
+      .eq("case_id", id)
+      .eq("is_greeting", true)
+      .eq("phase", "opening");
+    return NextResponse.json({ error: "参加処理に失敗しました" }, { status: 500 });
+  }
   try {
     const { data: plaintiffProfile } = await admin
       .from("profiles")

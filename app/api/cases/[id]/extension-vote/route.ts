@@ -3,7 +3,7 @@ import { createAdminClient, createSessionClient } from "@/lib/supabase/server";
 import { verifyGuestToken } from "@/lib/guest-token";
 import { buildCaseResponse } from "@/lib/case-response";
 import { isUuid } from "@/lib/text-utils";
-import { resolveClosingGreeting, DEFAULT_CLOSING_GREETING } from "@/lib/greetings";
+import { insertClosingGreetingsForCase } from "@/lib/greetings";
 
 type Actor = "plaintiff" | "defendant" | "guest";
 
@@ -114,9 +114,9 @@ export async function POST(
     // 両者揃った
     const eitherContinue = myVote === "continue" || opponentVote === "continue";
     if (eitherContinue) {
-      // どちらかが continue → +3 ラウンド延長、argument に戻す
+      // どちらかが continue → +3 ラウンド延長、argument に戻す（MEDIUM-002: UPDATE エラーを捕捉）
       const newMaxRounds = refreshed.max_rounds + 3;
-      await admin
+      const { error: extendError } = await admin
         .from("cases")
         .update({
           max_rounds: newMaxRounds,
@@ -129,10 +129,12 @@ export async function POST(
           updated_at: new Date().toISOString(),
         })
         .eq("id", id);
+      if (extendError) {
+        return NextResponse.json({ error: "延長処理に失敗しました" }, { status: 500 });
+      }
     } else {
-      // 両者 finish → 終了挨拶を投入してから judging へ
-      await insertClosingGreetings(admin, refreshed);
-      await admin
+      // 両者 finish → judging へ遷移してから終了挨拶を INSERT（MEDIUM-001/002）
+      const { error: judgingError } = await admin
         .from("cases")
         .update({
           phase: "judging",
@@ -142,55 +144,21 @@ export async function POST(
           updated_at: new Date().toISOString(),
         })
         .eq("id", id);
+      if (judgingError) {
+        return NextResponse.json({ error: "判決フェーズへの遷移に失敗しました" }, { status: 500 });
+      }
+      const { error: greetingError } = await insertClosingGreetingsForCase(admin, {
+        caseId: id,
+        plaintiffId: refreshed.plaintiff_id,
+        defendantId: refreshed.defendant_id,
+      });
+      if (greetingError) {
+        console.error("[extension-vote] closing greeting insert failed:", greetingError);
+        return NextResponse.json({ error: "終了挨拶の保存に失敗しました" }, { status: 500 });
+      }
     }
   }
 
   const caseData = await buildCaseResponse(admin, id);
   return NextResponse.json(caseData);
-}
-
-type AdminClient = ReturnType<typeof createAdminClient>;
-
-interface CaseRow {
-  id: string;
-  plaintiff_id: string;
-  defendant_id: string | null;
-}
-
-async function insertClosingGreetings(admin: AdminClient, c: CaseRow) {
-  const { data: plaintiffProfile } = await admin
-    .from("profiles")
-    .select("closing_greeting")
-    .eq("id", c.plaintiff_id)
-    .single();
-  const plaintiffClosing = resolveClosingGreeting(plaintiffProfile?.closing_greeting ?? null);
-
-  let defendantClosing = DEFAULT_CLOSING_GREETING;
-  if (c.defendant_id) {
-    const { data: defendantProfile } = await admin
-      .from("profiles")
-      .select("closing_greeting")
-      .eq("id", c.defendant_id)
-      .single();
-    defendantClosing = resolveClosingGreeting(defendantProfile?.closing_greeting ?? null);
-  }
-
-  await admin.from("arguments").insert([
-    {
-      case_id: c.id,
-      role: "plaintiff",
-      phase: "closing",
-      round: 0,
-      content: plaintiffClosing,
-      is_greeting: true,
-    },
-    {
-      case_id: c.id,
-      role: "defendant",
-      phase: "closing",
-      round: 0,
-      content: defendantClosing,
-      is_greeting: true,
-    },
-  ]);
 }
