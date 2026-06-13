@@ -131,6 +131,19 @@ export async function POST(
   });
   if (greetingError) {
     console.error("[end-proposal] closing greeting insert failed:", greetingError);
+    // Rollback: 挨拶 INSERT が失敗した場合は phase=argument に戻し、
+    // end_proposed_by を元の提案者ロールに復元してリトライ可能にする（コパ #4 指摘）。
+    // 楽観ロック (phase=judging AND end_proposed_by IS NULL) で他経路と競合しないよう保護。
+    await admin
+      .from("cases")
+      .update({
+        phase: "argument",
+        end_proposed_by: current,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .eq("phase", "judging")
+      .is("end_proposed_by", null);
     return NextResponse.json({ error: "終了挨拶の保存に失敗しました" }, { status: 500 });
   }
   const caseData = await buildCaseResponse(admin, id);

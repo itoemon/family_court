@@ -114,9 +114,11 @@ export async function POST(
     // 両者揃った
     const eitherContinue = myVote === "continue" || opponentVote === "continue";
     if (eitherContinue) {
-      // どちらかが continue → +3 ラウンド延長、argument に戻す（MEDIUM-002: UPDATE エラーを捕捉）
+      // どちらかが continue → +3 ラウンド延長、argument に戻す。
+      // 両者投票揃った直後に双方リクエストが並行すると確定処理が二重に走り得るため、
+      // phase=extension_voting と現在の票を WHERE に含めた楽観ロックで 1 回に絞る（コパ #6 指摘）。
       const newMaxRounds = refreshed.max_rounds + 3;
-      const { error: extendError } = await admin
+      const { data: extendUpdated, error: extendError } = await admin
         .from("cases")
         .update({
           max_rounds: newMaxRounds,
@@ -128,13 +130,22 @@ export async function POST(
           current_turn: "plaintiff",
           updated_at: new Date().toISOString(),
         })
-        .eq("id", id);
+        .eq("id", id)
+        .eq("phase", "extension_voting")
+        .eq("extension_vote_plaintiff", myVote)
+        .eq("extension_vote_defendant", opponentVote)
+        .select("id");
       if (extendError) {
         return NextResponse.json({ error: "延長処理に失敗しました" }, { status: 500 });
       }
+      // 楽観ロック失敗（更新 0 件）は別経路で先に確定済みを意味するため、最新状態をそのまま返す。
+      if (!extendUpdated || extendUpdated.length === 0) {
+        console.info("[extension-vote] continue 確定は他経路で実行済み");
+      }
     } else {
-      // 両者 finish → judging へ遷移してから終了挨拶を INSERT（MEDIUM-001/002）
-      const { error: judgingError } = await admin
+      // 両者 finish → judging へ遷移してから終了挨拶を INSERT。
+      // 楽観ロックで UPDATE 成功した 1 リクエストだけが挨拶 INSERT を実行する（コパ #7 指摘）。
+      const { data: judgingUpdated, error: judgingError } = await admin
         .from("cases")
         .update({
           phase: "judging",
@@ -143,18 +154,27 @@ export async function POST(
           end_proposed_by: null,
           updated_at: new Date().toISOString(),
         })
-        .eq("id", id);
+        .eq("id", id)
+        .eq("phase", "extension_voting")
+        .eq("extension_vote_plaintiff", myVote)
+        .eq("extension_vote_defendant", opponentVote)
+        .select("id");
       if (judgingError) {
         return NextResponse.json({ error: "判決フェーズへの遷移に失敗しました" }, { status: 500 });
       }
-      const { error: greetingError } = await insertClosingGreetingsForCase(admin, {
-        caseId: id,
-        plaintiffId: refreshed.plaintiff_id,
-        defendantId: refreshed.defendant_id,
-      });
-      if (greetingError) {
-        console.error("[extension-vote] closing greeting insert failed:", greetingError);
-        return NextResponse.json({ error: "終了挨拶の保存に失敗しました" }, { status: 500 });
+      // 楽観ロック成功時のみ挨拶 INSERT。失敗時（他経路で先に確定）はスキップ。
+      if (judgingUpdated && judgingUpdated.length > 0) {
+        const { error: greetingError } = await insertClosingGreetingsForCase(admin, {
+          caseId: id,
+          plaintiffId: refreshed.plaintiff_id,
+          defendantId: refreshed.defendant_id,
+        });
+        if (greetingError) {
+          console.error("[extension-vote] closing greeting insert failed:", greetingError);
+          return NextResponse.json({ error: "終了挨拶の保存に失敗しました" }, { status: 500 });
+        }
+      } else {
+        console.info("[extension-vote] finish 確定は他経路で実行済み");
       }
     }
   }

@@ -462,7 +462,7 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
 
       {isOpponentEndProposal && (
         <div className="max-w-2xl mx-auto w-full px-4 pt-2">
-          <div className="bg-stone-100 border border-stone-300 text-stone-700 rounded-xl px-4 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="bg-stone-100 border border-stone-300 text-stone-700 rounded-xl px-4 py-3 flex flex-col gap-2">
             <p className="text-sm">
               {opponentName ?? "相手"}さんが話し合いの終了を提案しています。
             </p>

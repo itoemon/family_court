@@ -106,7 +106,8 @@ export function validateGreeting(raw: unknown, fieldLabel: string): GreetingVali
   if (typeof raw !== "string") {
     return { ok: false, error: `${fieldLabel}の値が不正です` };
   }
-  if (raw.length === 0) {
+  if (raw.trim().length === 0) {
+    // 空白のみの入力も拒否（UI 側で trim 判定して弾いているため、API 直叩きも揃える）
     return { ok: false, error: `${fieldLabel}は空欄では保存できません` };
   }
   if (raw.length > MAX_GREETING_LENGTH) {

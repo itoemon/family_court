@@ -105,12 +105,20 @@ export async function POST(
     }
   }
 
-  await admin.from("cases").update({
+  // フェーズが argument を離れるタイミングで end_proposed_by をクリアする。
+  // argument 中に出ていた終了提案を closing / extension_voting に持ち越すと、
+  // それらフェーズでは /api/cases/[id]/end-proposal が 409 を返すため
+  // 撤回も同意もできず提案状態が詰みになる（コパ #3 指摘）。
+  const updatePayload: Record<string, unknown> = {
     current_turn: nextTurn,
     phase: nextPhase,
     round: nextRound,
     updated_at: new Date().toISOString(),
-  }).eq("id", id);
+  };
+  if (nextPhase !== "argument") {
+    updatePayload.end_proposed_by = null;
+  }
+  await admin.from("cases").update(updatePayload).eq("id", id);
 
   // profiles は judge・矛盾チェック両方で使うため先に1回取得
   const { data: plaintiffProfile } = await admin
