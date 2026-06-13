@@ -9,3 +9,4 @@
 20260526000002_feat002_phase2_friends.sql
 20260526000003_feat003_laws.sql
 20260528000000_medium001_laws_select_invitee.sql
+20260612164035_feat006_chat_rounds_and_greetings.sql

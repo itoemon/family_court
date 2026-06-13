@@ -2,11 +2,11 @@
 
 > **注意**: このメモは task.md を補足するものです。task.md と矛盾する場合は task.md を優先してください。
 
-**タスク**: FEAT-005 — マイページ（自分専用統合ハブ）の新設 + ヘッダー導線追加
-**日時**: 2026-06-02
-**ブランチ**: feature/20260602-165117
+**タスク**: FEAT-006 — チャット回数仕様の柔軟化（3回 + 早期終了 + 3回延長）と固定挨拶導入
+**日時**: 2026-06-12
+**ブランチ**: feature/20260612-163856
 
-由来: `docs/backlog.md` の `[FEAT-005] マイページ（フレンド・過去のケース・プロフィール統合ハブ）`
+由来: `docs/knowledge/task.md` FEAT-006、`docs/knowledge/design.md ## FEAT-006 対応`、`docs/knowledge/handoff/arch-to-eng.md`
 
 ---
 
@@ -14,181 +14,131 @@
 
 | ファイル | 種別 | 内容 |
 |---|---|---|
-| `middleware.ts` | 変更（1 行） | `PROTECTED_PATH_PREFIXES` 配列に `"/me"` を追加。判定ロジック・matcher は不変 |
-| `app/me/page.tsx` | 新規（Server Component） | データ取得オーケストレータ。`Promise.allSettled` で 5 系統の SELECT を並列発行し、フレンド profile 解決のみ admin で別実行。各カードに props を渡してレンダリング |
-| `app/me/_components/SectionCard.tsx` | 新規（Server Component） | 4 カード共通のレイアウトシェル。`<section aria-labelledby>` + タイトル + 件数バッジ + 「もっと見る」リンク |
-| `app/me/_components/MeHeader.tsx` | 新規（Server Component） | ページ最上部のアイデンティティ行。中型アバター（`w-16 h-16`）+ 表示名 `<h1>` + プロフィール編集リンク |
-| `app/me/_components/ProfileCard.tsx` | 新規（Server Component） | プロフィールカード。小アバター + 表示名 + 弁護人カスタム指示プレビュー（100 文字 truncate） |
-| `app/me/_components/FriendsCard.tsx` | 新規（Server Component） | フレンドカード。件数バッジ + 直近 5 名のアバター + 表示名リスト |
-| `app/me/_components/CasesCard.tsx` | 新規（Server Component） | 過去のケースカード。件数バッジ + 直近 5 件のトピック + 日付。各行クリックで `/case/[id]` 遷移 |
-| `app/me/_components/LawsCard.tsx` | 新規（Server Component） | 参加中の法律カード。件数バッジ + 直近 5 件の法律名 + 役割バッジ（オーナー/メンバー/招待中） |
-| `app/components/HeaderUserMenu.tsx` | 変更（1 ブロック追加） | 認証時メニュー先頭に「マイページ」`<Link href="/me">` を 1 項目追加。他項目・未認証メニューは完全に不変 |
-
-**触っていないファイル（設計どおりスコープ外）**:
-
-- `supabase/` 配下すべて（RLS / migration / DB スキーマ）
-- `package.json` / `package-lock.json`（新規 npm 依存なし）
-- `tailwind.config.*`（カラートークン追加なし）
-- `app/components/Header.tsx`（ヘッダー本体・マウント方法不変）
-- `app/profile/page.tsx` / `app/friends/page.tsx` / `app/history/page.tsx` / `app/laws/page.tsx`（参照のみ。本体は不変）
-- `app/actions/auth.ts`（`logout` 不変）
-- `lib/types.ts`（既存型を使用するのみ。新規型 export は追加しない）
+| `supabase/migrations/20260612164035_feat006_chat_rounds_and_greetings.sql` | 新規 | (1) 旧ケース全削除 (2) `cases` に `end_proposed_by` / `extension_vote_*` 追加 (3) `profiles` に `opening_greeting` / `closing_greeting` 追加 (4) `arguments.is_greeting` 追加 (5) `cases.phase` の check に `'extension_voting'` 追加 |
+| `supabase/schema.sql` | 変更 | 上記 migration を反映（profiles / cases / arguments の DDL 更新、phase check 値追加） |
+| `lib/types.ts` | 変更 | `Phase` に `"extension_voting"` 追加、`EndProposalActor` / `ExtensionVote` 型追加、`Argument.isGreeting`、`Case.endProposedBy` / `extensionVotePlaintiff` / `extensionVoteDefendant` 追加、`Profile` に挨拶 2 項目追加、`CreateCaseRequest.maxRounds` 削除 |
+| `lib/greetings.ts` | 新規 | `DEFAULT_OPENING_GREETING` / `DEFAULT_CLOSING_GREETING` / `resolveOpeningGreeting` / `resolveClosingGreeting` / `validateGreeting` / `MAX_GREETING_LENGTH` |
+| `lib/case-response.ts` | 変更 | snake→camel マップに `endProposedBy` / `extensionVotePlaintiff` / `extensionVoteDefendant` / `isGreeting` を追加 |
+| `app/page.tsx` | 変更 | `maxRounds` state / `<select>` ブロック / POST body の `maxRounds` キーを削除 |
+| `app/api/cases/route.ts` | 変更 | POST から `body.maxRounds` の参照を完全撤去（DB default の 3 に委ねる） |
+| `app/api/profile/route.ts` | 変更 | PATCH に `openingGreeting` / `closingGreeting` 受領追加。`validateGreeting` でバリデーション。レスポンスに新項目を含める |
+| `app/profile/page.tsx` | 変更 | 「開始時の挨拶」「終了時の挨拶」入力 2 項目 + 各「デフォルトに戻す」リンク + 保存ボタンを追加 |
+| `app/api/cases/[id]/route.ts` | 変更 | 被告参加（認証 / ゲスト両方）時の `phase: opening` 遷移直後に `insertOpeningGreetings` で両者の開始挨拶を `arguments` に `is_greeting=true, round=0` で INSERT |
+| `app/api/cases/[id]/argument/route.ts` | 変更 | (1) 発言禁止フェーズに `extension_voting` 追加 (2) `closing → judging` を `closing → extension_voting` に変更 (3) judge_message の `"closing"` trigger 発火条件を `nextPhase === "extension_voting"` に修正 |
+| `app/api/cases/[id]/end-proposal/route.ts` | 新規 | POST。actor 識別（plaintiff / defendant / guest）後にトグル分岐: NULL→提案 / 自分→撤回 / 相手→同意（終了挨拶 INSERT + `phase=judging`）。`argument` 以外のフェーズは 409 |
+| `app/api/cases/[id]/extension-vote/route.ts` | 新規 | POST `{ vote: "continue" | "finish" }`。自分側カラムへ楽観的更新（既投票は 409）。両者揃った場合: いずれか continue → `max_rounds += 3, phase=argument, round=旧max+1, current_turn=plaintiff` / 両者 finish → 終了挨拶 INSERT 後 `phase=judging`。両分岐とも `extension_vote_*` と `end_proposed_by` を NULL に戻す |
+| `app/api/cases/[id]/verdict/route.ts` | 変更 | `caseForClaude: Case` 構築時に新フィールド (`endProposedBy` / `extensionVote*` / `isGreeting`) を追加 |
+| `app/case/[id]/CaseRoom.tsx` | 変更 | (1) `PHASE_LABELS` に `extension_voting: "もう少し話し合うか確認中"` (2) `canSpeak` 判定に `extension_voting` を追加 (3) 相手側「終了提案中」バナー + CTA「同意して終了」 (4) 自分側「提案中」状態テキスト (5) 入力欄ヘッダー / 返答待ち表示に `EndProposalButton`（SVG インライン、`stone-*` 配色、`argument` フェーズのみ表示）(6) `extension_voting` 中の `ExtensionVotingModal`（× ボタンなし、投票後は「相手の投票を待っています」表示） (7) 吹き出しで `isGreeting === true` のラベルを「開始の挨拶」/「終了の挨拶」に切り替え |
+| `app/case/[id]/verdict/page.tsx` | 変更 | やりとり一覧で `isGreeting === true` のラベル表示を「開始の挨拶」/「終了の挨拶」に |
 
 ---
 
-## 実装上の判断・設計書からの逸脱
+## 設計書から逸脱した箇所と理由
 
-設計書（`docs/knowledge/design.md`「FEAT-005 対応」）および `arch-to-eng.md` に忠実に実装した。**設計からの逸脱なし**。実装段階で判断した点を以下に列挙する。
+### 1. アーキ判断に従ったため逸脱なし
 
-1. **`createSessionClient` vs `createAdminClient` の使い分け**: 設計（および arch-to-eng.md「実装上の注意点」）に従い、ドメインテーブル（`profiles[self]` / `friend_requests` / `cases` / `law_members` / `laws` / `law_invitations`）はすべて `createSessionClient`。`profiles` の **フレンド分の他人行**（最大 5 件）の `display_name` / `avatar_url` 解決のみ `createAdminClient` を使う（MEDIUM-001 carve-out）。`friendIds` が空配列の場合は admin クエリを発行しない（早期 return）。
+設計書（design.md FEAT-006 セクション）と arch-to-eng.md に記述された判断にすべて準拠して実装した。`uuid` ではなく `text + check` での `end_proposed_by`、案 A の `cases` 2 カラム延長投票、案 1 の `arguments.is_greeting`、案 A の 1 migration 集約、いずれも採用済み。
 
-2. **`Promise.allSettled` を採用**: 1 つのクエリ失敗で全ページが落ちる挙動を避けるため `Promise.allSettled` を採用。各セクションは失敗時 `console.error("[me] <section> ...")` を残し、当該セクションのみ「空状態」または `count === null`（バッジ非表示）にフォールバックする。
+### 2. 一部 UI 細部の判断
 
-3. **フレンド profile 解決は `Promise.allSettled` の外で実行**: `friend_requests` の結果に依存して `friendIds` が決まる構造のため、並列化はせず逐次実行とした。空配列なら admin 呼び出し自体をスキップ。
+- **「終了を提案」アイコンの配置**: 設計書では「自分側入力欄ヘッダーまたは送信ボタン左隣」とあり、自分のターンでない場合（返答待ち表示）にも同じアイコンを表示するようにした。常設の要件を厳密に解釈し、両分岐に同じコンポーネント `EndProposalButton` を配置。
+- **アイコン SVG 図柄**: 「下向き矢印付きドア（exit）」案 → 「矩形 + 右矢印」を実装（出口のシンボル）。アクセシブル名は提案中 / 未提案で文言を切替。
+- **延長投票モーダルのコピー**: 設計書文言に準拠しつつ、`?` を含むタイトル、説明、ボタン文言を全角に揃えた。
+- **「自分が提案中」UI**: 設計書では「アイコン背景 `bg-stone-200`、aria-pressed」+ 「`「あなたが終了を提案中」` のテキスト」。実装ではアイコンとは別に上部に小さなテキストバナーを置き、撤回手順を案内する文を入れた（提案者が撤回手順を見落とさないため）。
 
-4. **`defense_custom_instruction` の 100 文字 truncate**: `lib/text-utils.ts` に既存 truncate は確認したが 100 文字版がない（および新規ユーティリティ追加は不要との設計指針）ため、`page.tsx` 内のローカル関数 `truncateInstruction()` で `.trim()` → `.slice(0, 100)` → 100 文字超なら末尾 `…` を付加する素朴な実装を採用。
+### 3. closing フェーズの挙動
 
-5. **件数バッジ表示ルール**: `count === 0` でも「0件」と表示。取得失敗（`count === null`）のみバッジ非表示（`SectionCard.tsx` 内の `showBadge` 判定で `null`/`undefined` を弾く）。設計の「取得失敗との区別を明確化」方針に整合。
+- 既存の `closing → judging` 遷移を `closing → extension_voting` に置き換えた。`argument` フェーズの最終ラウンドが終わったあと、原告→被告の closing 1 ターンを取り、closing 終了時点で `extension_voting` に遷移する（設計書「closing フェーズは廃止せず維持」に準拠）。
+- judge_message の `"closing"` trigger の発火タイミングも `nextPhase === "extension_voting"` に修正した（旧 `nextPhase === "judging"` の置換）。
 
-6. **法律ダイジェストの「招待」と「メンバーシップ」の重複排除**: 仕様上、メンバーになったあと招待が `accepted` になるため通常は重複しないが、データ整合性が崩れた場合の保険として、「メンバーシップに含まれる law_id は招待側から除外」というロジックを `membershipKeys` Set で実装。`totalCount` は単純合算（仕様どおり）、ダイジェスト表示のみ重複排除する。
+### 4. extension_voting 突入時の `end_proposed_by` リセット
 
-7. **法律ダイジェストの並び替え**: メンバーシップは `joined_at` 降順、招待は `invited_at` 降順、両者を `sortKey` フィールドで合算してから降順マージ、先頭 5 件を取る。ISO8601 文字列の辞書順比較で降順を担保。
+- closing → extension_voting への自動遷移時には、`end_proposed_by` のリセットは行っていない（カラムが NULL のままで遷移する想定）。
+- extension_vote の集計確定時には、continue / finish のどちらに転んでも `end_proposed_by = NULL`、`extension_vote_* = NULL` をまとめてリセットしている（design.md 注意事項にある「extension_voting 突入時に end_proposed_by を NULL にリセット」の意図を、両側のフェーズ離脱時に実装した）。
 
-8. **「招待中」行のクリック先**: `<Link href="/laws">` で `/laws` 一覧へ遷移（招待受諾 UI は `/laws` 上の `PendingInvitations` に集約済み。本ページに受諾フォームを置かない方針）。
+### 5. 開始挨拶 INSERT のタイミング
 
-9. **`UserSilhouette` SVG の重複**: 設計どおり `HeaderUserMenu.tsx` から SVG を複製し、`MeHeader.tsx` / `ProfileCard.tsx` / `FriendsCard.tsx` 各ファイル内にローカル関数として直書き。`app/components/UserSilhouette.tsx` へのグローバル切り出しはスコープ外として行わない。**第 3 の利用者（本対応で実際に 3 箇所に重複）が確定したため、後続タスクでの切り出しを推奨**（後述「未解決事項」）。
-
-10. **画像コンポーネント**: 設計どおり素の `<img>` を採用（`next/image` 不使用）。`next.config` の `images` 設定変更を避けるため、本対応のスコープに収めた。ESLint の `@next/next/no-img-element` は当該 4 行のみ disable コメントで抑制。
-
-11. **`<form>`・Server Action は一切記述していない**: マイページからの編集・追加・削除を一切行わない設計に厳密に従い、本ページのレンダリングツリー全体で `<form>` / `<input>` / `<button type="submit">` / Server Action を 0 件に抑えた（grep で確認）。
-
-12. **配色**: `stone-50` / `stone-100` / `stone-200` / `stone-400` / `stone-500` / `stone-600` / `stone-700` / `stone-800` および `brand-700` / `brand-800`、`amber-100` / `amber-700`（法律「招待中」バッジのみ）に限定。`brand-500` は **不使用**。エラー / 危険系の `rose-*` も不使用（編集系がないため）。
-
-13. **breakpoint**: `sm:` / `md:` / `lg:` / `xl:` を **一切使用していない**（grep で 0 件確認）。全画面サイズで同一 1 カラムレイアウト（`max-w-2xl mx-auto px-4 py-10 space-y-6`）。
-
-14. **見出し階層**: `MeHeader` 内に `<h1>{displayName}</h1>` を 1 つ。各 `SectionCard` 内に `<h2 id={titleId}>` を 1 つ。`titleId` は安定文字列（`"me-section-profile"` / `"me-section-friends"` / `"me-section-cases"` / `"me-section-laws"`）を `page.tsx` から渡し、`<section aria-labelledby>` と紐付け。`useId()` は使わない（Server Component のため）。
-
-15. **`HeaderUserMenu` への追加**: 認証時メニュー先頭に「マイページ」`<Link href="/me">` を 1 ブロック追加するのみ。既存の `menuItemClass` 定数を再利用し、新規スタイル定義は追加していない。未認証時メニュー（ログイン / サインアップ）には変更なし。
+- 被告参加（認証 / ゲスト両方）で `phase: "opening"` に遷移した直後、judge_message 生成より前に両者の挨拶 row を 2 行 INSERT。
+- ゲスト被告には `profiles` 行が存在しないため、サーバ既定文（`DEFAULT_OPENING_GREETING`）を使用。
 
 ---
 
 ## テスタ・オーディへの注意点
 
-### 前提条件
+### マイグレーション適用順
 
-- **DB / migration の適用は不要**。本 PR は **アプリケーションコードのみ**。`supabase/` 配下・RLS・スキーマには一切手を加えていない。
-- 既存 RLS で十分通る前提（`profiles` 自分自身行 SELECT、`friend_requests_select_own`、`cases` の公開 SELECT、`laws_select_member_or_invitee`、`law_members` / `law_invitations` / `law_proposals` の既存 SELECT）。新規ポリシー・列追加なし。
-- `app/actions/auth.ts` の `logout`、`middleware.ts` の認証チェック構造は不変。`PROTECTED_PATH_PREFIXES` に `/me` を 1 件追加しただけ。
+1. 本 PR の `supabase/migrations/20260612164035_feat006_chat_rounds_and_greetings.sql` を Supabase に適用すること。**最初の `delete from public.cases;` で既存ケースが全削除される**（cascade で arguments / verdicts / judge_messages も削除）。テスト DB に保持したい旧ケースがあれば事前に退避を。
+2. `profiles` / `friend_requests` / `laws` / `law_*` は保持される。
+3. schema.sql は本番 snapshot として整合済み。新規環境セットアップは schema.sql 1 本で完結する。
 
-### 重点確認シナリオ（arch-to-eng.md リグレッション確認シナリオ準拠）
+### リグレッション確認シナリオ（arch-to-eng.md より転記 + 補足）
 
-#### マイページ本体（`/me`）
+1. **新規ケース → 3 回まで argument → 最終 closing → 延長投票で両者 finish → 判決**
+   - argument のラウンド表示は 1〜3。挨拶 row は round=0 で表示されラウンドカウントに乗らない。
+   - extension_voting 中、両者にモーダルが出る。投票後は「相手の投票を待っています」に。
+   - 両者 finish 確定で終了挨拶 2 行が timeline に表示され、`phase=judging` に遷移、verdict 画面へ。
+2. **argument 中に原告が「終了を提案」 → 被告に「同意して終了」バナーが表示 → 同意で判決へ**
+   - 終了挨拶 2 行が INSERT される。
+3. **終了提案を出して撤回**
+   - 同じアイコンを押すと `end_proposed_by` が NULL に戻り、相手側のバナーが polling 後に消える。
+4. **延長投票で原告 continue / 被告 finish → max_rounds が 6 に → 6 回目まで進行**
+   - argument の current_turn は plaintiff にリセットされ、round が `旧max_rounds + 1` から再開（例: 3→4）。
+   - 6 回目終了後 → closing 1 ターン → 再度 extension_voting → 延長または終了選択可。
+5. **profile 編集**
+   - 「開始時の挨拶」「終了時の挨拶」テキスト入力で保存 → 新ケースで反映。
+   - 空欄保存は 400（API）+ UI 側でも事前に弾く。
+   - 「デフォルトに戻す」リンクで該当カラムが NULL に戻り、次のケースで `DEFAULT_OPENING_GREETING` / `DEFAULT_CLOSING_GREETING` が使われる。
+6. **ゲスト被告**
+   - 終了提案アイコンが表示・押下可能（`end_proposed_by = 'guest'` で保存）。
+   - 延長投票モーダルも表示・投票可能（`extension_vote_defendant` 側に書き込み）。
+   - 挨拶はサーバ既定文。
 
-| シナリオ | 期待される挙動 |
-|---|---|
-| 認証時 `/me` 直接アクセス | アイデンティティ行 + 4 カード（プロフィール / フレンド / 過去のケース / 参加中の法律）が縦並びで表示 |
-| 未認証時 `/me` 直接アクセス | `/auth/login` にリダイレクト（middleware が先行。page.tsx 内の二重防御 `redirect()` でも担保） |
-| 未認証時 `/me/foo` 直接アクセス | 同じく `/auth/login` にリダイレクト（`pathname.startsWith("/me/")` で保護） |
-| アバター未設定ユーザー | アイデンティティ行とプロフィールカードの両方で人型シルエット（`bg-stone-200` + `text-stone-600`）表示 |
-| `defense_custom_instruction` 未設定 | プロフィールカードに「弁護人カスタム指示は未設定です」+ 補助文表示 |
-| `defense_custom_instruction` 100 文字超 | 先頭 100 文字 + 末尾 `…`（trim 後で判定） |
-| フレンド 0 人 | フレンドカードに件数バッジ「0件」+ 空状態文「まだフレンドはいません」+ 補助文 |
-| フレンド 6 人以上 | 件数バッジに合計件数、ダイジェストは直近 5 件で打ち切り |
-| 判決済みケース 0 件 | 過去のケースカードに件数バッジ「0件」+ 空状態文 |
-| 参加中の法律 0 件 | 参加中の法律カードに件数バッジ「0件」+ 空状態文 |
-| 法律の役割（オーナー） | 「オーナー」バッジ（`bg-stone-100 text-stone-700`） + `/laws/[id]` リンク |
-| 法律の役割（メンバー） | 「メンバー」バッジ（`bg-stone-100 text-stone-600`） + `/laws/[id]` リンク |
-| 法律の役割（招待中） | 「招待中」バッジ（`bg-amber-100 text-amber-700`） + `/laws` リンク（招待 ID は URL に含めない） |
-| 各カードの「もっと見る」 | プロフィール: `/profile` / フレンド: `/friends` / 過去のケース: `/history` / 参加中の法律: `/laws` |
-| 過去のケース行クリック | `/case/[id]` に遷移 |
-| 法律メンバー / オーナー行クリック | `/laws/[id]` に遷移 |
-| 法律「招待中」行クリック | `/laws` に遷移（招待受諾は `/laws` の `PendingInvitations` セクションで実施） |
+### 影響範囲外（regression が出ないことを確認）
 
-#### 全画面サイズ（breakpoint なし確認）
+- 認証 / フレンド / 法律機能 / プロフィールの他項目編集 / アバター変更 / API キー登録
+- マイページ (`/me`) の表示 / 過去のケースダイジェスト
+- 弁護人 AI（プロンプト・出力契約は不変。`arguments` を読む defense / draft / verdict 側に挨拶 row が混入することは許容範囲との設計判断）
+- 矛盾警告（既存ロジック不変）
 
-| 横幅 | 期待される挙動 |
-|---|---|
-| 375px（スマホ） | 1 カラム、横スクロールなし、各カードが画面幅に収まる |
-| 768px（タブレット） | 同上、`max-w-2xl` で中央寄せ |
-| 1280px 以上（PC） | 同上、`max-w-2xl mx-auto` で中央に収まる |
-| 全画面サイズ | 同一の縦並び 1 カラムレイアウト |
+### 注意ポイント
 
-#### ヘッダードロップダウン
-
-| シナリオ | 期待される挙動 |
-|---|---|
-| 認証時 アバタークリック | ドロップダウン展開、**先頭に「マイページ」が表示** |
-| 「マイページ」クリック | `/me` に遷移 |
-| 既存項目（過去のケース / フレンド / プロフィール / 区切り線 / ログアウト） | 順序・配色・遷移先・スタイル不変 |
-| 未認証時メニュー（ログイン / サインアップ） | 構造・項目・スタイル不変 |
-| Escape / 外側クリック / 項目クリック | 既存どおり閉じる |
-
-#### 既存ページの非リグレッション
-
-| ページ | 期待される挙動 |
-|---|---|
-| `/profile` | レイアウト・編集機能（表示名 / API キー / アバター / 弁護人カスタム指示）不変 |
-| `/friends` | レイアウト・検索 / 申請 / 承認 / 削除機能不変 |
-| `/history` | レイアウト・ケース一覧表示不変 |
-| `/laws` | レイアウト・法律一覧 / 招待表示 / 「法律を作る」ボタン不変 |
-| `/laws/[id]` | 詳細 / 改定 / 退会 / オーナー移譲 / 招待受諾不変 |
-| `/auth/login` / `/auth/signup` | 遷移挙動不変 |
-| ログアウト | Server Action 不変、`redirect('/')` も不変 |
-
-#### アクセシビリティ
-
-| シナリオ | 期待される挙動 |
-|---|---|
-| Tab 順序 | ヘッダー「マイページ」リンク → MeHeader プロフィール編集リンク → 各カードの「もっと見る」リンク → 各セクション内リンク |
-| フォーカスリング | `focus-visible:ring-brand-700`、`brand-500` 不使用 |
-| 見出し階層 | `<h1>` 1 つ（MeHeader 内・表示名）+ `<h2>` 4 つ（各カード） |
-| `<section aria-labelledby>` | 各カードが `<h2 id="me-section-*">` と紐付き、SR で「プロフィール」「フレンド」「過去のケース」「参加中の法律」が読み上げられる |
-| 件数バッジ | 可視テキスト `{n}件` を内包し SR が自然に読み上げる |
-| 役割バッジ | 可視テキスト「オーナー」「メンバー」「招待中」を必須とし、色だけに意味が偏らない |
-
-#### セキュリティ
-
-| シナリオ | 期待される挙動 |
-|---|---|
-| `/me` HTML レスポンス | `api_key_encrypted` 文字列が含まれていない（取得列を `display_name, avatar_url, defense_custom_instruction` の 3 列に限定） |
-| フレンド profile（admin 経由） | `display_name` / `avatar_url` の 2 列のみ取得。`api_key_encrypted` / `defense_custom_instruction` は含まない |
-| 他人の機微情報露出 | フレンド以外の他人 profile を読み取る経路がない |
-| `friendIds` 空配列 | admin クエリが発火しない（`recentIds.length > 0` ガード） |
-
-### 確認時の留意事項
-
-- **空状態と取得失敗の見分け**: 件数バッジが「0件」表示の場合 = 正常に取得して 0 件。バッジ非表示の場合 = 取得失敗（`null`）。取得失敗時はサーバログに `[me] <section> query failed:` が残る。
-- **法律ダイジェストの並び順**: メンバーシップ（`joined_at`）と pending 招待（`invited_at`）を合算して降順マージ。同じタイムスタンプの場合は `Array.prototype.sort` の安定性に依存。
-- **法律ダイジェストの重複排除**: メンバーシップに含まれる `law_id` は招待側から除外（データ整合性保険）。`totalCount` は単純合算（仕様どおり）。
-- **画像読み込み失敗時の `onError` フォールバック未実装**: 設計どおり初版未対応。`profiles.avatar_url` 失効時はブラウザ既定の壊れ画像表示。実機で頻発するようなら別 backlog 化。
-- **件数の精度上限**: PostgREST デフォルトの 1000 行で頭打ち。本フェーズでは想定外。個人がフレンド数千・ケース数千を持つ段階で別タスクで `count: "exact", head: true` 分離へ移行。
-- **型・lint**: `npx tsc --noEmit`（エラーゼロ）および `npx eslint app/me app/components/HeaderUserMenu.tsx middleware.ts`（エラーゼロ）を確認済み。リポジトリ全体の `npm run lint` には既存の無関係なエラー（`app/case/[id]/page.tsx` の `react-hooks/set-state-in-effect`、`tests/e2e/*.spec.ts` の `@typescript-eslint/no-explicit-any`）が残存しているが、いずれも本 PR で導入したものではない（前 PR の eng-to-aud.md でも既知として記載済み）。
+- **挨拶 row の round=0**: 既存の SELECT クエリは `arguments` を `created_at` 順で取得しているだけで `round > 0` 前提のロジックは見当たらなかった。判決生成（verdict）/ 弁護人 AI（defense, draft）も全件読みなので挨拶が混じる。設計書方針どおり初版では除外しない。AI 品質劣化を観察したら次タスクで除外検討。
+- **タイムライン上の挨拶吹き出し**: 通常の発言と同じ吹き出しコンポーネントを使い、上部の小ラベルだけ「開始の挨拶」「終了の挨拶」に切り替えている。
+- **end-proposal API は ボディなし**: トグル意味論なのでクライアントは `POST {}` を送るだけ。サーバが現在状態を見て分岐。
+- **extension-vote の二重投票**: 楽観的更新（`is(column, null)`）で安全側に倒している。すでに投票済みの場合は事前に 409 を返す。
+- **配色**: 終了提案 = `stone-*` 系（控えめ）、相手側バナーの CTA / 延長「続ける」CTA = `brand-700/800`、延長「終わる」CTA = `stone-200/300`。`brand-500` は不使用。
 
 ---
 
 ## 未実装・スコープ外にしたこと
 
-| 項目 | 理由 |
-|---|---|
-| 公開プロフィールページ化（`/u/[id]` 等で他ユーザー閲覧） | スコープ外（task.md / 設計書） |
-| 通知 / アクティビティフィード / 推薦ロジック等の SNS 拡張 | スコープ外 |
-| 弁護人 AI 統計・利用履歴・トークン消費可視化等のセクション追加 | スコープ外（マイページに「参加中の法律」以外のセクションを追加しない） |
-| `/me/edit` 等のサブパス | 編集系は既存ページに委譲（`<form>` を 1 つも置かない） |
-| マイページから直接「法律の招待を受諾」する UI | 受諾は `/laws` の `PendingInvitations` に集約済み |
-| アバター画像 `onError` フォールバック | 設計どおり初版未実装。FEAT-RESP-HEADER と同方針 |
-| `next/image` 採用および `next.config` の `images` 設定変更 | スコープ外。素の `<img>` で対応 |
-| RLS / migration / DB スキーマ変更 | task.md / 設計書の絶対条件で禁止 |
-| 新規 npm 依存追加 | task.md の絶対条件で禁止 |
-| breakpoint（`sm:` / `md:` / `lg:` / `xl:`）導入 | task.md の絶対条件で禁止 |
-| `profiles` テーブルの RLS / 列 GRANT 整備 | MEDIUM-001 carve-out のとおり別 backlog 項目 |
-| 「最近 N 件」の N をユーザー設定で可変にする機能 | スコープ外 |
-| 矢印キーによるカード / 項目間ナビゲーション | 必須は Tab + Enter のみ（FEAT-RESP-HEADER と同方針） |
-| `UserSilhouette` SVG のグローバル切り出し（`app/components/UserSilhouette.tsx`） | 設計どおり本タスクでは行わない。**本 PR で利用箇所が `HeaderUserMenu` / `MeHeader` / `ProfileCard` / `FriendsCard` の 4 箇所に拡大したため、後続タスクでの切り出しを推奨**（リードへ別タスク化を提案推奨） |
+### スコープ外（task.md / design.md 明示）
 
----
+- 終了提案 / 延長投票のリアルタイム push（既存の 2 秒ポーリングに乗せる）
+- 判決画面 UI 改修
+- 挨拶設定の i18n
+- 既存ケースのデータ補正・移行（削除のみで対応）
+- マイページ (`/me`) への挨拶 UI 追加
+- ケース作成画面の他項目変更
+- 弁護人 AI のプロンプト・出力契約変更
+- 延長回数の上限
+- 配色トーンの追加
+- breakpoint 導入
+- 「終了を提案」のリッチアニメーション / トースト通知
+- 延長投票モーダルの閉じる × ボタン
+- `case_extension_votes` 別テーブル（案 A 採用）
+- 挨拶記録の `judge_messages` 流用 / 別テーブル（案 1 採用）
+- AI 履歴からの挨拶除外（初版では除外しない方針）
 
-## 未解決事項 / リードへの提案
+### 実装上の未対応事項
 
-- **`UserSilhouette` SVG のグローバル切り出し**: 本 PR の実装で SVG 直書きが `HeaderUserMenu.tsx` / `MeHeader.tsx` / `ProfileCard.tsx` / `FriendsCard.tsx` の 4 箇所に拡大した（設計どおり許容）。第 3 の利用者を超えたため、`app/components/UserSilhouette.tsx` への切り出しを別タスクで提案推奨。
-- **件数の精度上限**: PostgREST の 1000 行上限を超えるユーザーは件数が頭打ち。フレンド・ケース・法律のいずれかが個人で数千件規模になり始めたら `count: "exact", head: true` 分離 + ページング導入を別タスク化。
-- **アバター画像 `onError` フォールバック**: 設計どおり初版未対応。`/me` 上で 4 箇所（MeHeader + 各カード）にアバターが表示されるため、Supabase Storage URL 失効時の壊れ画像表示が目立つ可能性がある。実機で頻発するようなら別 backlog 化。
+- **マイページ `/me` の表示**: 旧ケース削除に伴い、`/me` の「過去のケース」セクションは空になる想定。`/history` も同様。これらは設計書「regression なし」確認の対象だが、表示自体は崩れない（0 件の handling は既存）。テスタは念のため確認。
+- **過去の `/case/[id]` URL**: 旧ケースは全削除のため 404 を返す。リンクを共有していたユーザーは新ケース作成からやり直し。
+- **テスト用既存 e2e**: `e2e/` 配下に `max_rounds` の 2/5 を前提とした spec が残っている場合、本 PR で挙動が変わる（API は無視する）。本タスクのスコープでは spec の修正は行っていない。テスタが必要に応じて追加 PR で更新を。
+
+### 開いた論点（次タスクで判断）
+
+- 弁護人 AI / 判決 AI 入力からの挨拶除外
+- 延長投票の票履歴保存（必要なら `case_extension_votes` テーブル新設）
+- 挨拶長さ上限の調整（現状 125 文字）
+- closing フェーズの存続自体（要件再定義時に再検討）

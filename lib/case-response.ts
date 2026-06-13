@@ -69,6 +69,9 @@ export async function buildCaseResponse(
     round: c.round,
     currentTurn: c.current_turn,
     maxRounds: c.max_rounds,
+    endProposedBy: c.end_proposed_by ?? null,
+    extensionVotePlaintiff: c.extension_vote_plaintiff ?? null,
+    extensionVoteDefendant: c.extension_vote_defendant ?? null,
     createdAt: c.created_at,
     updatedAt: c.updated_at,
     plaintiff: { name: plaintiff?.display_name ?? "提案者", joinedAt: c.created_at },
@@ -79,6 +82,7 @@ export async function buildCaseResponse(
       phase: a.phase,
       round: a.round,
       content: a.content,
+      isGreeting: a.is_greeting ?? false,
       createdAt: a.created_at,
     })),
     judgeMessages: (judgeMsgs ?? []).map((jm) => ({

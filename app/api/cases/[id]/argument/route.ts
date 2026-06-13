@@ -20,7 +20,9 @@ export async function POST(
 
   const { data: c } = await admin.from("cases").select("*").eq("id", id).single();
   if (!c) return NextResponse.json({ error: "ケースが見つかりません" }, { status: 404 });
-  if (["waiting", "judging", "verdict"].includes(c.phase)) {
+  // FEAT-006 補正: opening / closing は cases.phase に乗せない設計に変わったため、
+  // 仮にレガシーケースで残っていても発言は受け付けない。
+  if (["waiting", "opening", "closing", "extension_voting", "judging", "verdict"].includes(c.phase)) {
     return NextResponse.json({ error: "現在は発言できないフェーズです" }, { status: 409 });
   }
 
@@ -93,23 +95,27 @@ export async function POST(
     nextTurn = "plaintiff";
     nextRound += 1;
 
-    if (c.phase === "opening") {
-      nextPhase = "argument";
-      nextRound = 1;
-    } else if (c.phase === "argument" && nextRound > c.max_rounds) {
-      nextPhase = "closing";
-      nextRound = 1;
-    } else if (c.phase === "closing") {
-      nextPhase = "judging";
+    // FEAT-006 補正: 挨拶はシステム自動投入で cases.phase=argument から会話開始。
+    // max_rounds 到達後は closing を経由せず延長投票へ直行する。
+    if (c.phase === "argument" && nextRound > c.max_rounds) {
+      nextPhase = "extension_voting";
     }
   }
 
-  await admin.from("cases").update({
+  // フェーズが argument を離れるタイミングで end_proposed_by をクリアする。
+  // argument 中に出ていた終了提案を closing / extension_voting に持ち越すと、
+  // それらフェーズでは /api/cases/[id]/end-proposal が 409 を返すため
+  // 撤回も同意もできず提案状態が詰みになる（コパ #3 指摘）。
+  const updatePayload: Record<string, unknown> = {
     current_turn: nextTurn,
     phase: nextPhase,
     round: nextRound,
     updated_at: new Date().toISOString(),
-  }).eq("id", id);
+  };
+  if (nextPhase !== "argument") {
+    updatePayload.end_proposed_by = null;
+  }
+  await admin.from("cases").update(updatePayload).eq("id", id);
 
   // profiles は judge・矛盾チェック両方で使うため先に1回取得
   const { data: plaintiffProfile } = await admin
@@ -123,7 +129,7 @@ export async function POST(
 
   try {
     if (!plaintiffApiKey) {
-      console.warn(`[judge] ${nextPhase === "judging" ? "closing" : "turn"}: plaintiff ${c.plaintiff_id} has no api_key_encrypted`);
+      console.warn(`[judge] ${nextPhase === "extension_voting" ? "closing" : "turn"}: plaintiff ${c.plaintiff_id} has no api_key_encrypted`);
     } else {
       let defendantName = "反対者";
       if (c.defendant_id) {
@@ -136,7 +142,8 @@ export async function POST(
       } else if (c.defendant_guest_name) {
         defendantName = c.defendant_guest_name;
       }
-      const triggerType = nextPhase === "judging" ? "closing" : "turn";
+      // closing 完了 → extension_voting への遷移時に「最終陳述後の総括」judge_message を出す。
+      const triggerType = nextPhase === "extension_voting" ? "closing" : "turn";
       const content = await generateJudgeMessage({
         trigger: triggerType,
         topic: c.topic,

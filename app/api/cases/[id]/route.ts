@@ -6,6 +6,7 @@ import { buildCaseResponse } from "@/lib/case-response";
 import { generateJudgeMessage } from "@/lib/judge";
 import { decryptApiKey } from "@/lib/crypto";
 import { isUuid } from "@/lib/text-utils";
+import { insertOpeningGreetingsForCase } from "@/lib/greetings";
 
 export async function GET(
   req: NextRequest,
@@ -93,7 +94,33 @@ export async function PATCH(
     if (user.id === c.plaintiff_id) {
       return NextResponse.json({ error: "自分自身とは話し合いできません" }, { status: 409 });
     }
-    await admin.from("cases").update({ defendant_id: user.id, phase: "opening" }).eq("id", id);
+    // LOW-001: 挨拶 INSERT を先に行い、成功した場合のみ参加 UPDATE に進む。
+    // 参加 UPDATE が失敗した場合は挨拶 row を rollback で削除し、再参加可能な状態に戻す。
+    const { error: openingGreetingError } = await insertOpeningGreetingsForCase(admin, {
+      caseId: id,
+      plaintiffId: c.plaintiff_id,
+      defendantId: user.id,
+    });
+    if (openingGreetingError) {
+      console.error("[cases PATCH] opening greeting insert failed (auth):", openingGreetingError);
+      return NextResponse.json({ error: "開始挨拶の保存に失敗しました" }, { status: 500 });
+    }
+    // FEAT-006 補正: opening phase でユーザーに発言を要求しないよう、参加直後に
+    // 直接 argument へ遷移する（挨拶は INSERT 済み・ラウンドカウント外）。
+    const { error: joinError } = await admin
+      .from("cases")
+      .update({ defendant_id: user.id, phase: "argument" })
+      .eq("id", id);
+    if (joinError) {
+      console.error("[cases PATCH] join update failed (auth):", joinError);
+      await admin
+        .from("arguments")
+        .delete()
+        .eq("case_id", id)
+        .eq("is_greeting", true)
+        .eq("phase", "opening");
+      return NextResponse.json({ error: "参加処理に失敗しました" }, { status: 500 });
+    }
     const { data: profile } = await admin.from("profiles").select("display_name").eq("id", user.id).single();
     try {
       const { data: plaintiffProfile } = await admin
@@ -141,7 +168,31 @@ export async function PATCH(
       { status: 500 }
     );
   }
-  await admin.from("cases").update({ defendant_guest_name: body.defendantName.trim(), phase: "opening" }).eq("id", id);
+  // LOW-001: 挨拶 INSERT を先に行い、成功した場合のみ参加 UPDATE に進む（ゲスト経路も同様）。
+  const { error: openingGreetingError } = await insertOpeningGreetingsForCase(admin, {
+    caseId: id,
+    plaintiffId: c.plaintiff_id,
+    defendantId: null,
+  });
+  if (openingGreetingError) {
+    console.error("[cases PATCH] opening greeting insert failed (guest):", openingGreetingError);
+    return NextResponse.json({ error: "開始挨拶の保存に失敗しました" }, { status: 500 });
+  }
+  // FEAT-006 補正: ゲスト経路も同様に opening phase をスキップして argument へ直行。
+  const { error: guestJoinError } = await admin
+    .from("cases")
+    .update({ defendant_guest_name: body.defendantName.trim(), phase: "argument" })
+    .eq("id", id);
+  if (guestJoinError) {
+    console.error("[cases PATCH] join update failed (guest):", guestJoinError);
+    await admin
+      .from("arguments")
+      .delete()
+      .eq("case_id", id)
+      .eq("is_greeting", true)
+      .eq("phase", "opening");
+    return NextResponse.json({ error: "参加処理に失敗しました" }, { status: 500 });
+  }
   try {
     const { data: plaintiffProfile } = await admin
       .from("profiles")

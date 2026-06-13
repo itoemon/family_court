@@ -125,13 +125,22 @@ export default function VerdictPage({ params }: { params: Promise<{ id: string }
             {caseData.arguments.map((arg) => {
               const isPlaintiff = arg.role === "plaintiff";
               const name = isPlaintiff ? caseData.plaintiff?.name : caseData.defendant?.name;
+              const greetingLabel = arg.isGreeting
+                ? arg.phase === "closing"
+                  ? "終了の挨拶"
+                  : "開始の挨拶"
+                : null;
               return (
                 <div key={arg.id} className={`flex flex-col ${isPlaintiff ? "items-start" : "items-end"}`}>
                   <p className={`text-xs mb-1 px-1 ${isPlaintiff ? "text-brand-600" : "text-rose-400"}`}>
                     {name}
                     <span className="text-stone-300 ml-1.5">
-                      {PHASE_LABELS[arg.phase]}
-                      {arg.phase === "argument" && ` ${arg.round}回目`}
+                      {greetingLabel ?? (
+                        <>
+                          {PHASE_LABELS[arg.phase]}
+                          {arg.phase === "argument" && ` ${arg.round}回目`}
+                        </>
+                      )}
                     </span>
                   </p>
                   <div
