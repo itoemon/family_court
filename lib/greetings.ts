@@ -22,28 +22,40 @@ interface InsertGreetingsArgs {
   defendantId: string | null; // null = ゲスト被告（サーバ既定文を使用）
 }
 
+async function fetchSingleGreeting(
+  admin: AdminClient,
+  userId: string,
+  kind: "opening" | "closing",
+  defaultText: string
+): Promise<string> {
+  // 動的キーを `select(column)` に渡すと Supabase 型推論が union を返して
+  // インデックスアクセスでエラーになるため、kind で明示的に分岐する。
+  if (kind === "opening") {
+    const { data } = await admin
+      .from("profiles")
+      .select("opening_greeting")
+      .eq("id", userId)
+      .single();
+    return data?.opening_greeting ?? defaultText;
+  }
+  const { data } = await admin
+    .from("profiles")
+    .select("closing_greeting")
+    .eq("id", userId)
+    .single();
+  return data?.closing_greeting ?? defaultText;
+}
+
 async function resolvePairForCase(
   admin: AdminClient,
   args: InsertGreetingsArgs,
-  column: "opening_greeting" | "closing_greeting",
+  kind: "opening" | "closing",
   defaultText: string
 ): Promise<{ plaintiff: string; defendant: string }> {
-  const { data: plaintiffProfile } = await admin
-    .from("profiles")
-    .select(column)
-    .eq("id", args.plaintiffId)
-    .single();
-  const plaintiff = (plaintiffProfile?.[column] as string | null | undefined) ?? defaultText;
-
-  let defendant = defaultText;
-  if (args.defendantId) {
-    const { data: defendantProfile } = await admin
-      .from("profiles")
-      .select(column)
-      .eq("id", args.defendantId)
-      .single();
-    defendant = (defendantProfile?.[column] as string | null | undefined) ?? defaultText;
-  }
+  const plaintiff = await fetchSingleGreeting(admin, args.plaintiffId, kind, defaultText);
+  const defendant = args.defendantId
+    ? await fetchSingleGreeting(admin, args.defendantId, kind, defaultText)
+    : defaultText;
   return { plaintiff, defendant };
 }
 
@@ -56,7 +68,7 @@ export async function insertOpeningGreetingsForCase(
   const { plaintiff, defendant } = await resolvePairForCase(
     admin,
     args,
-    "opening_greeting",
+    "opening",
     DEFAULT_OPENING_GREETING
   );
   const { error } = await admin.from("arguments").insert([
@@ -75,7 +87,7 @@ export async function insertClosingGreetingsForCase(
   const { plaintiff, defendant } = await resolvePairForCase(
     admin,
     args,
-    "closing_greeting",
+    "closing",
     DEFAULT_CLOSING_GREETING
   );
   const { error } = await admin.from("arguments").insert([
