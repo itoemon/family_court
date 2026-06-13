@@ -359,8 +359,12 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
   ].sort((a, b) => new Date(a.data.createdAt).getTime() - new Date(b.data.createdAt).getTime());
 
   const isMyTurn = myRole && caseData.currentTurn === myRole;
+  // FEAT-006 補正: opening / closing は cases.phase に乗らない設計だが、念のため除外。
   const canSpeak =
-    isMyTurn && !["waiting", "extension_voting", "judging", "verdict"].includes(caseData.phase);
+    isMyTurn &&
+    !["waiting", "opening", "closing", "extension_voting", "judging", "verdict"].includes(
+      caseData.phase
+    );
   const opponentName = myRole === "plaintiff" ? caseData.defendant?.name : caseData.plaintiff?.name;
   const warningMap = new Map(
     (caseData.contradictionWarnings ?? []).map((w) => [w.argumentId, w])
@@ -630,7 +634,7 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
             </div>
           )}
 
-          {!canSpeak && myRole && !["waiting", "extension_voting", "judging", "verdict"].includes(caseData.phase) && (
+          {!canSpeak && myRole && !["waiting", "opening", "closing", "extension_voting", "judging", "verdict"].includes(caseData.phase) && (
             <div className="bg-white border-t border-stone-100 sticky bottom-0">
               <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">

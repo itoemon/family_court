@@ -20,7 +20,9 @@ export async function POST(
 
   const { data: c } = await admin.from("cases").select("*").eq("id", id).single();
   if (!c) return NextResponse.json({ error: "ケースが見つかりません" }, { status: 404 });
-  if (["waiting", "extension_voting", "judging", "verdict"].includes(c.phase)) {
+  // FEAT-006 補正: opening / closing は cases.phase に乗せない設計に変わったため、
+  // 仮にレガシーケースで残っていても発言は受け付けない。
+  if (["waiting", "opening", "closing", "extension_voting", "judging", "verdict"].includes(c.phase)) {
     return NextResponse.json({ error: "現在は発言できないフェーズです" }, { status: 409 });
   }
 
@@ -93,14 +95,9 @@ export async function POST(
     nextTurn = "plaintiff";
     nextRound += 1;
 
-    if (c.phase === "opening") {
-      nextPhase = "argument";
-      nextRound = 1;
-    } else if (c.phase === "argument" && nextRound > c.max_rounds) {
-      nextPhase = "closing";
-      nextRound = 1;
-    } else if (c.phase === "closing") {
-      // FEAT-006: closing 終了で直接 judging には行かず、両者の延長投票を挟む。
+    // FEAT-006 補正: 挨拶はシステム自動投入で cases.phase=argument から会話開始。
+    // max_rounds 到達後は closing を経由せず延長投票へ直行する。
+    if (c.phase === "argument" && nextRound > c.max_rounds) {
       nextPhase = "extension_voting";
     }
   }

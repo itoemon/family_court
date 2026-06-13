@@ -105,9 +105,11 @@ export async function PATCH(
       console.error("[cases PATCH] opening greeting insert failed (auth):", openingGreetingError);
       return NextResponse.json({ error: "開始挨拶の保存に失敗しました" }, { status: 500 });
     }
+    // FEAT-006 補正: opening phase でユーザーに発言を要求しないよう、参加直後に
+    // 直接 argument へ遷移する（挨拶は INSERT 済み・ラウンドカウント外）。
     const { error: joinError } = await admin
       .from("cases")
-      .update({ defendant_id: user.id, phase: "opening" })
+      .update({ defendant_id: user.id, phase: "argument" })
       .eq("id", id);
     if (joinError) {
       console.error("[cases PATCH] join update failed (auth):", joinError);
@@ -176,9 +178,10 @@ export async function PATCH(
     console.error("[cases PATCH] opening greeting insert failed (guest):", openingGreetingError);
     return NextResponse.json({ error: "開始挨拶の保存に失敗しました" }, { status: 500 });
   }
+  // FEAT-006 補正: ゲスト経路も同様に opening phase をスキップして argument へ直行。
   const { error: guestJoinError } = await admin
     .from("cases")
-    .update({ defendant_guest_name: body.defendantName.trim(), phase: "opening" })
+    .update({ defendant_guest_name: body.defendantName.trim(), phase: "argument" })
     .eq("id", id);
   if (guestJoinError) {
     console.error("[cases PATCH] join update failed (guest):", guestJoinError);
