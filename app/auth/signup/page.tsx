@@ -18,12 +18,9 @@ export default function SignupPage() {
     setError("");
     setLoading(true);
 
-    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
-    if (!siteUrl) {
-      setError("環境設定エラーが発生しました。管理者にお問い合わせください。");
-      setLoading(false);
-      return;
-    }
+    // 優先: 明示設定された NEXT_PUBLIC_SITE_URL、未設定なら現在の origin
+    // (Vercel preview deployment ごとに URL が変わるケースを window.location.origin で吸収)
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
     const emailRedirectTo = new URL("/auth/callback", siteUrl).toString();
 
     const { error } = await supabase.auth.signUp({
