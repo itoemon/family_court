@@ -12,13 +12,13 @@ metadata:
 
 ---
 
-## 最終更新: 2026-06-15（FEAT-006 + OPS-003 + BUG-007/004 で PR 6 本マージ。Preview DB 分離大事故と復旧、初パイプライン経験、コミット忘れ事故 2 回連続）
+## 最終更新: 2026-06-15（FEAT-006 + OPS-003 + BUG-007/004 + middleware ?next= で PR 7 本マージ + memory main 直 commit。Preview DB 分離大事故と復旧、初パイプライン経験、コミット忘れ事故 2 回連続 → 運用化 → 即実証）
 
 ### 現在のブランチ・PR 状態
 
-- 現ブランチ: `main`（クリーン、PR #46 マージ後）
+- 現ブランチ: `main`（クリーン、HEAD `1e2d3c4` = memory 更新 main 直 commit）
 - オープン PR: なし
-- 本セッションでマージした PR: #41, #42, #43, #44, #45, #46
+- 本セッションでマージした PR: #41, #42, #43, #44, #45, #46, #47
 
 ### このセッション (2026-06-13〜06-15) でやったこと
 
@@ -70,9 +70,23 @@ metadata:
   - コパ 3 件（unhandled rejection、E2E 追加要望（済）、task.md 注記矛盾）→ コパ #1 と #3 を消化
 - **PR #46 でやり直し**: 私が PR #45 マージ時に `tests/e2e/bug004-defense-tab.spec.ts` と audit-log/test-log を **add し忘れ**。PR #44 (BUG-007) で同じパターンの指摘を受けたばかりなのに再発させた → PR #46 で補修
 
-### コミット忘れ事故 2 回連続の教訓
+#### 5. PR #47 マージ: middleware の `?next=` 付与（BUG-007 残宿題回収）
 
-PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインログ」を add し忘れた。新しい feedback として [[feedback-commit-check]] に運用化。要点: パイプライン後の commit 前に必ず `git status` で untracked 確認、特に `tests/e2e/*.spec.ts` と `docs/knowledge/(test|audit)-log/*.md` は要注意。
+- BUG-007（PR #44）で意図的にスコープ外にした残宿題を回収
+- **修正**: `middleware.ts:37-39` の `/auth/login` リダイレクトに `loginUrl.searchParams.set("next", pathname + request.nextUrl.search)` を追加。元のクエリも保持
+- login ページ側は BUG-007 で既に `useSearchParams().get("next")` + URL パーサベースの open redirect ガードを持つため、これだけで「保護パス → ログイン → 元のページに戻る」フローが完成
+- **パイプライン**: テスタ 9/9 通過（CRITICAL 4 + FEAT-MIDDLEWARE-NEXT 5）、オーディは HIGH 0 / MEDIUM 0 / LOW 2（spec ヘルパーの未使用 + page: any）→ 同 PR 消化
+- **コミット忘れなし**: 直前で `feedback_commit_check.md` を運用化した直後の PR で、commit 前に git status を確認して spec / ログを取りこぼさず 1 発成功。運用化が即実証された
+- コパ 1 件は E2E カバレッジ指摘だが新規 spec で対応済み、追加対応不要
+
+#### 6. memory 更新を main に直 commit (`1e2d3c4`)
+
+- 2026-06-15 ダイチが「`./memory` はリードの個人用なので好きなタイミングで更新可」と緩和してくれたため、memory 更新分を別 PR でなく main 直 commit で反映（[[feedback-session-context]] のポリシー緩和を反映）
+- 内容: session_context（06-15 セクション追加）、feedback_session_context（緩和方針反映）、feedback_commit_check（新規）、MEMORY.md（index 更新）
+
+### コミット忘れ事故 2 回連続の教訓 → 即実証
+
+PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインログ」を add し忘れた。新しい feedback として [[feedback-commit-check]] に運用化。要点: パイプライン後の commit 前に必ず `git status` で untracked 確認、特に `tests/e2e/*.spec.ts` と `docs/knowledge/(test|audit)-log/*.md` は要注意。**直後の PR #47 で運用通り 1 発成功し、即実証となった**。
 
 ### 次セッション開始時の next アクション（優先順）
 
@@ -99,6 +113,8 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 - **PR #44** (2026-06-15): BUG-007 修正（初パイプライン経験、open redirect 防御）
 - **PR #45** (2026-06-15): BUG-004 修正（パイプライン経由、コミット忘れ → PR #46 で補修）
 - **PR #46** (2026-06-15): BUG-004 の漏れ補修（spec + パイプラインログ）
+- **PR #47** (2026-06-15): middleware の `?next=` 付与（BUG-007 残宿題回収、`feedback_commit_check` 運用化直後の 1 発成功）
+- **`1e2d3c4`** (2026-06-15): memory 更新 main 直 commit（PR なし、`./memory` 個人用ディレクトリ運用）
 
 ### 環境・ツール状態（2026-06-15 時点）
 
