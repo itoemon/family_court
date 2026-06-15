@@ -27,36 +27,6 @@
 
 ### 運用・テスト基盤（OPS）
 
-#### [OPS-001] E2E 実行基盤の運用見直し
-
-- **背景**: パイプラインのテスタ段階で E2E（Playwright）を回す前提が、本環境（Ubuntu）で課題を抱えていた。
-
-- **Part 1（node 実行基盤）: 解決済み ✅**（2026-05-29）
-  - 課題: Next.js 16 は node ≥ 20.9.0 必須だが、`claude -p` で起動するパイプライン各エージェントは volta-node18（claude の pin）を継承し直すため、テスタ内の `npm run dev` が node18 で起動失敗していた。さらに Playwright ブラウザ（chromium）が未導入だった。
-  - 対応:
-    - `package.json` に `volta.node = 20.20.2` を pin（PR #27 で同梱済み）。
-    - `scripts/agents.sh` の `run_tester` が dev サーバーを**自前で node20 環境で起動/停止**するよう変更（PATH から node18 実体を除去し `_VOLTA_TOOL_RECURSION` を解除して volta シムに project pin を解決させる）。停止はポート 3000 のリスナーから実 PGID を特定してグループごと kill。テスタは playwright 実行のみ担当（ランナーは node18 で可）。
-    - `docs/agents/tester.md` から dev サーバーの起動/停止指示を除去し「agents.sh が起動済み・確認のみ」に変更。
-    - `run_tester` に Playwright chromium の自動導入ガードを追加（初回のみ）。
-    - 判定ロジックを修正: 「実施不可」も不合格扱いにし、環境不備による未実施を誤って通過扱いにしない。
-  - 検証: 読み取り専用テスト（VISUAL-BRAND-001）を node20 サーバー + node18 playwright + chromium で実行し、chain が end-to-end で動作することを確認済み。
-  - **追記 (PR #30 / 2026-06-02)**: 2026-05-30 の claude CLI ネイティブ版移行（node 非依存、`~/.local/bin/claude`）により、claude → 子プロセスへの node18 強制（`_VOLTA_TOOL_RECURSION` 経由）が消滅した。これに伴い PR #30 で `package.json` の `volta.node` pin を撤去し、要件は `engines.node: ">=20.9.0"` で表明する形へ切り替えた。`scripts/agents.sh` の PATH サニタイズおよび `_VOLTA_TOOL_RECURSION` 解除処理も併せて撤去し、`start_dev_server` は素の `setsid bash -c "npm run dev"` に簡素化した。停止側の PGID 特定ロジックおよびテスタの判定ロジックは本筋なので残置している。
-
-- **Part 2（E2E のターゲット DB）: メカニズム整備済み（本 PR）/ テスト用 Supabase プロジェクト作成は手動作業として残る**
-  - 採用方針: テスト用 Supabase プロジェクト + `.env.test`（シード&クリーンアップ案は本番への漏れリスクが残るため不採用）
-  - 本 PR で整備した内容:
-    - `.env.test.example` テンプレを追加。`.env*` は既に gitignore 済み、`.env*.example` は例外として共有
-    - `package.json` に `dev:test` スクリプト追加（`NODE_ENV=test next dev` で `.env.local` をスキップさせ `.env.test` を読ませる）
-    - `playwright.config.ts` で `@next/env` の `loadEnvConfig` により spec へも `.env.test` を渡す
-    - `scripts/agents.sh` の `run_tester` が `TEST_MODE=1` を export、`start_dev_server` が `TEST_MODE` 時に `dev:test` を起動し `.env.test` 不在なら die
-    - `docs/agents/tester.md` の Playwright 実行手順を `.env.test` source へ更新
-    - `docs/operations/e2e-test-db.md` を新設し、テスト用 Supabase プロジェクト作成 → schema 適用 → ユーザー作成 → `.env.test` 投入 → 動作確認の手順を全て文書化
-  - 残作業（ダイチ手動）: テスト用 Supabase プロジェクトの作成・スキーマ適用・E2E ユーザー登録・`.env.test` の実値投入。docs/operations/e2e-test-db.md の手順通り。
-- **優先度**: 中（Part 1 完了によりパイプラインで E2E が回せる。Part 2 メカニズム整備済み、運用準備はダイチが docs に従って実施）
-- **由来**: 2026-05-29 LOW バッチ対応時に顕在化
-
----
-
 #### [OPS-002] テスト DB スキーマソースの整合性回復（schema.sql / migrations / docs 不整合）
 
 - **背景**: OPS-001 Part 2 のセットアップ自走時（2026-06-10）に、`supabase/schema.sql` と `supabase/migrations/*.sql` の重複が原因で「schema.sql → migrations 全実行」を docs 通りに素直にやると最初の migration で停止することが判明。
@@ -188,8 +158,9 @@
 | PR #33 (LOW-001) | `package.json` の `name` フィールド変更経緯を README に明示（PR #17 で `family_court` → `igiari` にリネーム済みの追跡性を回復、由来: `docs/knowledge/audit-log/audit_20260526_152517.md`） |
 | PR #33 (LOW-002) | `@upstash/core-analytics` の外部送信不可検証（`analytics: false` 設定時に Analytics クラス未インスタンス化 + `if (this.analytics)` ガードで record/ingest 実行経路なし、本番ビルドのバンドル含有はコードのみで動作経路なし、由来: `docs/knowledge/audit-log/audit_20260526_152517.md`） |
 | PR #35 (BUG-003) | 判決画面の説得力スコアが常に 0%/空になる現象を修正（`lib/case-response.ts` で verdict 行を snake_case のまま返していたのを camelCase へ明示マップ：`plaintiff_score → plaintiffScore` / `defendant_score → defendantScore` / `created_at → decidedAt`、他フィールドは単語 1 語で偶然動いていた、由来: 2026-06-02 ダイチ報告） |
+| PR #29 (OPS-001 Part 1) | E2E 実行基盤を node20 で動かす整備（パイプラインの dev サーバ起動経路の修正、Playwright chromium 自動導入ガード、判定ロジックの「実施不可も不合格」変更。後の PR #30 で claude CLI ネイティブ移行に伴い PATH サニタイズと volta pin は撤去された、由来: 2026-05-29 LOW バッチ対応時に顕在化） |
 | PR #36 (BUG-002) | 過去のケース表示時にチャット画面が一瞬出てから判決画面へ自動遷移する現象を修正（`app/case/[id]/page.tsx` を Server Component に変換し、`cases.phase === "verdict"` なら `redirect()` で即座に `/case/[id]/verdict` へ振り分け。既存のクライアント側ロジックは `CaseRoom.tsx` に分離。フェーズ進行に伴う in-session 遷移用の `router.push` は据置。由来: 2026-06-02 ダイチ報告） |
-| PR #37 (OPS-001 Part 2) | E2E を本番 DB から分離する env スイッチ機構を整備（`.env.test.example` テンプレ追加、`dev:test` スクリプト、`playwright.config.ts` で `@next/env` 経由の `.env.test` 読み込み、`scripts/agents.sh` の `TEST_MODE=1` 配線、`docs/operations/e2e-test-db.md` 新設。テスト用 Supabase プロジェクト作成 → スキーマ適用 → ユーザー登録 → `.env.test` 投入はダイチが手動で実施） |
+| PR #37 (OPS-001 Part 2) | E2E を本番 DB から分離する env スイッチ機構を整備（`.env.test.example` テンプレ追加、`dev:test` スクリプト、`playwright.config.ts` で `@next/env` 経由の `.env.test` 読み込み、`scripts/agents.sh` の `TEST_MODE=1` 配線、`docs/operations/e2e-test-db.md` 新設。テスト用 Supabase プロジェクト作成 → スキーマ適用 → ユーザー登録 → `.env.test` 投入は 2026-06-10 にダイチが手動完了済み） |
 | PR #38 (chore/lint) | E2E spec の `page: any` 警告と `CaseRoom.tsx` の effect 内 setState 警告を解消（spec は `import { type Page }` で型注釈、CaseRoom は `useCallback` で安定参照化） |
 | PR #39 (chore/spec) | E2E spec の弱 assertion 6 箇所を hard assertion へ置換（`toBeGreaterThanOrEqual(0)` / `expect(... || true).toBe(true)` 等を撤去し、レスポンスステータス検査と明示 visibility assertion へ統一） |
 | PR #40 (feat/ui) | ブランドトーンの `error.tsx` / `not-found.tsx` を追加（既存の `brand-700/800` パレットとフォントトーンを継承、Sentry 等の外部依存なし、`reset()` で復帰可能なエラーバウンダリ） |
