@@ -25,31 +25,6 @@
 
 ---
 
-#### [FEAT-006] チャット回数の仕様変更（柔軟なラウンド制御 + 固定挨拶メッセージ）
-
-- **現状**: ケース作成時に「2 回 / 3 回 / 5 回」の 3 パターンから `max_rounds` を選択。ユーザーが各ラウンドで挨拶含め自由入力。
-- **変更内容**:
-  - **デフォルト**: `max_rounds = 3` に固定（選択肢の撤廃）
-  - **早期終了**: 3 回に満たなくても、両者の合意があればいつでも終了し判決へ進める。発火 UI は**チャット欄サイドの常設「終了を提案」アイコン**。片方が押すと相手に提案が通知され、双方が押した時点で確定して判決画面へ
-  - **延長**: 3 回終了後、判決画面へ進む前に「続けたい / 終わりたい」の **2 択モーダル**を両者に提示。**どちらか一方でも「続けたい」を選択すると 3 回追加**（OR 条件、AND ではない）。追加後も同じ流れを繰り返せる
-  - **挨拶の自動化**: 開始と終了の挨拶は固定メッセージとし、ユーザーの入力ではなくシステムが自動投入。挨拶メッセージはラウンドカウントに**含めない**（ラウンド外の固定メッセージとして扱う）
-    - 開始時デフォルト: 「よろしくお願いします」
-    - 終了時デフォルト: 「ありがとうございました。」
-    - **保存先**: `profiles` に `opening_greeting` / `closing_greeting` の 2 カラムを追加。編集導線は既存プロフィール編集画面 (`/profile`) に項目追加（マイページからの導線は既存通り `/me` → 「プロフィール」セクション）
-- **方針（2026-06-12 ダイチ判断）**: **旧データは実装フェーズの最初に全削除して新仕様に統一する**。本番は現状テストデータのみのため後方互換ロジックは作らない。
-  - 削除対象: `cases` + cascade で `arguments` / `verdicts` / `judge_messages`
-  - 削除スコープ: 本番 + テスト DB 両方
-  - 実行タイミング: FEAT-006 実装 PR の最初のマイグレーション内に `DELETE FROM cases;` を記述（履歴に残す）。FK の cascade 設定が無い場合は明示的に下流テーブルから削除
-- **設計上の論点**（実装時に整理）:
-  - 「終了を提案」アイコンの状態管理（提案 → 相手承認の状態遷移を持たせるため `cases` に `end_proposed_by uuid` カラム追加が筋。NULL=未提案、UUID=提案者の user_id、両者押下＝確定で `phase=verdict` 遷移）
-  - 延長分岐の OR 判定はサーバ API でやる（DB トリガに寄せず、`/api/cases/[id]/extend` 的なエンドポイントで両者の意思を集約）
-  - `max_rounds` カラムは残す（初期値 3、延長のたびに +3 する形で履歴を保持）
-  - 挨拶メッセージは `arguments` には積まず、`cases` 開始時 / 終了時に judge_messages として固定文を 1 行ずつ挿入する形（ダイチ確認待ち）
-- **優先度**: 中
-- **由来**: 2026-06-12 ダイチ依頼（早期終了 UI / 延長 2 択 / 挨拶 profiles 保存 / 旧データ削除統一は同日リードとの合意）
-
----
-
 ### 運用・テスト基盤（OPS）
 
 #### [OPS-001] E2E 実行基盤の運用見直し
@@ -82,37 +57,6 @@
 
 ---
 
-#### [OPS-003] Vercel Preview デプロイメントのターゲット DB をテスト DB に分離
-
-- **背景**: Preview と Production の env vars が同一 Supabase (`nhcsshqcyprbitfctyio`) を指しており、Preview での動作確認が本番 DB に書き込みを発生させる状態だった (2026-06-13 ダイチが両環境でケース残存を発見して判明)。
-- **本来の方針**: Preview は「動作確認用」= 本番に未マージのロジックや migration 候補を試す場 = 本番 DB を触るべきではない。OPS-001 Part 2 で整備した E2E 用テスト Supabase (`eckrccrfnblzdbflnssf`) を Preview からも参照するように切り替える。
-- **作業手順 (ダイチが Vercel ダッシュボードで実施)**:
-  1. Vercel プロジェクト `family-court` → Settings → Environment Variables を開く
-  2. 以下のキーについて Preview scope の値を `.env.test` の値で上書き（または Preview 専用変数として追加）:
-     - `NEXT_PUBLIC_SUPABASE_URL`
-     - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
-     - `SUPABASE_SECRET_KEY`
-     - `SUPABASE_ACCESS_TOKEN`
-     - `SUPABASE_PROJECT_REF`
-     - `ENCRYPTION_KEY`
-     - `GUEST_TOKEN_SECRET`
-  3. 暫定で本番のまま据え置く (将来検討):
-     - `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` (test 側が空、Preview で rate limit 動作確認したい場合は別途 Upstash テスト用インスタンス作成が必要)
-     - `NEXT_PUBLIC_SITE_URL` (preview URL は Vercel が自動付与する `VERCEL_URL` 経由が筋。コード側のフォールバック整備が前提のため別タスク)
-  4. 既存 PR があれば Redeploy、なければ次の preview deployment から反映される
-  5. 反映確認: preview URL でケース作成後、テスト Supabase (`eckrccrfnblzdbflnssf`) 側に行が増え、本番 (`nhcsshqcyprbitfctyio`) は増えないこと
-- **設計上の論点 / 将来課題**:
-  - `NEXT_PUBLIC_SITE_URL` のフォールバック: `process.env.NEXT_PUBLIC_SITE_URL ?? \`https://${process.env.VERCEL_URL}\`` 的な処理を入れて preview ごとの URL に合わせる
-  - Upstash テスト用インスタンス作成 (rate limit を preview で正しく動作確認したい場合)
-  - 将来「PR ごとに独立した DB」を望む場合は Supabase branching か Neon branching が選択肢
-- **副次効果**:
-  - Preview deployment の migration 適用順序が「test DB に先に適用 → preview で動作確認 → 問題なければマージ → 本番に適用」のフローに整理される
-  - `applied.txt` の本番 / test の管理が今後分離する想定 (test 側は OPS-002 で議論されているサージカル手順の見直しと連携)
-- **優先度**: 高（本番 DB を Preview で触らない衛生は早めに整えるべき）
-- **由来**: 2026-06-13 ダイチ指摘。元々 OPS-001 Part 2 で E2E パイプライン専用に分離していたが、Preview/QA への適用は当初構想外だった
-
----
-
 #### [OPS-002] テスト DB スキーマソースの整合性回復（schema.sql / migrations / docs 不整合）
 
 - **背景**: OPS-001 Part 2 のセットアップ自走時（2026-06-10）に、`supabase/schema.sql` と `supabase/migrations/*.sql` の重複が原因で「schema.sql → migrations 全実行」を docs 通りに素直にやると最初の migration で停止することが判明。
@@ -141,16 +85,6 @@
 
 ### バグ修正（BUG）
 
-#### [BUG-004] ゲスト参加直後に弁護人 AI タブが表示されない（リロードで復帰）
-
-- **症状**: 被告がゲストとして参加した直後、対話チャットのみが表示され「弁護人AI」タブが表示されない。ページをリロードすると弁護人 AI タブが現れる。
-- **想定原因**: CaseRoom.tsx の `fetchDefenseMessages` 内で `showDefenseTab` を立てる経路が、ゲスト参加直後の cookie/session 確立タイミングと噛み合っていない可能性。`fetch /api/cases/[id]/defense` が初回 401/403 を返して `setShowDefenseTab(false)` に倒れているケースが疑わしい。
-- **対応案**: 参加成功後（`handleJoinAsGuest` の `setMyRole("defendant")` 直後）に `fetchDefenseMessages()` を明示再実行する。あるいは defense API のゲスト判定経路を見直す。
-- **優先度**: 中（ゲスト UX に直撃するが、リロードで回避可能）
-- **由来**: 2026-06-13 ダイチ手動確認
-
----
-
 #### [BUG-005] 「閉廷しました」アナウンスの表示条件を「ユーザーが終了を選んだ場合のみ」に限定する
 
 - **症状**: 現状「閉廷しました」アナウンスが、ユーザーが終了を選んでいない場合（例: 3 ラウンド自然完了 → 延長投票で continue 選択など）でも表示されている可能性がある。
@@ -167,16 +101,6 @@
 - **期待挙動**: 終了提案を受けた側に明示的な通知を出す（音、トースト、ブラウザ通知 API、もしくはバナーの強調アニメーション等、設計時に方式を整理）。
 - **優先度**: 低（既存 polling バナーで最低限の伝達は機能）
 - **由来**: 2026-06-13 ダイチ手動確認
-
----
-
-#### [BUG-007] ログインボタン押下後にページ遷移しない（セッションだけ更新される）
-
-- **症状**: `/auth/login` でメール+パスワードを入力して「ログイン」を押すと、認証自体は成功し UI 上のステータス（ヘッダーのアバター/ドロップダウン等）はログイン後の状態に切り替わるが、**ページ遷移が発生しない**。ユーザーが手動でリンクを踏まないと先に進めない。
-- **想定原因**: `app/auth/login/page.tsx` の signin 成功ハンドラで `router.push(next)` や `router.replace("/")` などの遷移処理が抜けている、または `next` クエリパラメータの解釈ミスで遷移先が解決できていない可能性。`router.refresh()` だけで遷移しないと server component の保護パスにリダイレクトされる導線が成立しない。
-- **期待挙動**: ログイン成功後、`?next=...` があればそこへ、なければ `/` （middleware の保護パス側で /me 等へリダイレクト）へ自動遷移する。
-- **優先度**: 中（UX 阻害は明確だが、ログイン自体は通っているのでクリティカルバグではない）
-- **由来**: 2026-06-15 ダイチ手動確認
 
 ---
 
@@ -264,4 +188,14 @@
 | PR #33 (LOW-001) | `package.json` の `name` フィールド変更経緯を README に明示（PR #17 で `family_court` → `igiari` にリネーム済みの追跡性を回復、由来: `docs/knowledge/audit-log/audit_20260526_152517.md`） |
 | PR #33 (LOW-002) | `@upstash/core-analytics` の外部送信不可検証（`analytics: false` 設定時に Analytics クラス未インスタンス化 + `if (this.analytics)` ガードで record/ingest 実行経路なし、本番ビルドのバンドル含有はコードのみで動作経路なし、由来: `docs/knowledge/audit-log/audit_20260526_152517.md`） |
 | PR #35 (BUG-003) | 判決画面の説得力スコアが常に 0%/空になる現象を修正（`lib/case-response.ts` で verdict 行を snake_case のまま返していたのを camelCase へ明示マップ：`plaintiff_score → plaintiffScore` / `defendant_score → defendantScore` / `created_at → decidedAt`、他フィールドは単語 1 語で偶然動いていた、由来: 2026-06-02 ダイチ報告） |
-| 本 PR (BUG-002) | 過去のケース表示時にチャット画面が一瞬出てから判決画面へ自動遷移する現象を修正（`app/case/[id]/page.tsx` を Server Component に変換し、`cases.phase === "verdict"` なら `redirect()` で即座に `/case/[id]/verdict` へ振り分け。既存のクライアント側ロジックは `CaseRoom.tsx` に分離。フェーズ進行に伴う in-session 遷移用の `router.push` は据置。由来: 2026-06-02 ダイチ報告） |
+| PR #36 (BUG-002) | 過去のケース表示時にチャット画面が一瞬出てから判決画面へ自動遷移する現象を修正（`app/case/[id]/page.tsx` を Server Component に変換し、`cases.phase === "verdict"` なら `redirect()` で即座に `/case/[id]/verdict` へ振り分け。既存のクライアント側ロジックは `CaseRoom.tsx` に分離。フェーズ進行に伴う in-session 遷移用の `router.push` は据置。由来: 2026-06-02 ダイチ報告） |
+| PR #37 (OPS-001 Part 2) | E2E を本番 DB から分離する env スイッチ機構を整備（`.env.test.example` テンプレ追加、`dev:test` スクリプト、`playwright.config.ts` で `@next/env` 経由の `.env.test` 読み込み、`scripts/agents.sh` の `TEST_MODE=1` 配線、`docs/operations/e2e-test-db.md` 新設。テスト用 Supabase プロジェクト作成 → スキーマ適用 → ユーザー登録 → `.env.test` 投入はダイチが手動で実施） |
+| PR #38 (chore/lint) | E2E spec の `page: any` 警告と `CaseRoom.tsx` の effect 内 setState 警告を解消（spec は `import { type Page }` で型注釈、CaseRoom は `useCallback` で安定参照化） |
+| PR #39 (chore/spec) | E2E spec の弱 assertion 6 箇所を hard assertion へ置換（`toBeGreaterThanOrEqual(0)` / `expect(... || true).toBe(true)` 等を撤去し、レスポンスステータス検査と明示 visibility assertion へ統一） |
+| PR #40 (feat/ui) | ブランドトーンの `error.tsx` / `not-found.tsx` を追加（既存の `brand-700/800` パレットとフォントトーンを継承、Sentry 等の外部依存なし、`reset()` で復帰可能なエラーバウンダリ） |
+| PR #41 (FEAT-006) | チャット回数の柔軟化と固定挨拶導入（`max_rounds=3` 固定 + OR 条件の延長投票 3 ラウンド追加、`profiles.opening_greeting/closing_greeting` の固定挨拶をシステム自動投入、早期終了は `cases.end_proposed_by` の状態遷移で両者押下時に判決へ。実装フェーズ初頭で旧 cases データを `DELETE FROM cases;` で全削除、後方互換ロジックなし、由来: 2026-06-12 ダイチ依頼） |
+| PR #42 (OPS-003) | Vercel Preview のターゲット DB を test Supabase (`eckrccrfnblzdbflnssf`) に分離（Vercel REST API で Preview scope の 5 キーを test 値に上書き、UPSTASH 2 キーは preview+production 共有、`NEXT_PUBLIC_SITE_URL` は signup ページ側で `window.location.origin` フォールバックを追加してコードで動的解決、由来: 2026-06-13 ダイチ指摘） |
+| PR #44 (BUG-007) | ログイン成功後にページ遷移しない問題を修正（`router.refresh()` を削除して `router.push` の効果が打ち消されないように変更、`useSearchParams().get("next")` で `?next=` を解釈、`new URL(rawNext, window.location.origin)` ベースの open redirect ガードを実装して backslash バイパス・`javascript:` スキーム・protocol-relative URL を一括防御、由来: 2026-06-15 ダイチ手動確認） |
+| PR #45 (BUG-004) | ゲスト/アカウント参加直後に弁護人 AI タブが表示されない問題を修正（`handleJoinAsAccount` / `handleJoinAsGuest` の参加成功直後に `await fetchDefenseMessages()` を明示呼び出し。`useEffect([fetchDefenseMessages])` の初回 fetch が参加前の 401/403 で `showDefenseTab=false` に倒れていた根本原因に対処、両経路同時修正、由来: 2026-06-13 ダイチ手動確認） |
+| PR #46 (BUG-004 補修) | PR #45 で add し忘れた `tests/e2e/bug004-defense-tab.spec.ts` と audit-log / test-log を補修コミット（コミット忘れ事故 2 回連続の教訓を `feedback_commit_check.md` に運用化、由来: PR #45 マージ後の漏れ検知） |
+| PR #47 (middleware) | 保護パスのリダイレクトに `?next=` を付与（`middleware.ts` で `/auth/login` リダイレクト時に `loginUrl.searchParams.set("next", pathname + request.nextUrl.search)` を追加。login ページ側は PR #44 で既に URL パーサベースの open redirect ガードを持つため、これだけで「保護パス → ログイン → 元のページに戻る」フローが完成、由来: BUG-007 の意図的スコープ外残宿題） |
