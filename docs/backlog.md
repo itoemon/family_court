@@ -31,6 +31,28 @@
  (由来: audit_20260615_165040.md)
   実際の `tests/e2e/bug005-closing-trigger.spec.ts` を確認したところ、 (由来: audit_20260615_165040.md)
 
+### [LOW-001] `lastSpeakerRole` のための `arguments` SELECT が closing プロンプトでは未使用（app/api/cases/[id]/end-proposal/route.ts:176-184, app/api/cases/[id]/extension-vote/route.ts:203-211） (由来: audit_20260615_192508.md)
+- **内容**: (由来: audit_20260615_192508.md)
+  両経路で `phase=judging` 遷移直前に `arguments` テーブルから `is_greeting=false` の最新 row を SELECT して `lastSpeakerRole` を解決し、`insertClosingJudgeMessage` に渡している。一方 `lib/judge.ts:49-56` の closing プロンプトは `topic` だけを参照しており、`lastSpeakerRole` を一切使わない。結果として `phase=judging` 遷移経路ごとに 1 ラウンドトリップの DB SELECT が無駄に走る。 (由来: audit_20260615_192508.md)
+  本タスクで本番影響は小さい（`phase=judging` 遷移は 1 ケースにつき 1 回のみで、頻度は低い）。設計書 (design.md L2564) と handoff (eng-to-aud.md「未確定論点」#1) で「将来 closing プロンプトを `lastSpeakerRole` 依存に拡張可能な余地を残す」「型 / 既存契約を壊さない」目的での意図的判断と明記されているため、設計違反ではない。LOW として記録のみ。 (由来: audit_20260615_192508.md)
+- **修正案**: (由来: audit_20260615_192508.md)
+  本タスクで修正不要。`lib/judge.ts` の closing プロンプト本体はスコープ外。ただし将来 closing プロンプトを変更する見込みがなければ、次回の保守タイミングで `lastSpeakerRole` の解決と `JudgeParams.lastSpeakerRole` の closing 経路引き渡しを撤去し、SELECT を削減する案を検討してよい。 (由来: audit_20260615_192508.md)
+ (由来: audit_20260615_192508.md)
+### [LOW-002] `defendantName` 解決ロジックが 3 ファイルで完全重複（app/api/cases/[id]/argument/route.ts:138-148, app/api/cases/[id]/end-proposal/route.ts:164-174, app/api/cases/[id]/extension-vote/route.ts:191-201） (由来: audit_20260615_192508.md)
+- **内容**: (由来: audit_20260615_192508.md)
+  `c.defendant_id` 有無 → `profiles.display_name` SELECT → fallback `"反対者"` / `c.defendant_guest_name` の if-else-if フォールバックチェーンが、上記 3 箇所で完全に同一コードとして並ぶ。本タスクで新たに 2 経路が増えたため、過去 1 箇所だったものが 3 箇所になった。 (由来: audit_20260615_192508.md)
+  handoff (eng-to-aud.md L48-51) で「2 経路のみ・`caseRow` の参照タイミングが異なる・CLAUDE.md の過度抽象化禁止」を理由に共通化見送りと記載されているが、3 箇所に増えた現状では「過度な抽象化」とは言い切れない閾値。本タスクのスコープでは修正不要だが、`argument/route.ts` も含めれば既に 3 重なので、次回 closing/judge 周辺を触る際に共通化を再評価することを推奨。 (由来: audit_20260615_192508.md)
+- **修正案**: (由来: audit_20260615_192508.md)
+  本タスクでは現状のままで通過 OK。次回保守時に `lib/case-closing.ts` 内（または別 `lib/case-participants.ts`）に `resolveDefendantName(admin, caseRow): Promise<string>` を切り出し、3 箇所から呼ぶ案を検討する。共通化に踏み切る際は `caseRow.defendant_id` / `caseRow.defendant_guest_name` のフィールド名差分（`c` vs `refreshed` vs `c`）が壁にならないか確認すること。 (由来: audit_20260615_192508.md)
+ (由来: audit_20260615_192508.md)
+### [LOW-003] AI キー SET 経路の E2E 動的検証が現状環境で実行されない（tests/e2e/bug005-closing-trigger.spec.ts:292-311, 398-413） (由来: audit_20260615_192508.md)
+- **内容**: (由来: audit_20260615_192508.md)
+  spec は API キー SET / NULL の両分岐に対応する条件分岐 assertion を備えており、task.md「必須」#2/#3 の文面上の要件は満たしている。しかし test-to-aud.md L41-44 にあるとおり、E2E ユーザー A (`e2e_user_a@example.com`) の `profiles.api_key_encrypted` が現状 NULL であるため、毎回必ず NULL 経路（`judge_messages.trigger_type='closing'` 0 件）の assertion しか実行されない。 (由来: audit_20260615_192508.md)
+  すなわち本タスクの主要価値である「`phase=judging` 遷移直後に AI 閉廷宣告が `judge_messages` へ 1 行 INSERT される」「`arguments`（closing greeting）→ `judge_messages`（AI）の `created_at` 順序が守られる」の挙動は、E2E spec 上はコードパスとしてのみ書かれており、CI 実行時には一度も動的に踏まれていない。リグレッション検知能力に空白が残る。 (由来: audit_20260615_192508.md)
+  なお実装本体（`lib/case-closing.ts`、両 route 側の呼び出し順）の静的レビューでは欠陥は確認できず、grep 検証で `trigger_type='closing'` の INSERT が `lib/case-closing.ts:55` の 1 箇所のみであることも確認済み。 (由来: audit_20260615_192508.md)
+- **修正案**: (由来: audit_20260615_192508.md)
+  次パイプライン以降で、テスト Supabase の `e2e_user_a` プロフィールに有効な `api_key_encrypted`（実 Claude API キー、または `decryptApiKey` を通せる stub 値 + `generateJudgeMessage` のモック）をセットアップし、SET 経路の assertion を実走させる。Anthropic API への実 call コストを避けたい場合は `TEST_MODE=1` 下で `generateJudgeMessage` をモック差し替えする仕組みを設けて、spec から動的に切り替える運用が現実的。本タスクの通過は阻害しない。 (由来: audit_20260615_192508.md)
+
 ---
 
 ### 運用・テスト基盤（OPS）
