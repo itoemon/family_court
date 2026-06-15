@@ -1,23 +1,23 @@
-# テスタ → オーディ 引き継ぎメモ（BUG-004）
+# テスタ → オーディ 引き継ぎメモ（FEAT-MIDDLEWARE-NEXT）
 
 **実行日**: 2026-06-15  
 **テスタ**: Claude QA Engineer  
-**対象**: BUG-004 — 参加直後に弁護人 AI タブが表示されない問題の修正  
-**テスト判定**: ✅ **通過** — CRITICAL 4/4 + BUG-004 3/3 全件通過
-**実行タイムスタンプ**: 2026-06-15T02:25:23.388Z
+**対象**: FEAT-MIDDLEWARE-NEXT — middleware の保護パスリダイレクトに ?next= を付与  
+**テスト判定**: ✅ **通過** — CRITICAL 4/4 + FEAT-MIDDLEWARE-NEXT 5/5 全件通過
+**実行タイムスタンプ**: 2026-06-15T03:28:04Z
 
 ---
 
-## テスト実行結果
+## テスト実行結果サマリー
 
 | 項目 | 結果 |
 |------|------|
-| **実行テスト数** | 7 件 |
-| **成功** | 7 件（100%）✅ |
+| **実行テスト数** | 9 件 |
+| **成功** | 9 件（100%）✅ |
 | **失敗** | 0 件（0%） |
-| **CRITICAL-M01〜M04** | 4/4 通過 ✅ |
-| **BUG-004-Account/Guest/Regression** | 3/3 通過 ✅ |
-| **実行時間** | 61.9 秒 |
+| **CRITICAL-M01～M04** | 4/4 通過 ✅ |
+| **FEAT-MIDDLEWARE-NEXT-1～5** | 5/5 通過 ✅ |
+| **実行時間** | 45.2 秒 |
 | **判定** | ✅ **通過** — パイプライン承認可 |
 
 ---
@@ -26,127 +26,141 @@
 
 ### CRITICAL-M（アプリケーション主要フロー）— 4 件全て通過
 
-- **M01**: 2ユーザー間の会話フロー（両者認証済み）✅ (9.80s)
+- **M01**: 2ユーザー間の会話フロー（両者認証済み）✅ (14.190s)
   - 原告ケース作成 → 被告がアカウントで参加 → ターン交代 → 発言同期確認
   
-- **M02**: セッション復元 ✅ (10.50s)
+- **M02**: セッション復元 ✅ (8.945s)
   - ページリロード後の セッション・ロール・フォーム表示維持を確認
   
-- **M03**: 第三者の割り込み拒否 ✅ (6.43s)
+- **M03**: 第三者の割り込み拒否 ✅ (6.494s)
   - 無関係の第三者が observer 扱いになることを確認
   
-- **M04**: ゲスト被告フロー ✅ (7.03s)
+- **M04**: ゲスト被告フロー ✅ (9.336s)
   - Cookie トークン経由での未認証ユーザーの発言権を確認
 
-### BUG-004 検証テスト — 3 件全て通過
+### FEAT-MIDDLEWARE-NEXT 検証テスト — 5 件全て通過
 
-- **BUG-004-Account**: アカウント参加直後の弁護人 AI タブ表示 ✅ (14.99s)
-  - 原告がケース作成 → ユーザー B がアカウントで参加 → リロードなしで「弁護人 AI」タブ表示を確認
-  - **修正効果検証**: 参加直後に `fetchDefenseMessages()` が明示呼び出しされ、defense API が 200 OK を返して showDefenseTab が true に倒れることを確認
-  
-- **BUG-004-Guest**: ゲスト参加直後の弁護人 AI タブ表示 ✅ (4.67s)
-  - 原告がケース作成 → ゲストが参加 → リロードなしで「弁護人 AI」タブ表示を確認
-  - **修正効果検証**: guest_defendant_{caseId} Cookie が有効な状態で defense API が呼ばれ、200 OK で showDefenseTab が true になることを確認
-  
-- **BUG-004-Regression**: リグレッション検証 ✅ (8.08s)
-  - CRITICAL-M04 と同等のゲスト被告フロー全体が引き続き正常に動作することを確認
-  - 修正による副作用（Cookie 無効化・permission 変更等）がないことを検証
+- **FEAT-MIDDLEWARE-NEXT-1**: 基本動作 — 未認証で保護パス → middleware リダイレクト ✅ (684ms)
+  - 未認証ユーザーが `/history` にアクセス → `/auth/login?next=%2Fhistory` にリダイレクト
+  - next パラメータに保護パスが含まれている
+
+- **FEAT-MIDDLEWARE-NEXT-2**: クエリ保持 — next パラメータに元クエリも含まれる ✅ (671ms)
+  - 未認証ユーザーが `/history?filter=verdict` にアクセス
+  - リダイレクト先の `next` に `%2Fhistory%3Ffilter%3Dverdict` が含まれている（URLEncode 済み）
+
+- **FEAT-MIDDLEWARE-NEXT-3**: ログイン後復帰 — 元の保護パスに正しく戻る ✅ (1.801s)
+  - `/history` → 自動リダイレクト → `/auth/login?next=...` → ログイン → `/history` に遷移
+
+- **FEAT-MIDDLEWARE-NEXT-4**: クエリ付き復帰 — 元のクエリも保持して復帰 ✅ (1.655s)
+  - `/history?filter=verdict` → リダイレクト → ログイン → `/history?filter=verdict` に遷移
+
+- **FEAT-MIDDLEWARE-NEXT-5**: リグレッション — BUG-007-1 の既存動作確認 ✅ (950ms)
+  - `/auth/login` を直接開いてログイン（next パラメータなし）→ `/` に遷移
+  - BUG-007 修正の既存機能が引き続き動作
 
 ---
 
-## 修正アプローチの検証
+## 実装内容確認（オーディ向け）
 
-### 修正内容（`app/case/[id]/CaseRoom.tsx`）
+### 修正ファイル
+
+**middleware.ts のみ** — 変更数行（`+6 / -1`）
+
+### 修正内容
 
 ```typescript
-// 変更前：useEffect で初回 fetch のみ（参加前は 401/403）
-useEffect(() => {
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  fetchDefenseMessages();
-}, []);
-
-// 変更後：handleJoin 内で明示呼び出し追加
-async function handleJoinAsAccount() {
-  const data = await joinPatch(...);
-  setCaseData(data);
-  setMyRole("defendant");
-  await fetchDefenseMessages();  // ← 追加（参加直後に defense API を再呼び出し）
+// 修正前（L37-39）
+if (!user && isProtected) {
+  return NextResponse.redirect(new URL("/auth/login", request.url));
 }
 
-async function handleJoinAsGuest() {
-  const data = await joinPatch(...);
-  setCaseData(data);
-  setMyRole("defendant");
-  await fetchDefenseMessages();  // ← 追加（参加直後に defense API を再呼び出し）
+// 修正後（L37-42）
+if (!user && isProtected) {
+  const loginUrl = new URL("/auth/login", request.url);
+  loginUrl.searchParams.set("next", pathname + request.nextUrl.search);
+  return NextResponse.redirect(loginUrl);
 }
-
-// useEffect 内の disable コメント削除（不要化）
-useEffect(() => {
-  fetchDefenseMessages();  // コメント削除（副作用として正当）
-}, []);
 ```
 
-差分: `+13 / -3`
+**key point**:
+- `pathname + request.nextUrl.search`: パス＋クエリ文字列を結合
+- `searchParams.set()`: URL クエリとして追加（自動 URLEncode）
+- リダイレクト先: `/auth/login?next=%2Fhistory` または `/auth/login?next=%2Fhistory%3Ffilter%3Dverdict`
 
-### 検証結果
+### 既存との連携
 
-#### 1. Race Condition の有無 → ✅ **問題なし**
-
-実行順序分析：
+**app/auth/login/page.tsx**（BUG-007 修正済み）:
+```typescript
+const rawNext = useSearchParams().get("next") || "/";
+const nextUrl = new URL(rawNext, window.location.origin);
+// origin チェック + hash 保持でログイン後の遷移先を決定
 ```
-① setCaseData(data)              // React state 更新
-② setMyRole("defendant")         // role state 更新
-③ await fetchDefenseMessages()   // defense API 呼び出し（await で同期待機）
-```
-
-**検証**:
-- ① ② で state が確定した後に ③ が実行される（await による同期待機）
-- React batching 中でも await 前には state flush が完了している（Next.js App Router の guarantees）
-- defense API は参加後の auth cookie が有効な状態で呼ばれる → 200 OK を返す
-- E2E テスト実行時間 13.31s（BUG-004-Account）が安定しており、タイミング問題検出なし
-
-**結論**: race condition は発生していない。
-
-#### 2. Disable コメント削除の妥当性 → ✅ **妥当**
-
-| 項目 | 修正前 | 修正後 |
-|-----|--------|--------|
-| `eslint-disable-next-line react-hooks/set-state-in-effect` | **存在** | **削除** |
-| useEffect の責務 | マウント時 + 参加直後 fetch | マウント時初回 fetch のみ |
-| fetchDefenseMessages 呼び出し元 | useEffect のみ | useEffect + handleJoin（2 箇所） |
-
-**分析**:
-- useEffect が「副作用を引き起こさない純粋な初回 fetch」に純化された
-- fetchDefenseMessages 内の `setShowDefenseTab` は「API 結果の反映」であり、正当な副作用
-- eslint plugin `react-hooks/set-state-in-effect` が「setState in effect 警告」から除外判定
-- 将来の plugin 厳格化でも再発リスクなし（e.g. Next.js automatic batching 深化）
-
-**結論**: delete は妥当。むしろ後方互換性を向上させる。
-
-#### 3. 参加前 401/403 ログのノイズ → ℹ️ **既存挙動維持（別 PR 推奨）**
-
-観察：
-- 修正前後：ゲスト参加前に useEffect で defense API が呼ばれる → 401 を返す可能性がある
-- 修正内容：参加後の fetch を追加したため、参加前の 401 は依然出力される可能性
-- 本 PR では改善対象外（task.md で「参加前 401/403 ガード追加の判断は別とする」と明記）
-
-改善検討（本 PR スコープ外・別 backlog 推奨）:
-- `myRole === null` のときは fetchDefenseMessages を呼ばないガード追加
-- または defense API 側仕様を「401/403 ではなく空配列を返す」に変更
-
-**結論**: 本 PR では既存挙動維持で正当。ノイズ削減は低優先度 backlog 化を推奨。
 
 ---
 
-## 実装品質評価
+## design.md 監査観点の確認結果
 
-| 観点 | 評価 | 根拠 |
-|------|------|------|
-| **要件適合性** | ✅ | task.md「参加直後（リロードなし）にタブが表示される」を満たす |
-| **設計妥当性** | ✅ | race condition 分析・代替案検討が明確 |
-| **セキュリティ** | ✅ | 参加後の auth cookie が有効な状態で defense API を呼び出し |
-| **既存機能維持** | ✅ | CRITICAL-M01～M04 全て通過、リグレッションなし |
-| **コードスタイル** | ✅ | await による明示的な順序制御、intent が明確 |
+### ✅ 1. pathname + request.nextUrl.search が内部パス由来であることの確認
+
+**テストでの検証**:
+- FEAT-MIDDLEWARE-NEXT-1～4 で、保護パス (`/history`, `/history?filter=verdict`) がリダイレクト時に正しく `next` パラメータに含まれていることを確認
+- 外部ドメインが混入した痕跡なし
+
+**コード観点**:
+- `request.nextUrl`: サーバー側で認識した URL オブジェクト
+- `pathname`: 相対パスコンポーネント
+- `request.nextUrl.search`: クエリ文字列（protocol・host・pathname 不含）
+- 結論: 内部パス由来のみ → ✅ **安全**
+
+### ✅ 2. /auth/login 自体が matcher で除外されているため無限ループが発生しないこと
+
+**テストでの検証**:
+- FEAT-MIDDLEWARE-NEXT-5 で `/auth/login` を直接開いても middleware リダイレクトが発生せず、ページが表示される
+- 無限ループなし → ✅ **確認**
+
+**コード観点**:
+- middleware.ts の `config.matcher` で `/auth/login` および `/auth/signup` が除外されている
+- 結論: 無限ループなし → ✅ **安全**
+
+### ✅ 3. searchParams.set("next", value) の URLEncode が正しく機能していること
+
+**テストでの検証**:
+- FEAT-MIDDLEWARE-NEXT-2 / 4 で、クエリ付きパス (`/history?filter=verdict`) がリダイレクト時に URLEncode されていることを確認
+  - URL 上: `next=%2Fhistory%3Ffilter%3Dverdict` 形式（`/` → `%2F`, `?` → `%3F`, `=` → `%3D`）
+  - ブラウザの自動デコード + ログイン処理で正しく復元
+- 結論: URLEncode 正常 → ✅ **確認**
+
+**コード観点**:
+- `searchParams.set()` は自動 URLEncode（`encodeURIComponent` 不要）
+- ブラウザ：`useSearchParams().get()` により自動デコード
+- 結論: エンコード二重化なし → ✅ **安全**
+
+---
+
+## セキュリティ二重防御の確認
+
+| 防御層 | 内容 | テスト結果 |
+|--------|------|----------|
+| **middleware** | pathname + request.nextUrl.search（内部パス由来） | ✅ 確認 |
+| **ログイン後** | app/auth/login/page.tsx の origin チェック | ✅ BUG-007 修正済み |
+| **URLEncoding** | searchParams.set() 自動エンコード | ✅ 二重化なし |
+
+結論: **open redirect ガードが機能している** → ✅ **安全**
+
+---
+
+## リグレッション検証
+
+### CRITICAL テスト全通過 ✅
+
+- M01 (14.190s), M02 (8.945s), M03 (6.494s), M04 (9.336s): 全て通過
+- 会話フロー・セッション管理・権限制御が不変
+- 修正による副作用なし
+
+### BUG-007 既存動作維持 ✅
+
+- FEAT-MIDDLEWARE-NEXT-5: `/auth/login` 直接 → `/` 遷移が引き続き動作
+- BUG-007 修正の「next パラメータなし時のデフォルト `/` 遷移」が正常
 
 ---
 
@@ -154,33 +168,30 @@ useEffect(() => {
 
 ### 必須確認項目
 
-- [ ] `app/case/[id]/CaseRoom.tsx` の `handleJoinAsAccount` に `await fetchDefenseMessages()` が追加されていることを確認
-- [ ] `handleJoinAsGuest` に同じく `await fetchDefenseMessages()` が追加されていることを確認
-- [ ] useEffect 内の `eslint-disable-next-line react-hooks/set-state-in-effect` が削除されていることを確認
-- [ ] 差分サマリー `+13 / -3` が task.md と一致することを確認
-- [ ] TypeScript: `npx tsc --noEmit` エラー 0 件
-- [ ] ESLint: `app/case/[id]/CaseRoom.tsx` エラー 0 件
+- [ ] middleware.ts L37-42 を確認し、`pathname + request.nextUrl.search` が正確に付与されていることを確認
+- [ ] `searchParams.set("next", value)` による自動 URLEncode が機能していることを確認
+- [ ] middleware.config.matcher で `/auth/login` が除外されていることを確認（無限ループ防止）
+- [ ] 差分サマリー `+6 / -1` が task.md と一致することを確認
 
 ### 設計観点確認
 
-- [ ] **race condition 分析**: setState 完了後に defense API が呼ばれることを確認
-- [ ] **disable コメント削除の妥当性**: useEffect が「マウント時初回 fetch」に純化されたことを確認
-- [ ] **参加前 401 ノイズ**: 本 PR では既存挙動維持であることを確認
+- [ ] **pathname + request.nextUrl.search**: 内部パス由来のみ（外部 URL 混入なし）
+- [ ] **無限ループ防止**: `/auth/login` が matcher 除外の事実確認
+- [ ] **URLEncoding**: searchParams.set() 自動処理で二重エンコード回避
 
 ### セキュリティ確認
 
-- [ ] defense API 呼び出しが参加後（auth cookie 有効時）に実行されることを確認
-- [ ] fetchDefenseMessages の呼び出し元がシナリオに応じて適切か（useEffect + handleJoin）を確認
+- [ ] ログイン後の origin チェック（app/auth/login/page.tsx）が有効であることを確認
+- [ ] open redirect ガードが middleware + ログイン後で二重に機能していることを確認
 
 ### リグレッション確認
 
 - [ ] CRITICAL-M01～M04 全テストが通過（本実施で確認済み ✅）
-- [ ] 会話フロー・セッション復元・権限管理が不変（確認済み ✅）
-- [ ] defense API の他の呼び出し元（polling 等）への影響なし
+- [ ] BUG-007-1（/auth/login 直接 → / 遷移）が引き続き動作（確認済み ✅）
 
 ---
 
-## テスト実行方法
+## テスト実行方法（オーディが再実行する場合）
 
 ### 環境変数設定
 
@@ -190,20 +201,21 @@ E2E_TEST_EMAIL_A=e2e_user_a@example.com
 E2E_TEST_EMAIL_B=e2e_user_b@example.com
 E2E_TEST_PASSWORD_A=E2eTest123!
 E2E_TEST_PASSWORD_B=E2eTest123!
+TEST_MODE=1
 ```
 
-### dev サーバー起動
+### dev サーバー起動確認
 
 ```bash
-npm run dev
-# または scripts/agents.sh が既に起動済みの場合は不要
+# scripts/agents.sh が既に起動済みの場合は不要
+curl http://localhost:3000
 ```
 
 ### テスト実行（テスタと同一手順）
 
 ```bash
 set -a && source .env.test && set +a
-npx playwright test tests/e2e/critical.spec.ts tests/e2e/bug004-defense-tab.spec.ts --reporter=html
+npx playwright test tests/e2e/critical.spec.ts tests/e2e/middleware-next.spec.ts --reporter=html
 ```
 
 ### テスト結果確認
@@ -216,8 +228,9 @@ npx playwright show-report
 
 ## テスト成果物
 
-- **テストレポート**: `docs/knowledge/test-log/test_20260615_022633.md`
-- **テストスペック**: `tests/e2e/bug004-defense-tab.spec.ts`（既存）
+- **テストレポート**: docs/knowledge/test-log/test_20260615_122712.md
+- **テストスペック（既存）**: tests/e2e/critical.spec.ts
+- **テストスペック（新規）**: tests/e2e/middleware-next.spec.ts
 - **実行環境**: TEST_MODE=1 経由でテスト Supabase に接続
 
 ---
@@ -226,34 +239,30 @@ npx playwright show-report
 
 ### Approve の条件
 
-- [ ] race condition 分析に同意できる
-- [ ] disable コメント削除の妥当性に同意できる
-- [ ] 参加前 401 ノイズを本 PR スコープ外と判断できる
-- [ ] テスト結果 7/7 通過を確認した
-- [ ] 修正コード 3 箇所（+13/-3）を確認した
+- [ ] middleware.ts の修正内容（pathname + request.nextUrl.search 付与）を確認
+- [ ] searchParams.set() による URLEncode が正しく機能していることを確認
+- [ ] /auth/login が matcher で除外されていることを確認（無限ループ防止）
+- [ ] テスト結果 9/9 通過を確認した
+- [ ] 修正コード`+6 / -1`を確認した
+- [ ] design.md の監査観点 3 点が全て確認できた
 
 → **これらを満たせば approve 可能**
 
-### High/Medium 指摘の可能性
+### 懸念される指摘の可能性
 
-- **参加前 401 ノイズ**: 本 PR では既存挙動維持だが、「将来的に削減すべき」との HIGH 指摘もあり得る。その場合は「本 PR では既存挙動維持」と明記した上で、別 backlog 項目化を推奨。
-
-### Low 指摘
-
-- コメント追記（修正理由を JSDoc に含める等）
-- 定数化（defense API URL 等）
+**なし** — 実装は設計通り、テストは全通過、セキュリティ二重防御も有効。
 
 ---
 
 ## 次のステップ（オーディ後）
 
-1. **オーディの HIGH 指摘対応**: あれば修正リクエスト
+1. **オーディの承認**: チェックリスト記入
 2. **マージ**: main にマージ
 3. **本番適用**: Preview → Production へのロールアウト
 
 ---
 
 **テスタ署名**: Claude QA Engineer  
-**実行日時**: 2026-06-15 02:25:23.388Z  
+**実行日時**: 2026-06-15 03:28:04Z  
 **レビュー対象**: オーディエンジニア  
-**推進判定**: → **オーディ監査へ引き継ぎ可（BUG-004 修正の妥当性確認完了、全テスト通過）**
+**推進判定**: → **オーディ監査へ引き継ぎ可（FEAT-MIDDLEWARE-NEXT 実装の妥当性確認完了、全テスト通過）**
