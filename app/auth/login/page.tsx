@@ -28,7 +28,23 @@ export default function LoginPage() {
     // なければトップへ。router.refresh() を併用すると current page (login) の再描画が
     // 走って push の遷移効果を打ち消すケースがあるため refresh は呼ばない (push 先で
     // 最新の auth cookie で server-render される)。
-    const next = searchParams.get("next") || "/";
+    //
+    // open redirect 対策: URL パーサベースで origin が一致する場合のみ許可する。
+    // 文字列前方一致のガードは backslash や %2f 等のバイパス余地が残るため、
+    // window.location.origin を base に URL を構築して同一 origin を強制する。
+    // 不正な URL や外部 origin はすべて "/" にフォールバックする。
+    const rawNext = searchParams.get("next");
+    let next = "/";
+    if (rawNext) {
+      try {
+        const u = new URL(rawNext, window.location.origin);
+        if (u.origin === window.location.origin) {
+          next = u.pathname + u.search + u.hash;
+        }
+      } catch {
+        // 不正な URL は "/" にフォールバック
+      }
+    }
     router.push(next);
   }
 
