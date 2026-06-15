@@ -22,6 +22,7 @@
 - **優先度**: 低（FEAT-003 完成後）
 - **依存**: FEAT-003, FEAT-002
 
+
 ---
 
 #### [FEAT-006] チャット回数の仕様変更（柔軟なラウンド制御 + 固定挨拶メッセージ）
@@ -176,6 +177,16 @@
 - **期待挙動**: ログイン成功後、`?next=...` があればそこへ、なければ `/` （middleware の保護パス側で /me 等へリダイレクト）へ自動遷移する。
 - **優先度**: 中（UX 阻害は明確だが、ログイン自体は通っているのでクリティカルバグではない）
 - **由来**: 2026-06-15 ダイチ手動確認
+
+---
+
+#### [BUG-008] `useSearchParams()` を使う Client Component に Suspense 境界がない
+
+- **症状**: `app/auth/login/page.tsx` と `app/case/[id]/CaseRoom.tsx` で `useSearchParams()` を直接呼び出しているが、いずれも最寄りの祖先で `<Suspense>` でラップされていない。`app/layout.tsx:44` の `<Suspense>` は `<Header />` のみを包んでおり、`{children}` 配下には Suspense 境界が存在しない。
+- **影響**: 現時点ではテスタ実行で build エラー・ランタイム警告が観測されていない。両ページとも `"use client"` 全体で初めからクライアント側レンダリングであり静的化されていないため実害なし。ただし Next.js の公式ガイダンスでは Suspense ラップが推奨されており、将来 Next.js の静的最適化が強化された際に build 警告が出る可能性がある。
+- **修正案**: 各 `page.tsx` を Server Component に分割し、内部 Client Component（例: `LoginForm` / `CaseRoom`）を `<Suspense fallback={...}>` でラップする。`/auth/login` と `/case/[id]` の両方に同時適用するのが筋。
+- **優先度**: 低（予防的）
+- **由来**: 2026-06-15 BUG-007 監査（audit_20260615_095410.md LOW-001）
 
 ---
 
