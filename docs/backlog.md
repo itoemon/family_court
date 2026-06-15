@@ -23,6 +23,14 @@
 - **依存**: FEAT-003, FEAT-002
 
 
+### [MEDIUM-001] BUG-005 必須シナリオ #2/#3 が E2E spec に存在せず未検証（tests/e2e/bug005-closing-trigger.spec.ts:133-168） (由来: audit_20260615_165040.md)
+- **内容**: (由来: audit_20260615_165040.md)
+  task.md L108-116 の「必須」テスト観点として、以下 2 件が指定されている。 (由来: audit_20260615_165040.md)
+    - #2: 3 ラウンド完了 → 両者 finish → `phase=judging`。closing greeting 2 行 (`arguments`) と AI 閉廷宣告 1 行 (`judge_messages`) が挿入され、`arguments.created_at` < `judge_messages.created_at` の順序であることを assert。 (由来: audit_20260615_165040.md)
+    - #3: 早期 end-proposal 両者合意 → `phase=judging`。同様に挿入と順序を assert。 (由来: audit_20260615_165040.md)
+ (由来: audit_20260615_165040.md)
+  実際の `tests/e2e/bug005-closing-trigger.spec.ts` を確認したところ、 (由来: audit_20260615_165040.md)
+
 ---
 
 ### 運用・テスト基盤（OPS）
