@@ -12,13 +12,13 @@ metadata:
 
 ---
 
-## 最終更新: 2026-06-15（FEAT-006 + OPS-003 + BUG-007/004 + middleware ?next= で PR 7 本マージ + memory main 直 commit + backlog 11 PR 分の対応済み整理 PR #48 + BUG-005 PR #49）
+## 最終更新: 2026-06-15（FEAT-006 + OPS-003 + BUG-007/004 + middleware ?next= で PR 7 本マージ + memory main 直 commit + backlog 整理 PR #48 + BUG-005 PR #49 + BUG-008 PR #50）
 
 ### 現在のブランチ・PR 状態
 
-- 現ブランチ: `main`（クリーン、HEAD `ff3fe4c` = PR #49 マージ後）
+- 現ブランチ: `main`（クリーン、HEAD `9149a7a` = PR #50 マージ後）
 - オープン PR: なし
-- 本セッションでマージした PR: #41, #42, #43, #44, #45, #46, #47, #48, #49
+- 本セッションでマージした PR: #41, #42, #43, #44, #45, #46, #47, #48, #49, #50
 
 ### このセッション (2026-06-13〜06-15) でやったこと
 
@@ -102,11 +102,21 @@ metadata:
 - **コパレビュー待ちミス**: リードが CI (Vercel pass) のみ確認してマージ。実害ゼロ (コパ指摘 0 件) だったが、過去 PR #41/#44/#45/#47 ではほぼ毎回コパが具体的指摘を出していたのに待たなかったのは規範違反。[[feedback-copilot-review]] を新規作成して運用化
 - 残課題: `[LOW-001-BUG005]` (E2E ユーザー A の `api_key_encrypted=NULL` のため AI 生成経路が CI で踏まれない) を backlog に記録
 
-### 未対応の残項目（PR #49 マージ後）
+#### 9. PR #50 マージ: BUG-008 useSearchParams を使う Client を Suspense 境界で包む
+
+- 予防的修正: Next.js 16 App Router 公式ガイダンス遵守と将来の静的最適化への備え
+- `app/auth/login/page.tsx` を Server Component 化し、新規 `LoginForm.tsx` (Client) を `<Suspense fallback={<LoginFormSkeleton />}>` でラップ
+- `app/case/[id]/page.tsx` で既存の `<CaseRoom />` を `<Suspense fallback={<CaseRoomSkeleton />}>` でラップ。`CaseRoom.tsx` (825 行) は無変更
+- Skeleton には `role="status"` / `aria-busy="true"` / `aria-live="polite"` を付与 (オーディ LOW-001 を PR 内消化)
+- **パイプライン**: リード先行実装 (PR #47 と同パターン、アーキ・ビルド省略) → テスタ 14/14 通過 (CRITICAL 4 + BUG-007 4 + BUG-004 3 + BUG-005 3、54.2s) → オーディ HIGH 0 / MEDIUM 0 / LOW 1 → LOW-001 (aria 属性) を PR 内消化
+- **コパレビュー**: 4.5 分待機して 0 件確認 ([[feedback-copilot-review]] 適用、PR #49 でのミスを今回は避けて規範遵守)
+- backlog 整理: PR #49 で消化済みだが削除し忘れていた BUG-005 + 本タスク BUG-008 + LOW-001 を削除
+
+### 未対応の残項目（PR #50 マージ後）
 
 - **FEAT**: FEAT-004 法案 Hub
 - **OPS**: OPS-002 スキーマ整合性
-- **BUG**: BUG-006 終了提案通知 / BUG-008 Suspense 境界
+- **BUG**: BUG-006 終了提案通知
 - **MON**: MON-001 課金 / MON-002 広告
 - **LOW-001-BUG005**: AI キー SET 経路の E2E 動的検証が現状環境で実行されない (テスト Supabase ユーザー A の `api_key_encrypted=NULL`)
 
@@ -147,6 +157,7 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 - **`c97f371`** (2026-06-15): memory に PR #47 + `1e2d3c4` の追記を main 直 commit
 - **PR #48** (2026-06-15): backlog 11 PR 分の対応済み整理 + OPS-001 完了反映 (`-107 +12`)
 - **PR #49** (2026-06-15): BUG-005 AI 閉廷宣告の発火位置を `phase=judging` 遷移時へ移動。実装 + spec + design.md で `+1548 -538`、パイプライン 3 巡 + LOW 消化 2 回、コパ待たずマージ (実害ゼロ → [[feedback-copilot-review]] 化)
+- **PR #50** (2026-06-15): BUG-008 useSearchParams を Suspense 境界で包む。リード先行実装 + テスタ 14/14 + オーディ LOW 1 (aria 属性、PR 内消化) + コパ 4.5 分待機ゼロ件マージ。backlog から BUG-005/008/LOW-001 を削除し未対応 6 件に整理
 
 ### 環境・ツール状態（2026-06-15 時点）
 
@@ -209,4 +220,4 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 - PR #29: OPS-001 Part1 パイプライン tester node20 化
 - PR #30-#34 (2026-06-02): volta 痕跡撤去 / FEAT-RESP-HEADER / FEAT-005 マイページ / LOW-001-002 移管 / BUG-002-003 追加
 - PR #35-#40 (2026-06-03〜06-12): BUG-003 説得力スコア / BUG-002 過去ケース判決画面 / OPS-001 Part 2 env スイッチ / chore lint / chore spec hard assertion / feat ui error.tsx
-- PR #41-#49 (2026-06-13〜06-15): FEAT-006 / OPS-003 / BUG-007 backlog / BUG-007 修正 / BUG-004 修正 / BUG-004 補修 / middleware ?next= / backlog 整理 / BUG-005 閉廷アナウンス
+- PR #41-#50 (2026-06-13〜06-15): FEAT-006 / OPS-003 / BUG-007 backlog / BUG-007 修正 / BUG-004 修正 / BUG-004 補修 / middleware ?next= / backlog 整理 / BUG-005 閉廷アナウンス / BUG-008 Suspense 境界
