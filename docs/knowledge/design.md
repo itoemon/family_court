@@ -2259,3 +2259,44 @@ export interface ArgumentRow {
 - **`closing` 挨拶のタイミング**: 判決生成が走る直前（`phase = 'judging'` に遷移する直前）に終了挨拶を INSERT する。延長で `argument` に戻る場合は終了挨拶を入れない。延長最終確定（両者 finish）の処理内で INSERT を行う。
 - **「終了を提案」中の延長投票**: `phase === 'argument'` で終了提案が既に乗っている状態で最終ラウンドに到達した場合、終了提案を維持したまま `extension_voting` に遷移する。`extension_voting` フェーズに入った時点で `end_proposed_by` を NULL にリセットする（投票結果が `argument` への復帰なら過去の終了提案は意味を失うため、開始状態に戻すのが UX として自然）。実装は extension_voting 遷移処理内で `end_proposed_by = NULL` も同時更新。
 - **配色補足**: 「終了を提案」自体は重い意思決定だが、サイドアイコンは「常設」のため目立たせすぎないトーン（`stone-500`）を採用。押下確定後のバナー・CTA は「相手側の合意誘導」のため `brand-700` を採用（既存プライマリ）。延長 CTA の「続ける」も `brand-700`、「終わる」は中立的な `stone-200`。これらは task.md の制約「stone-* / brand-700 / brand-800 の範囲」に収まる。
+
+---
+
+## BUG-007 対応: ログイン成功後にページ遷移しない問題
+
+### 由来
+
+`docs/backlog.md` の BUG-007（2026-06-15 ダイチ手動確認）。`/auth/login` でメール+パスワードを入力して「ログイン」を押すと、認証自体は成功し UI 上のステータス（ヘッダーのアバター/ドロップダウン等）はログイン後の状態に切り替わるが、ページ遷移が発生せず、ユーザーが手動でリンクを踏まないと先に進めない症状。
+
+### 原因の特定
+
+`app/auth/login/page.tsx` の signin 成功後ハンドラに 2 つの問題が同居していた。
+
+1. `router.push("/")` の直後に `router.refresh()` を呼んでおり、refresh が後勝ちすることで current page（login）の Server Component を再描画してしまい、push による遷移効果が打ち消されるパターンに当たっていた疑い。Next.js App Router の `router.push` と `router.refresh` の組み合わせで、refresh が push 先ではなく現在ページに作用するため、login ページに留まったままヘッダー等の Server Component だけ最新の auth 状態で再描画される、という挙動と整合的。
+2. `next` クエリパラメータが解釈されておらず、常に `"/"` 固定で遷移していた。middleware の保護パス（`PROTECTED_PATH_PREFIXES`）からのリダイレクト先として将来 `?next=...` を付ける拡張余地を残せていなかった。
+
+### 修正方針
+
+- `router.refresh()` の呼び出しを削除。push 先（`/` 等）のページが新しい auth cookie で server-render されるため、refresh で current page を再描画する必要はない。
+- `useSearchParams()` を導入し、`searchParams.get("next") || "/"` で遷移先を解決する。`?next=` が付いていない場合は従来通り `"/"` にフォールバックするため、middleware 側で `next` を付ける改修と独立して導入できる。
+- エラー時の処理を `else { ... }` から `if (error) { ...; return; }` の early return に整理し、可読性を上げる。
+
+### スコープ外（別タスクで扱う）
+
+- middleware（`middleware.ts:38`）の `NextResponse.redirect(new URL("/auth/login", request.url))` に `next` クエリを付与する改修。本タスクは login 側のフォールバック先の柔軟性のみを担保する。
+- ログイン後の遷移先を `/me` 等にユーザーごとにカスタマイズする機能。
+- ログアウト後のリダイレクト先処理（`/api/auth/signout` 等が同じ問題を抱えているかは別途検証）。
+
+### テスト観点
+
+`tests/e2e/` に以下の観点で spec を追加する想定。
+
+1. **通常ログイン**: `e2e_user_a@example.com` / `E2eTest123!` で `/auth/login` から signin → URL が `/` または middleware による振り分け先（例: `/me` 等）に変わり、login ページに留まらないこと。
+2. **`?next=` 付きログイン**: `/auth/login?next=/history` を開いて signin → `/history` に遷移すること。
+3. **誤ったパスワード**: 既存のエラーメッセージ「メールアドレスまたはパスワードが違います」表示が崩れないこと（リグレッション確認）。
+
+### 監査観点（オーディに渡す論点）
+
+- `router.refresh()` を削除したことによる副作用がないか（ログイン後にヘッダーが最新 auth 状態で表示されるか、Server Component が最新の auth cookie で render されるか）
+- `useSearchParams()` の利用について Next 16 の Suspense ラップ要件に抵触していないか（既存 `CaseRoom.tsx` が同パターンで通っているので問題ない想定だが、build 警告が出ていないかの確認）
+- `next` パラメータの open redirect 脆弱性: 外部 URL が `?next=https://evil.example.com` のように渡された場合、`router.push(next)` で外部に遷移してしまう可能性がないか。Next.js の `router.push` は内部パス扱いをするため通常は問題ないが、念のため検証する観点
