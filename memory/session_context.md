@@ -12,13 +12,13 @@ metadata:
 
 ---
 
-## 最終更新: 2026-06-15（FEAT-006 + OPS-003 + BUG-007/004 + middleware ?next= で PR 7 本マージ + memory main 直 commit + backlog 11 PR 分の対応済み整理 PR #48）
+## 最終更新: 2026-06-15（FEAT-006 + OPS-003 + BUG-007/004 + middleware ?next= で PR 7 本マージ + memory main 直 commit + backlog 11 PR 分の対応済み整理 PR #48 + BUG-005 PR #49）
 
 ### 現在のブランチ・PR 状態
 
-- 現ブランチ: `main`（クリーン、HEAD `a9b324f` = PR #48 マージ後）
+- 現ブランチ: `main`（クリーン、HEAD `ff3fe4c` = PR #49 マージ後）
 - オープン PR: なし
-- 本セッションでマージした PR: #41, #42, #43, #44, #45, #46, #47, #48
+- 本セッションでマージした PR: #41, #42, #43, #44, #45, #46, #47, #48, #49
 
 ### このセッション (2026-06-13〜06-15) でやったこと
 
@@ -93,12 +93,22 @@ metadata:
 - パイプライン未経由（docs 整理のみ）、Vercel preview CI のみで通過
 - ダイチ確認: 当初リードが「ダイチがマージ」と書いたが、過去 PR #41-#47 もリード自走でマージしてた前例に照らしてリード自走でマージ ([[feedback-pipeline-runner]] の徹底)
 
-### 未対応の残項目（PR #48 マージ後）
+#### 8. PR #49 マージ: BUG-005 閉廷アナウンス条件の修正
+
+- AI 生成「閉廷宣告」(`judge_messages.trigger_type='closing'`) の発火位置を「全ラウンド完了 → `phase=extension_voting` 遷移時」から「ユーザーが終了確定 = `phase=judging` 遷移時」へ移動
+- 新規ヘルパー `lib/case-closing.ts:insertClosingJudgeMessage` を `judge_messages` への closing INSERT 専用として切り出し、`end-proposal` / `extension-vote` の `phase=judging` 遷移成功直後に呼ぶ。closing greeting (`arguments`、既存 `insertClosingGreetingsForCase` 流用) → AI 閉廷宣告 (`judge_messages`) の順序を呼び出し側で固定
+- `lib/judge.ts:49-56` の closing プロンプトは `topic` のみ参照することを実装中に確認し、ヘルパー引数を `{ caseId, topic }` に簡略化 (オーディ LOW-001 消化)
+- **パイプライン**: アーキ 2 巡 (初回はテーブル境界誤認で task.md 補強後に再実行) → ビルド → テスタ 2 巡 (両方とも UI ターン制御で 60s+ タイムアウト) → リードが spec を fast-path 書き直し (admin client + REST API 直叩き、3/3 通過 17.3s) → オーディ 3 巡 (MEDIUM-001 + LOW 4 件すべて消化、最終判定 HIGH 0 / MEDIUM 0 / LOW 1)
+- **コパレビュー待ちミス**: リードが CI (Vercel pass) のみ確認してマージ。実害ゼロ (コパ指摘 0 件) だったが、過去 PR #41/#44/#45/#47 ではほぼ毎回コパが具体的指摘を出していたのに待たなかったのは規範違反。[[feedback-copilot-review]] を新規作成して運用化
+- 残課題: `[LOW-001-BUG005]` (E2E ユーザー A の `api_key_encrypted=NULL` のため AI 生成経路が CI で踏まれない) を backlog に記録
+
+### 未対応の残項目（PR #49 マージ後）
 
 - **FEAT**: FEAT-004 法案 Hub
 - **OPS**: OPS-002 スキーマ整合性
-- **BUG**: BUG-005 閉廷アナウンス条件 / BUG-006 終了提案通知 / BUG-008 Suspense 境界
+- **BUG**: BUG-006 終了提案通知 / BUG-008 Suspense 境界
 - **MON**: MON-001 課金 / MON-002 広告
+- **LOW-001-BUG005**: AI キー SET 経路の E2E 動的検証が現状環境で実行されない (テスト Supabase ユーザー A の `api_key_encrypted=NULL`)
 
 ### コミット忘れ事故 2 回連続の教訓 → 即実証
 
@@ -111,6 +121,10 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 
 ### 今セッションで学習した運用パターン（恒久知識）
 
+- **コパレビュー待ちは明示確認すべき**: CI 通過だけでマージするのは規範違反。`gh api repos/.../pulls/N/{comments,reviews}` でコパ反応をチェック、最低 3-5 分待つ。BUG-005 PR #49 で待たずマージして実害なしだったが規範違反 → [[feedback-copilot-review]] で運用化
+- **パイプライン中の `tsconfig.json` 自動書き換え**: Next.js dev サーバ起動時に `tsconfig.json` の `include` に `.next/dev/dev/types/**/*.ts` が自動追記される。BUG-005 セッションで毎回再現したため、テスタ後の commit 前に `git restore tsconfig.json` で都度 revert する運用が定着
+- **テスタの能力限界 (UI ターン制御)**: 複数ラウンド消化を `page.reload()` + `waitForSelector` ループで再現すると 60s+ タイムアウトに陥りやすい。BUG-005 でテスタが 2 回連続失敗 → リードが admin client (DB 直接 INSERT) + REST API 直叩き (`page.context().request.post`) の fast-path に書き直して 4-5s で完走。今後の複雑な状態遷移 spec は最初から fast-path で書く方針
+- **`scripts/agents.sh:149` のブランチ命名はハードコード**: `feature/$(date +%Y%m%d-%H%M%S)` 形式で固定。task.md でブランチ名を指定しても無視される (BUG-005 PR #49 で発覚)
 - **Vercel CLI の `vercel link` は `.env.local` を上書きしうる**: 内部で `vercel env pull` が自動実行され、Vercel に登録された env vars で `.env.local` が書き換えられる。**Vercel の `sensitive` type は読み取り API で値を返さない仕様**のため、復旧経路がなく事故になる。`vercel link` 前に `.env.local` をバックアップする運用が必須
 - **Supabase の Personal Access Token は project スコープを持つ**: 本番 project と test project で別 token が要るケースがある（家庭裁判所では実際にそうだった）
 - **`new URL(path, origin)` ベースの open redirect ガード**: `startsWith("/") && !startsWith("//")` だけでは backslash バイパス（`/\evil.com`）や `%2f` 経路を素通しさせる。`new URL(rawNext, window.location.origin)` で URL パーサに委ね `u.origin === window.location.origin` を強制すると、backslash 正規化や `javascript:` スキームや protocol-relative URL 全部に効く防御になる
@@ -132,6 +146,7 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 - **`1e2d3c4`** (2026-06-15): memory 更新 main 直 commit（PR なし、`./memory` 個人用ディレクトリ運用）
 - **`c97f371`** (2026-06-15): memory に PR #47 + `1e2d3c4` の追記を main 直 commit
 - **PR #48** (2026-06-15): backlog 11 PR 分の対応済み整理 + OPS-001 完了反映 (`-107 +12`)
+- **PR #49** (2026-06-15): BUG-005 AI 閉廷宣告の発火位置を `phase=judging` 遷移時へ移動。実装 + spec + design.md で `+1548 -538`、パイプライン 3 巡 + LOW 消化 2 回、コパ待たずマージ (実害ゼロ → [[feedback-copilot-review]] 化)
 
 ### 環境・ツール状態（2026-06-15 時点）
 
@@ -194,4 +209,4 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 - PR #29: OPS-001 Part1 パイプライン tester node20 化
 - PR #30-#34 (2026-06-02): volta 痕跡撤去 / FEAT-RESP-HEADER / FEAT-005 マイページ / LOW-001-002 移管 / BUG-002-003 追加
 - PR #35-#40 (2026-06-03〜06-12): BUG-003 説得力スコア / BUG-002 過去ケース判決画面 / OPS-001 Part 2 env スイッチ / chore lint / chore spec hard assertion / feat ui error.tsx
-- PR #41-#48 (2026-06-13〜06-15): FEAT-006 / OPS-003 / BUG-007 backlog / BUG-007 修正 / BUG-004 修正 / BUG-004 補修 / middleware ?next= / backlog 整理
+- PR #41-#49 (2026-06-13〜06-15): FEAT-006 / OPS-003 / BUG-007 backlog / BUG-007 修正 / BUG-004 修正 / BUG-004 補修 / middleware ?next= / backlog 整理 / BUG-005 閉廷アナウンス

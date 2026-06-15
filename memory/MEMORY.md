@@ -8,3 +8,4 @@
 - [パイプライン自走ポリシー](feedback_pipeline_runner.md) — リードがアーキ→ビルド→テスタ→オーディ→PR まで自分で回す
 - [design.md 運用ルール](feedback_design_md.md) — design.md は永続資料、追記方式で育てる（全面書き換え禁止）
 - [コミット忘れ防止](feedback_commit_check.md) — パイプライン後の commit 前に必ず git status で untracked 確認
+- [コパレビュー待ち](feedback_copilot_review.md) — PR 作成後はコパのレビューを明示確認してからマージ
