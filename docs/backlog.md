@@ -81,6 +81,37 @@
 
 ---
 
+#### [OPS-003] Vercel Preview デプロイメントのターゲット DB をテスト DB に分離
+
+- **背景**: Preview と Production の env vars が同一 Supabase (`nhcsshqcyprbitfctyio`) を指しており、Preview での動作確認が本番 DB に書き込みを発生させる状態だった (2026-06-13 ダイチが両環境でケース残存を発見して判明)。
+- **本来の方針**: Preview は「動作確認用」= 本番に未マージのロジックや migration 候補を試す場 = 本番 DB を触るべきではない。OPS-001 Part 2 で整備した E2E 用テスト Supabase (`eckrccrfnblzdbflnssf`) を Preview からも参照するように切り替える。
+- **作業手順 (ダイチが Vercel ダッシュボードで実施)**:
+  1. Vercel プロジェクト `family-court` → Settings → Environment Variables を開く
+  2. 以下のキーについて Preview scope の値を `.env.test` の値で上書き（または Preview 専用変数として追加）:
+     - `NEXT_PUBLIC_SUPABASE_URL`
+     - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+     - `SUPABASE_SECRET_KEY`
+     - `SUPABASE_ACCESS_TOKEN`
+     - `SUPABASE_PROJECT_REF`
+     - `ENCRYPTION_KEY`
+     - `GUEST_TOKEN_SECRET`
+  3. 暫定で本番のまま据え置く (将来検討):
+     - `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` (test 側が空、Preview で rate limit 動作確認したい場合は別途 Upstash テスト用インスタンス作成が必要)
+     - `NEXT_PUBLIC_SITE_URL` (preview URL は Vercel が自動付与する `VERCEL_URL` 経由が筋。コード側のフォールバック整備が前提のため別タスク)
+  4. 既存 PR があれば Redeploy、なければ次の preview deployment から反映される
+  5. 反映確認: preview URL でケース作成後、テスト Supabase (`eckrccrfnblzdbflnssf`) 側に行が増え、本番 (`nhcsshqcyprbitfctyio`) は増えないこと
+- **設計上の論点 / 将来課題**:
+  - `NEXT_PUBLIC_SITE_URL` のフォールバック: `process.env.NEXT_PUBLIC_SITE_URL ?? \`https://${process.env.VERCEL_URL}\`` 的な処理を入れて preview ごとの URL に合わせる
+  - Upstash テスト用インスタンス作成 (rate limit を preview で正しく動作確認したい場合)
+  - 将来「PR ごとに独立した DB」を望む場合は Supabase branching か Neon branching が選択肢
+- **副次効果**:
+  - Preview deployment の migration 適用順序が「test DB に先に適用 → preview で動作確認 → 問題なければマージ → 本番に適用」のフローに整理される
+  - `applied.txt` の本番 / test の管理が今後分離する想定 (test 側は OPS-002 で議論されているサージカル手順の見直しと連携)
+- **優先度**: 高（本番 DB を Preview で触らない衛生は早めに整えるべき）
+- **由来**: 2026-06-13 ダイチ指摘。元々 OPS-001 Part 2 で E2E パイプライン専用に分離していたが、Preview/QA への適用は当初構想外だった
+
+---
+
 #### [OPS-002] テスト DB スキーマソースの整合性回復（schema.sql / migrations / docs 不整合）
 
 - **背景**: OPS-001 Part 2 のセットアップ自走時（2026-06-10）に、`supabase/schema.sql` と `supabase/migrations/*.sql` の重複が原因で「schema.sql → migrations 全実行」を docs 通りに素直にやると最初の migration で停止することが判明。
