@@ -22,15 +22,6 @@
 - **優先度**: 低（FEAT-003 完成後）
 - **依存**: FEAT-003, FEAT-002
 
-### [LOW-001] Suspense fallback に aria 属性が無く支援技術へ loading 状態を通知できない（app/auth/login/page.tsx:7、app/case/[id]/page.tsx:13） (由来: audit_20260615_202005.md)
-- **内容**: `LoginFormSkeleton`（`app/auth/login/page.tsx:7-38`）と `CaseRoomSkeleton`（`app/case/[id]/page.tsx:12-18`）の最外殻 `<main>` に `aria-busy="true"` / `role="status"` / `aria-live` のいずれも付与されていない。動的 import や JS パース遅延でこの fallback が短時間表示されるとき、スクリーンリーダー利用者にはラベルだけが読まれ「読み込み中である」というコンテキストが伝わらない。`CaseRoomSkeleton` は本文が「読み込み中…」の 1 行テキストのみで、視覚的にも文脈が薄い。 (由来: audit_20260615_202005.md)
-- **修正案**: `CaseRoomSkeleton` の `<main>` か内側の `<p>` に `role="status"` を付け、`aria-live="polite"` を併設する。`LoginFormSkeleton` 側は最外殻 `<main>` に `aria-busy="true"` を付ければ十分。実害は小さく緊急性は無いが、後続タスクで触る際に1行追加で済む対応。 (由来: audit_20260615_202005.md)
- (由来: audit_20260615_202005.md)
-## 総評 (由来: audit_20260615_202005.md)
- (由来: audit_20260615_202005.md)
-task.md 指示と実装差分は完全に一致している。`app/auth/login/page.tsx` は `"use client"` が剥がされ Server Component 化、`LoginForm.tsx` は既存 `page.tsx` の中身をそのまま分離移植、`app/case/[id]/page.tsx` は `<Suspense fallback>` で `<CaseRoom />` を包む形へ最小変更。`CaseRoom.tsx`（825 行）、`app/layout.tsx`、`design.md` はすべて無変更で、`useSearchParams()` の出現箇所も `LoginForm.tsx` と `CaseRoom.tsx` の 2 箇所のみに収束している（grep 確認済み）。 (由来: audit_20260615_202005.md)
-
----
 
 #### [LOW-001-BUG005] AI キー SET 経路の E2E 動的検証が現状環境で実行されない
 
@@ -72,15 +63,6 @@ task.md 指示と実装差分は完全に一致している。`app/auth/login/pa
 
 ### バグ修正（BUG）
 
-#### [BUG-005] 「閉廷しました」アナウンスの表示条件を「ユーザーが終了を選んだ場合のみ」に限定する
-
-- **症状**: 現状「閉廷しました」アナウンスが、ユーザーが終了を選んでいない場合（例: 3 ラウンド自然完了 → 延長投票で continue 選択など）でも表示されている可能性がある。
-- **期待挙動**: ユーザーが明示的に終了を選んだとき（早期終了の合意成立、または延長投票で両者 finish）にのみ「閉廷しました」アナウンスを出す。
-- **調査ポイント**: アナウンス生成位置（おそらく judge_messages か CaseRoom 内のラベル）を特定し、トリガを終了選択に限定する。
-- **優先度**: 低（演出の整合性問題）
-- **由来**: 2026-06-13 ダイチ手動確認
-
----
 
 #### [BUG-006] 「終了を提案」時に相手側へ通知する
 
@@ -91,15 +73,6 @@ task.md 指示と実装差分は完全に一致している。`app/auth/login/pa
 
 ---
 
-#### [BUG-008] `useSearchParams()` を使う Client Component に Suspense 境界がない
-
-- **症状**: `app/auth/login/page.tsx` と `app/case/[id]/CaseRoom.tsx` で `useSearchParams()` を直接呼び出しているが、いずれも最寄りの祖先で `<Suspense>` でラップされていない。`app/layout.tsx:44` の `<Suspense>` は `<Header />` のみを包んでおり、`{children}` 配下には Suspense 境界が存在しない。
-- **影響**: 現時点ではテスタ実行で build エラー・ランタイム警告が観測されていない。両ページとも `"use client"` 全体で初めからクライアント側レンダリングであり静的化されていないため実害なし。ただし Next.js の公式ガイダンスでは Suspense ラップが推奨されており、将来 Next.js の静的最適化が強化された際に build 警告が出る可能性がある。
-- **修正案**: 各 `page.tsx` を Server Component に分割し、内部 Client Component（例: `LoginForm` / `CaseRoom`）を `<Suspense fallback={...}>` でラップする。`/auth/login` と `/case/[id]` の両方に同時適用するのが筋。
-- **優先度**: 低（予防的）
-- **由来**: 2026-06-15 BUG-007 監査（audit_20260615_095410.md LOW-001）
-
----
 
 ### マネタイズ（MON）
 

@@ -5,7 +5,13 @@ import LoginForm from "./LoginForm";
 // BUG-008: Next.js 16 App Router の公式ガイダンス遵守と、将来の静的最適化への備え。
 function LoginFormSkeleton() {
   return (
-    <main className="min-h-screen bg-stone-50 flex flex-col items-center justify-center p-6">
+    <main
+      className="min-h-screen bg-stone-50 flex flex-col items-center justify-center p-6"
+      role="status"
+      aria-busy="true"
+      aria-live="polite"
+      aria-label="ログインフォームを読み込み中"
+    >
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-14 h-14 bg-brand-100 rounded-2xl mb-4 text-2xl">

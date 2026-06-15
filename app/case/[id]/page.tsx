@@ -11,7 +11,12 @@ export const dynamic = "force-dynamic";
 // BUG-008: Next.js 16 App Router の公式ガイダンス遵守。
 function CaseRoomSkeleton() {
   return (
-    <main className="min-h-screen bg-stone-50 flex items-center justify-center p-6">
+    <main
+      className="min-h-screen bg-stone-50 flex items-center justify-center p-6"
+      role="status"
+      aria-busy="true"
+      aria-live="polite"
+    >
       <p className="text-stone-400 text-sm">読み込み中…</p>
     </main>
   );
