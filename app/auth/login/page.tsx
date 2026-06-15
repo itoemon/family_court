@@ -1,12 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 
 export default function LoginPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const supabase = createClient();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -21,10 +22,14 @@ export default function LoginPage() {
     if (error) {
       setError("メールアドレスまたはパスワードが違います");
       setLoading(false);
-    } else {
-      router.push("/");
-      router.refresh();
+      return;
     }
+    // ?next= があればそこへ (middleware の保護パス → /auth/login?next=... の戻り先)、
+    // なければトップへ。router.refresh() を併用すると current page (login) の再描画が
+    // 走って push の遷移効果を打ち消すケースがあるため refresh は呼ばない (push 先で
+    // 最新の auth cookie で server-render される)。
+    const next = searchParams.get("next") || "/";
+    router.push(next);
   }
 
   return (
