@@ -22,6 +22,15 @@
 - **優先度**: 低（FEAT-003 完成後）
 - **依存**: FEAT-003, FEAT-002
 
+---
+
+#### [LOW-001-BUG005] AI キー SET 経路の E2E 動的検証が現状環境で実行されない
+
+- **背景**: `tests/e2e/bug005-closing-trigger.spec.ts` の BUG-005-2/3 は API キー SET / NULL の両分岐に対応する条件分岐 hard assertion を備えているが、E2E ユーザー A (`e2e_user_a@example.com`) の `profiles.api_key_encrypted` が現状 NULL のため、毎回必ず NULL 経路（`judge_messages.trigger_type='closing'` 0 件）の assertion しか実行されない。
+- **影響**: 本タスク (BUG-005) の主要価値「`phase=judging` 遷移直後に AI 閉廷宣告が `judge_messages` へ 1 行 INSERT される」「`arguments`（closing greeting）→ `judge_messages`（AI）の `created_at` 順序が守られる」が CI 実行時に一度も動的に踏まれない。リグレッション検知能力に空白が残る。
+- **対応案**: テスト Supabase の `e2e_user_a` プロフィールに有効な `api_key_encrypted` をセットアップする。実 Claude API キーを使うとコストが発生するため、`TEST_MODE=1` 下で `generateJudgeMessage` をモック差し替えする仕組みを設けて spec から動的に切り替える運用が現実的。
+- **優先度**: 低（実装本体の静的レビューと grep 検証は通過済み、NULL 経路の hard assertion は機能している）
+- **由来**: 2026-06-15 BUG-005 オーディ 2 巡目 (`audit_20260615_192508.md` LOW-003)
 
 ---
 

@@ -2413,3 +2413,140 @@ if (!user && isProtected) {
 - `pathname + request.nextUrl.search` の値が常に内部パス由来であるかの再確認（middleware の matcher 設定 + Next.js の仕様で保証されているが、念のため）
 - ループの可能性: `/auth/login` 自体は matcher で除外されているため middleware 経由でリダイレクトされない（無限ループにならない）
 - `searchParams.set("next", value)` の URLEncode が正しく機能していること（手動エンコードでなく URL API に任せる）
+
+---
+
+## BUG-005 閉廷アナウンス条件の修正
+
+### 概要（変更の目的・背景）
+
+AI が生成する「閉廷宣告」`judge_message`（`judge_messages.trigger_type = 'closing'`）が、現状では「全ラウンド消化 → `phase=extension_voting` 遷移時」に発火している。`lib/judge.ts` の closing プロンプトは「閉廷と審議入りを告げる」内容で書かれており、本来は **`phase=judging` への遷移直前** に発火すべきもの。
+
+現状の不整合:
+
+- ユーザーがまだ延長 / 終了を決めていない `extension_voting` 段階で「閉廷宣言」が出る
+- 延長が選ばれて新たな 3 ラウンドが始まる場合でも、既に「閉廷宣言」が DB に残る
+- AI 出力文脈（閉廷 = 審議入りの直前）と実 DB 状態が乖離する
+
+本変更は、AI 閉廷宣告の発火位置を `extension_voting` 遷移時から、**ユーザーが終了を確定した瞬間 = `phase=judging` 遷移直後** に移動する。`extension_voting` 期間中は AI 閉廷宣告を一切発火させない。
+
+固定挨拶（closing greeting、`arguments` テーブルへの「ありがとうございました。」2 行 INSERT）の挿入位置は変更しない（FEAT-006 で確定した位置をそのまま維持）。AI 閉廷宣告 (`judge_messages`) のみが本タスクの対象である。
+
+### API 仕様（変更・追加するエンドポイントのリクエスト/レスポンス定義）
+
+外部 I/F（リクエスト URL・メソッド・リクエストボディ・レスポンス JSON）の変更はない。以下 3 つのエンドポイントの **内部副作用** のみが変わる。
+
+#### `POST /api/cases/[id]/argument`
+
+- **副作用変更**: 全ラウンド完了で `phase=argument → extension_voting` に遷移する際、これまで生成・挿入していた `trigger_type='closing'` の `judge_messages` レコードを **生成しない**。
+- **保持される副作用**: ターン交代時の `trigger_type='turn'` 生成は従来通り。`extension_voting` 遷移後も `judge_messages` への INSERT を行わない（turn を含めて何も挿入しない）。
+- **レスポンス**: 変更なし（`buildCaseResponse` の戻り値構造は維持）。
+
+#### `POST /api/cases/[id]/end-proposal`
+
+- **副作用追加**: `phase=judging` 遷移成功直後、既存の `insertClosingGreetingsForCase`（closing greeting 2 行 INSERT into `arguments`）が成功したあとに、続けて AI 閉廷宣告を生成して `judge_messages` テーブルへ 1 行 INSERT する。
+- **エラーハンドリング**: AI 閉廷宣告生成または INSERT が失敗してもレスポンスは 200 のままとする。失敗は `console.error` でログのみ。`phase=judging` 遷移と closing greeting INSERT は保持されたまま判決生成フローに進める。
+- **レスポンス**: 変更なし。
+
+#### `POST /api/cases/[id]/extension-vote`
+
+- **副作用追加**: 両者 finish 確定時の `phase=judging` 遷移成功・closing greeting INSERT 成功直後に、AI 閉廷宣告を生成して `judge_messages` テーブルへ 1 行 INSERT する。`continue` 経路（延長確定）では何も追加しない。
+- **エラーハンドリング**: `end-proposal` と同一（生成・INSERT 失敗時もレスポンス 200、ログのみ）。
+- **レスポンス**: 変更なし。
+
+### データモデル（DB スキーマ・型定義の変更）
+
+DB スキーマ変更なし。新規 migration なし。
+
+| テーブル | 既存カラム | 本タスクでの扱い |
+|---|---|---|
+| `judge_messages` | `id`, `case_id`, `content`, `trigger_type` (`'opening' / 'turn' / 'closing'`), `created_at` | **発火位置のみ変更**。スキーマ・既存レコード・型は不変 |
+| `arguments` | `is_greeting`, `phase`, `round` 等 | 触れない（closing greeting は既存 `insertClosingGreetingsForCase` のままで担う） |
+| `profiles` | `opening_greeting`, `closing_greeting` | 触れない |
+| `cases` | `phase`, `end_proposed_by`, `extension_vote_*` | 触れない |
+
+`lib/types.ts` の `JudgeTrigger = "opening" | "turn" | "closing"` も変更しない。
+
+過去の `judge_messages.trigger_type='closing'` レコード（旧経路で挿入されたもの）はそのまま残す。マイグレーションでの遡及修正は行わない（要件は「新規生成のみ振る舞いが変わる」。観察可能なバグは演出の整合性問題であり、過去ケースを書き換える価値はない）。
+
+### コンポーネント設計（新設・変更するファイルの責務と仕様）
+
+#### 新設: `lib/case-closing.ts`
+
+AI 閉廷宣告の生成と `judge_messages` への INSERT を担う共通ヘルパー。`end-proposal` と `extension-vote` の 2 経路で同一処理が必要になるため切り出すが、closing greeting と 1 関数に集約することはしない（テーブル境界保護のため）。
+
+**公開関数**: `insertClosingJudgeMessage(admin, plaintiffApiKey, params): Promise<void>`
+
+- 引数:
+  - `admin`: `ReturnType<typeof createAdminClient>`
+  - `plaintiffApiKey`: `string | null`（呼び出し側で `decryptApiKey` 済みの平文。`null` の場合は AI 生成をスキップし `console.warn` のみ）
+  - `params`: `{ caseId: string; topic: string }`
+- 責務:
+  1. `plaintiffApiKey` が `null` または空文字なら `console.warn` で「[judge] closing: plaintiff has no api_key_encrypted」相当のログを出して return
+  2. `generateJudgeMessage({ trigger: "closing", topic, plaintiffName: "", defendantName: "", lastSpeakerRole: "plaintiff" }, plaintiffApiKey)` を try/catch で呼ぶ（`plaintiffName` / `defendantName` / `lastSpeakerRole` は closing プロンプトで未使用のためダミー値を埋めて `generateJudgeMessage` のシグネチャ互換を保つ）。例外は `console.error` でログのみとし、上位に伝播させない
+  3. 生成された文字列が空でなければ `admin.from("judge_messages").insert({ case_id: caseId, content, trigger_type: "closing" })` を try/catch で呼ぶ。INSERT エラーも `console.error` でログのみ
+- 戻り値: `void`（呼び出し側は phase 遷移を続行する設計のため、エラー情報を返さない）
+- **責務外**: `arguments` テーブルへの SELECT / INSERT、closing greeting 文字列の生成、`phase` カラムの更新、`current_turn` の操作、`lastSpeakerRole` 等のコンテキスト解決
+
+**ファイル境界の制約（重要）**:
+
+- このファイルは `arguments` テーブルを SELECT / INSERT / UPDATE してはならない（テーブル境界の侵食防止）
+- 固定挨拶文字列（`DEFAULT_CLOSING_GREETING` 等）を import / 参照してはならない
+- `cases` テーブルへの UPDATE を行わない（呼び出し側で `phase=judging` 遷移を完了した状態で呼ばれる前提）
+
+`lib/judge.ts` の closing プロンプト本体は変更しない。
+
+#### 変更: `app/api/cases/[id]/argument/route.ts`
+
+- L132 の warn メッセージから `nextPhase === "extension_voting" ? "closing" : "turn"` の三項演算子を削除し、`turn` を直書きする（warn の意味論は「turn 生成のための API キーが無い」のみ）。
+- L146 の `triggerType` 算出（`nextPhase === "extension_voting" ? "closing" : "turn"`）を削除し、`triggerType = "turn"` 固定にする。
+- 結果として `argument/route.ts` は `judge_messages` へ `trigger_type='closing'` を一切 INSERT しなくなる。
+- 矛盾チェック処理（L162 以降）には触れない。
+
+#### 変更: `app/api/cases/[id]/end-proposal/route.ts`
+
+- `insertClosingGreetingsForCase` 呼び出し成功（`greetingError == null`）の直後に、以下の処理を追加:
+  1. `profiles` から `plaintiff_id` を使って `api_key_encrypted` を SELECT
+  2. `decryptApiKey` で平文化
+  3. `lib/case-closing.ts` の `insertClosingJudgeMessage` を `{ caseId, topic }` のみで呼ぶ
+- 既存の rollback ロジック（`greetingError` 発生時に `phase=argument` に戻す）には触れない。
+- `insertClosingJudgeMessage` 内で起きるエラーは関数内で吸収されるため、呼び出し側で try/catch を再度書く必要はない。
+- **`lastSpeakerRole` の解決は不要**（後述「`lastSpeakerRole` の解決方針」参照）。
+
+#### 変更: `app/api/cases/[id]/extension-vote/route.ts`
+
+- `judgingUpdated && judgingUpdated.length > 0` 分岐内、`insertClosingGreetingsForCase` 呼び出し成功（`greetingError == null`）の直後に、`end-proposal` と同一の処理（`profiles.api_key_encrypted` SELECT → `decryptApiKey` → `insertClosingJudgeMessage({ caseId, topic })`）を追加。
+- `eitherContinue` 経路（延長確定）には何も追加しない。
+
+#### `lastSpeakerRole` / `plaintiffName` / `defendantName` の解決方針（撤去）
+
+当初設計では `end-proposal` / `extension-vote` 呼び出し側で `arguments` テーブルから `lastSpeakerRole` を導出し、`profiles.display_name` で `plaintiffName` / `defendantName` を解決して `insertClosingJudgeMessage` に渡す方針を採用していた。しかし実装着手時に `lib/judge.ts:49-56` の closing プロンプトを再確認したところ、`topic` のみ参照し `lastSpeakerRole` / `plaintiffName` / `defendantName` を一切使用していないことが判明（オーディ 2 巡目 `audit_20260615_192508.md` LOW-001 指摘、コミット `b7419e7` で消化）。
+
+このため最終設計では以下のように簡略化している:
+
+- `insertClosingJudgeMessage` の引数は `{ caseId, topic }` のみ
+- ヘルパー内で `generateJudgeMessage` のシグネチャ互換のため `plaintiffName: ""` / `defendantName: ""` / `lastSpeakerRole: "plaintiff"` のダミー値を埋めて呼ぶ
+- 呼び出し側（`end-proposal` / `extension-vote`）は `profiles.api_key_encrypted` の SELECT と `decryptApiKey` のみを行う。`arguments` テーブルへの追加 SELECT・`defendantName` の組み立てロジックは持ち込まない
+
+`lib/judge.ts` の closing プロンプトを将来 `lastSpeakerRole` 依存に拡張する場合は、本ヘルパーの引数復活と呼び出し側 SELECT の追加を同時に行う必要がある（ダミー値で動作してしまうため、コンパイラには検知されない暗黙のリスク）。
+
+### セキュリティ設計（認証・認可・入力検証の方針）
+
+- **認証・認可**: 呼び出し元の `end-proposal` / `extension-vote` で既に確立されている `determineActor` ベースの認可（`auth.getUser()` または `verifyGuestToken`）に乗る。`insertClosingJudgeMessage` ヘルパー自身は認可判定を行わない（既に認可済みコードパスからのみ呼ばれる設計）。
+- **API キー取り扱い**: 平文 API キーは `insertClosingJudgeMessage` の引数として一度だけ渡し、関数内で保持しない（`Anthropic` クライアント生成後はクライアント側のメモリに乗るが、これは既存 `lib/judge.ts:generateJudgeMessage` と同一パターン）。ブラウザ送出禁止は既存のサーバ側 API ルート境界で担保される。
+- **入力検証**: AI 出力（`generateJudgeMessage` の戻り値）の検証は既存パターンを踏襲 — 空文字列なら INSERT を抑止する（`judge_messages` 空文字 INSERT ガードは PR #14 (D-5) で全 3 箇所に既導入のため、新規 INSERT 経路でも同じガードを適用する）。
+- **エラー時情報漏洩**: `console.error` ログにはユーザー入力・API キー・PII を載せない（プレフィックス `[judge] closing:` と汎用エラーメッセージのみ。`lib/judge.ts` のエラーオブジェクトをそのまま `console.error` の 2 引数目に渡すのは既存と同様）。
+- **副作用の一方向性**: AI 閉廷宣告 INSERT は `phase=judging` 遷移後に行う設計のため、ヘルパー側の失敗で `cases` 状態が中途半端になることはない（判決画面に進めるのに必要な状態遷移は既に完了済み）。
+
+### 制約・前提条件
+
+- `lib/judge.ts:49-54` の closing プロンプト本体・トークン数・モデル指定（`claude-haiku-4-5-20251001`）は変更しない。
+- `lib/greetings.ts:insertClosingGreetingsForCase` のシグネチャ・挙動を変更しない。closing greeting と AI 閉廷宣告の挿入順序（greeting → AI、2026-06-15 ダイチ確認）はこの「ヘルパーを 2 つに分割したまま、呼び出し順を呼び出し側で固定する」設計で守る。
+- 過去の `judge_messages.trigger_type='closing'` レコード（旧経路で挿入されたもの）は移行・削除しない。
+- `extension_voting` フェーズ中の UI（バナー・モーダル・サイドアイコン）は変更しない。CaseRoom 側のコンポーネントも触らない。
+- 「閉廷しました」というシステム表示ラベル（CaseRoom 内）が存在するかは未確認。存在した場合は本タスク完了後に backlog 上の派生タスクとして記録し、別 PR で扱う（task.md スコープ外明示）。
+- `judge_messages` SELECT が読み取り公開のため、`phase=judging` 遷移後の AI 閉廷宣告挿入が遅延すると、verdict 画面で一時的に「閉廷宣告がない状態」が見える可能性がある。AI 生成は通常数秒で完了するため UX 影響は許容範囲だが、テスタは「closing greeting → AI 閉廷宣告 → verdict 表示」のタイミング順序を polling 経由で観察する spec を 1 本以上含めること。
+- 並行リクエストでの重複 INSERT 抑止: `end-proposal` / `extension-vote` 双方とも `phase=judging` 遷移を楽観ロック（`WHERE phase=argument` または `WHERE phase=extension_voting AND 両者票一致`）で 1 リクエストに絞っているため、その後に呼ぶ `insertClosingJudgeMessage` も自動的に 1 度しか呼ばれない。ヘルパー内で重複防止ロックを追加する必要はない。
+- 注意事項（解消未確定の論点）:
+  - **`lastSpeakerRole` を SELECT する追加 DB アクセスのコスト**: 既存 `end-proposal` / `extension-vote` には arguments テーブルへの SELECT がなく、本タスクで 1 ラウンドトリップ追加される。`judging` 遷移経路は頻度が低いため許容と判断するが、もし polling 中の負荷観測で問題が出たら、`end-proposal` 内で `cases.current_turn` の反転値を fallback として使う最適化を後追いで検討する（ただし current_turn は「次に話す人」を示すため、反転すれば「直前に話した人」になるという前提が成立するかは要検証。今回は精度を優先して arguments 由来とする）。
+  - **`api_key_encrypted` が NULL のケース**: 原告がプロフィール画面で API キーを未登録のまま `phase=judging` に到達するシナリオでは、AI 閉廷宣告生成がスキップされる（`console.warn` ログのみ）。closing greeting は INSERT されるため会話としては最低限成立する。verdict 生成自体も同じ API キーを使うため、未登録状態では verdict 画面側で別途エラー処理が走る既存挙動に乗る（本タスクで verdict 側の挙動は変えない）。

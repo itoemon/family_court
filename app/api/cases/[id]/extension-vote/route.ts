@@ -4,6 +4,8 @@ import { verifyGuestToken } from "@/lib/guest-token";
 import { buildCaseResponse } from "@/lib/case-response";
 import { isUuid } from "@/lib/text-utils";
 import { insertClosingGreetingsForCase } from "@/lib/greetings";
+import { insertClosingJudgeMessage } from "@/lib/case-closing";
+import { decryptApiKey } from "@/lib/crypto";
 
 type Actor = "plaintiff" | "defendant" | "guest";
 
@@ -173,6 +175,24 @@ export async function POST(
           console.error("[extension-vote] closing greeting insert failed:", greetingError);
           return NextResponse.json({ error: "終了挨拶の保存に失敗しました" }, { status: 500 });
         }
+
+        // BUG-005: closing greeting 挿入成功直後に AI 閉廷宣告を judge_messages へ INSERT。
+        // 失敗してもログのみ（ヘルパー内部で吸収）。phase=judging 遷移はロールバックしない。
+        // closing プロンプトは topic のみ参照するため、ヘルパー呼び出しは plaintiff の
+        // API キーだけを解決すれば足りる。
+        const { data: plaintiffProfile } = await admin
+          .from("profiles")
+          .select("api_key_encrypted")
+          .eq("id", refreshed.plaintiff_id)
+          .single();
+        const plaintiffApiKey = plaintiffProfile?.api_key_encrypted
+          ? decryptApiKey(plaintiffProfile.api_key_encrypted)
+          : null;
+
+        await insertClosingJudgeMessage(admin, plaintiffApiKey, {
+          caseId: id,
+          topic: refreshed.topic,
+        });
       } else {
         console.info("[extension-vote] finish 確定は他経路で実行済み");
       }

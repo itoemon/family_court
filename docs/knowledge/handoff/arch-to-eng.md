@@ -1,273 +1,239 @@
-# アーキ → ビルド 引き継ぎメモ（FEAT-006）
+# アーキ → ビルド 引き継ぎメモ（BUG-005）
 
-このメモは `docs/knowledge/design.md` 末尾の `## FEAT-006 対応` セクションと併読すること。
+このメモは `docs/knowledge/design.md` 末尾の `## BUG-005 閉廷アナウンス条件の修正` セクションと併読すること。
 矛盾があれば `task.md` → `design.md` → 本メモの順で優先する。
 
 ---
 
 ## 設計上の主要判断と理由
 
-### 1. `end_proposed_by` の型を `uuid` → `text` に変更した
+### 1. AI 閉廷宣告と closing greeting を「1 つのヘルパーに集約しない」
 
-- **判断**: task.md の例示は `uuid null` だが、ゲスト被告には `user_id` 相当の UUID が存在しないため、`text` で `'plaintiff'` / `'defendant'` / `'guest'` のロール識別子を保存する形に変更した。
-- **理由**: ゲスト被告が終了提案を出せる経路を保ちつつ、認証被告とゲスト被告を同じ意味論で扱うため。
-- **実装上の注意**: クライアントから送られてきた role 値は信用せず、サーバ側で認証情報（`auth.getUser()` または `verifyGuestToken`）から actor を確定すること。
+- **判断**: `lib/case-closing.ts:insertClosingJudgeMessage` は `judge_messages` テーブルのみを担当し、`arguments` テーブル（closing greeting）には一切触れない。closing greeting 側は既存 `lib/greetings.ts:insertClosingGreetingsForCase` をそのまま流用する。
+- **理由**: task.md「テーブル境界の整理」セクションで「両者を 1 関数に集約しない」がダイチ確認済みの確定事項。挿入順序（greeting → AI）は呼び出し側（`end-proposal` / `extension-vote`）の文の順序で担保する。
+- **トレードオフ**: 2 関数を順に呼ぶことになるため、呼び出し側にコード重複が出る（2 経路）。ただし共通化対象が小さいため過度な抽象化を避ける判断（CLAUDE.md / AGENTS.md 方針）。
+- **実装上の注意**: ヘルパー内に「内部で `insertClosingGreetingsForCase` を呼んで一括化する」誘惑が出ても拒否すること。テーブル境界の侵食が始まる起点になる。
 
-### 2. 延長投票は `cases` の 2 カラム方式（案 A）
+### 2. AI 生成 / INSERT 失敗時は phase 遷移をロールバックしない
 
-- **判断**: `extension_vote_plaintiff text` / `extension_vote_defendant text` を `cases` に追加。別テーブル不要。
-- **理由**: 両者投票後にカラムを NULL に戻して次の延長サイクルへ進める状態管理が単純。RLS / GRANT 追加が不要。
-- **トレードオフ**: 票履歴が残らない。必要になったら次タスクで `case_extension_votes` テーブル追加に移行可能。
+- **判断**: `insertClosingJudgeMessage` 内の `generateJudgeMessage` 失敗・`judge_messages` INSERT 失敗とも `console.error` でログのみとし、上位に例外を伝播させない。`phase=judging` 遷移自体は維持して判決生成フローに進める。
+- **理由**: closing greeting だけ挿入されて AI 閉廷宣告が欠落する状態でも、ユーザー体験上は判決画面に進める方が良い（task.md 確定事項）。AI 生成は外部依存のため、失敗で UX を巻き戻すと判決画面に到達不能になるリスクが大きい。
+- **トレードオフ**: 「閉廷宣告だけが欠落した不整合状態」が DB に残る。verdict 画面表示時に判決理由文だけ表示されて AI 閉廷文がない見た目になるが、greeting 行は表示されるため会話として最低限成立する。
 
-### 3. 挨拶記録は `arguments.is_greeting boolean` で表現（案 1）
+### 3. `lastSpeakerRole` は `arguments` 由来で導出する
 
-- **判断**: `arguments` に `is_greeting boolean not null default false` を追加。挨拶 row は `round = 0`、`phase = 'opening'` または `'closing'` で INSERT。
-- **理由**: 既存の SELECT / 表示ロジックにそのまま乗る。round 集計は `WHERE is_greeting = false`（または `round > 0`）で除外。
-- **AI 影響**: `/api/cases/[id]/defense/draft` が `arguments` を読む際に挨拶も含まれることになるが、初版では除外せず採用する。AI の出力品質が落ちたら次タスクで除外検討。
+- **判断**: `end-proposal` / `extension-vote` で「直前の発言者」が分からないため、`arguments` から `is_greeting=false` で最新 row を SELECT して `role` を取得する。クエリ失敗 / 0 件は `"plaintiff"` を fallback。
+- **理由**: closing プロンプトは `lastSpeakerRole` を実際には参照していないが、`generateJudgeMessage` の signature 上必須引数（`JudgeParams` interface 由来）。型 / 既存契約を壊さず、かつ将来 closing プロンプトを `lastSpeakerRole` 依存に拡張可能な余地を残す。
+- **代替案として却下**: `cases.current_turn` を反転させて代用する案は、current_turn が「次に話す予定の人」を示す前提に依存する。closing greeting INSERT 前の current_turn の値がフェーズ遷移前後で何を指しているか曖昧なケースが残るため、accuracy 優先で arguments 由来とする。
 
-### 4. migration は 1 ファイルに集約（案 A）
+### 4. closing 生成削除は `argument/route.ts` の 2 箇所のみ
 
-- **判断**: 削除 → カラム追加 → check 制約更新 を 1 つの migration にまとめる。
-- **理由**: 1 トランザクションでの原子性を最優先。中途半端な「データだけ消えた状態」を防ぐ。
-- **ファイル名**: `supabase/migrations/20260612NNNNNN_feat006_chat_rounds_and_greetings.sql`（NNNNNN は配置時の HHMMSS）。
+- **判断**: `argument/route.ts:132` の warn メッセージと `argument/route.ts:146` の `triggerType` 三項演算子を削除し、`turn` 固定にする。これで `judge_messages` への `trigger_type='closing'` INSERT パスが当ファイルから消える。
+- **理由**: task.md L34-40 に明示。`extension_voting` 遷移後の turn 生成も発生させない方針なので、`triggerType` を `"turn"` 固定にしたあと「`nextPhase === "extension_voting"` なら try ブロック全体をスキップ」する分岐を残すかは実装側の判断に委ねるが、`argument` フェーズを離れたあとに turn コメントが出る意味も薄いため、`if (nextPhase !== "argument") return` で turn 生成自体もスキップするのが筋。
+- **重要**: `nextPhase === "extension_voting"` 遷移時に **turn も含めて** `judge_messages` INSERT が起きないことを確認するテストが必要（task.md「テスト観点」#1, #5）。
 
-### 5. `cases.phase` は ENUM ではなく `text + check`
+### 5. 共通ヘルパーは `lib/case-closing.ts` 単独ファイルとして新設
 
-- **判断**: `ALTER TABLE cases DROP CONSTRAINT cases_phase_check; ADD CONSTRAINT ... CHECK (phase IN (..., 'extension_voting', ...));`
-- **理由**: 現行 schema.sql で確認済み。ENUM ではないため `ALTER TYPE ADD VALUE` 不要、`DROP/ADD CONSTRAINT` で安全に値追加できる。
+- **判断**: 既存 `lib/judge.ts` や `lib/greetings.ts` に押し込まず、`lib/case-closing.ts` を新規ファイルとして作る。
+- **理由**: 責務境界が明確（「AI 閉廷宣告の `judge_messages` 挿入」のみ）。`lib/judge.ts` は AI プロンプト構築と Claude API 呼び出しの責務、`lib/greetings.ts` は固定挨拶と `arguments` テーブルの責務に既に分かれており、本ヘルパーは「両者を順に組み立てる呼び出し側コード」の重複部分を吸収する目的のため、別ファイルが筋。
+- **`lib/case-closing.ts` の責務外**: `arguments` SELECT / INSERT、固定挨拶文字列、phase 遷移、認可判定。これらを書きそうになったら設計のどこかが間違っているサイン。
 
 ---
 
 ## 実装の順序（推奨）
 
-1. **migration 作成**: `supabase/migrations/20260612NNNNNN_feat006_chat_rounds_and_greetings.sql` を新規作成。下記 DDL ドラフトに従う。
-2. **schema.sql 反映**: 本番 snapshot 方針に揃え、新カラム / check 制約更新を schema.sql に追記。
-3. **型定義更新**: `lib/types.ts` の `Phase` / `Case` / `Profile` / `ArgumentRow`（実名に応じて） に新フィールド追加。
-4. **snake→camel マップ**: `lib/case-response.ts` に新カラム 3 つ（cases）の写像を明示追加（BUG-003 の教訓）。
-5. **既定挨拶モジュール**: `lib/greetings.ts`（新規）に `DEFAULT_OPENING_GREETING` / `DEFAULT_CLOSING_GREETING` / `resolveOpeningGreeting` / `resolveClosingGreeting` を実装。
-6. **PHASE_LABELS 更新**: 既存定義位置（`lib/types.ts` か `lib/phase.ts`）に `extension_voting: "延長投票"` を追加。
-7. **プロフィール API 改修**: `app/api/profile/route.ts`（既存実装位置に揃える）の PATCH に `openingGreeting` / `closingGreeting` 受領を追加。バリデーション: NULL 可、空文字 NG、長さ 1〜125、改行は 1 つまで。
-8. **プロフィール画面 UI**: `app/profile/page.tsx` に 2 つのテキスト入力 + 「デフォルトに戻す」ボタンを追加。
-9. **ケース作成画面の縮退**: `app/page.tsx` から `maxRounds` state / `<select>` / body 送信を削除。
-10. **ケース作成 API**: `app/api/cases/route.ts` POST から `maxRounds` の参照を完全撤去（無視ではなく非読み取り）。
-11. **opening 進入点に挨拶 INSERT**: 既存の opening 開始ロジック（場所は実装側で grep 確認）に、原告 / 被告の opening_greeting を 2 行 INSERT する処理を追加。
-12. **新規 API: end-proposal**: `app/api/cases/[id]/end-proposal/route.ts` を新設。
-13. **新規 API: extension-vote**: `app/api/cases/[id]/extension-vote/route.ts` を新設。
-14. **CaseRoom UI 拡張**: `app/case/[id]/CaseRoom.tsx` にサイドアイコン、相手側バナー、延長投票モーダル、挨拶 row 表示を追加。polling 周期は既存に乗せる。
-15. **closing → extension_voting 遷移ロジック**: 既存の closing → judging 遷移コードに分岐を入れて、`round === max_rounds` 到達時に `phase = 'extension_voting'` へ。
-16. **judging 遷移時の終了挨拶 INSERT**: 両者 finish 確定時の処理内で終了挨拶を 2 行 INSERT してから `phase = 'judging'` に遷移。
+1. **新規ヘルパー作成**: `lib/case-closing.ts` を新規作成。`insertClosingJudgeMessage(admin, plaintiffApiKey, { caseId, topic, plaintiffName, defendantName, lastSpeakerRole }): Promise<void>` を実装。
+2. **argument/route.ts 修正**: L132 の warn メッセージから `closing` 文字列を削除して `turn` 固定。L146 の三項演算子を削除して `triggerType = "turn"` 固定。さらに `nextPhase === "extension_voting"` 時は try ブロック全体をスキップ（早期 return）して turn 生成も抑止する。
+3. **end-proposal/route.ts 修正**: L127 の `insertClosingGreetingsForCase` 呼び出し成功直後（`greetingError == null` 経路、L148 直後）に、AI 閉廷宣告呼び出しブロックを追加。
+4. **extension-vote/route.ts 修正**: 両者 finish 経路の `insertClosingGreetingsForCase` 呼び出し成功直後（L172-175 周辺）に、AI 閉廷宣告呼び出しブロックを追加。
+5. **動作確認**（ローカル）:
+   - 新規ケース → 3 ラウンド完了 → `phase=extension_voting` 遷移時に `judge_messages.trigger_type='closing'` が **挿入されていない** ことを SQL で確認
+   - そのまま延長投票で両者 finish → `judge_messages.trigger_type='closing'` が 1 件挿入されることを確認
+   - 別ケースで早期 end-proposal 両者合意 → 同じく 1 件挿入されることを確認
+6. **テスタへ引き継ぐ前に**: `grep -rn "trigger_type.*closing" app/ lib/` を打って、`closing` の INSERT 箇所が `lib/case-closing.ts` の 1 箇所のみであることを確認（オーディ観点 task.md L133）。
 
 ---
 
-## migration DDL ドラフト
-
-```sql
--- supabase/migrations/20260612NNNNNN_feat006_chat_rounds_and_greetings.sql
--- FEAT-006: チャット回数仕様の柔軟化と固定挨拶導入
--- 1) 旧データ全削除（cascade で arguments/verdicts/judge_messages も掃ける）
--- 2) cases に新カラム追加（end_proposed_by, extension_vote_*）
--- 3) profiles に挨拶 2 カラム追加
--- 4) arguments.is_greeting 追加
--- 5) cases.phase の check 制約に 'extension_voting' を追加
-
--- ============ 1. 旧データ削除 ============
--- cases に on delete cascade が設定済みのため、
--- DELETE FROM cases; で arguments / verdicts / judge_messages も同時削除される。
-delete from public.cases;
-
--- ============ 2. cases に新カラム追加 ============
-alter table public.cases
-  add column end_proposed_by text null
-    check (end_proposed_by is null or end_proposed_by in ('plaintiff','defendant','guest')),
-  add column extension_vote_plaintiff text null
-    check (extension_vote_plaintiff is null or extension_vote_plaintiff in ('continue','finish')),
-  add column extension_vote_defendant text null
-    check (extension_vote_defendant is null or extension_vote_defendant in ('continue','finish'));
-
--- ============ 3. profiles に挨拶カラム追加 ============
-alter table public.profiles
-  add column opening_greeting text null
-    check (opening_greeting is null or (char_length(opening_greeting) between 1 and 125)),
-  add column closing_greeting text null
-    check (closing_greeting is null or (char_length(closing_greeting) between 1 and 125));
-
--- ============ 4. arguments.is_greeting ============
-alter table public.arguments
-  add column is_greeting boolean not null default false;
-
--- ============ 5. cases.phase check 制約更新 ============
-alter table public.cases drop constraint if exists cases_phase_check;
-alter table public.cases add constraint cases_phase_check
-  check (phase in ('waiting','opening','argument','closing','extension_voting','judging','verdict'));
-```
-
-- 既存テーブルへの GRANT は元テーブルから継承するため追加不要。
-- RLS ポリシーは既存ポリシーで新カラムも自動カバー（`cases` SELECT `using (true)`、`profiles` SELECT/UPDATE `auth.uid() = id`、`arguments` SELECT `using (true)`）。新規ポリシー追加なし。
-
----
-
-## 新規 API ハンドラの認証パターン
-
-両エンドポイントとも以下のパターンで実装する:
+## ヘルパー実装ドラフト
 
 ```typescript
-// app/api/cases/[id]/end-proposal/route.ts（および extension-vote）
-import { createSessionClient, createAdminClient } from "@/lib/supabase/server";
-import { verifyGuestToken } from "@/lib/guest-token";
-import { NextResponse } from "next/server";
+// lib/case-closing.ts
+import type { createAdminClient } from "@/lib/supabase/server";
+import { generateJudgeMessage } from "@/lib/judge";
+import type { Role } from "@/lib/types";
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
-  const caseId = params.id;
-  // UUID バリデーション（既存 UUID_REGEX を流用）
-  if (!UUID_REGEX.test(caseId)) return NextResponse.json({ error: "invalid_id" }, { status: 400 });
+type AdminClient = ReturnType<typeof createAdminClient>;
 
-  const admin = createAdminClient();
-  const { data: caseRow, error } = await admin
-    .from("cases")
-    .select("id, plaintiff_id, defendant_id, phase, end_proposed_by, extension_vote_plaintiff, extension_vote_defendant, max_rounds, round")
-    .eq("id", caseId)
-    .single();
-  if (error || !caseRow) return NextResponse.json({ error: "not_found" }, { status: 404 });
+interface InsertClosingJudgeMessageArgs {
+  caseId: string;
+  topic: string;
+  plaintiffName: string;
+  defendantName: string;
+  lastSpeakerRole: Role;
+}
 
-  // actor 識別
-  let actorRole: "plaintiff" | "defendant" | "guest" | null = null;
-  try {
-    const session = createSessionClient();
-    const { data: { user } } = await session.auth.getUser();
-    if (user?.id === caseRow.plaintiff_id) actorRole = "plaintiff";
-    else if (user?.id === caseRow.defendant_id) actorRole = "defendant";
-  } catch { /* ignore */ }
-
-  if (!actorRole && caseRow.defendant_id === null) {
-    // ゲスト被告経路: 既存の verifyGuestToken
-    const cookieToken = /* cookies().get("guest_token_" + caseId)?.value */ "...";
-    if (cookieToken && await verifyGuestToken(caseId, cookieToken)) {
-      actorRole = "guest";
-    }
+// phase=judging 遷移成功後に呼ばれる前提。
+// 失敗してもログのみで例外は伝播させない（呼び出し側は判決生成フローに進む）。
+export async function insertClosingJudgeMessage(
+  admin: AdminClient,
+  plaintiffApiKey: string | null,
+  args: InsertClosingJudgeMessageArgs
+): Promise<void> {
+  if (!plaintiffApiKey) {
+    console.warn(`[judge] closing: plaintiff has no api_key_encrypted (case=${args.caseId})`);
+    return;
   }
 
-  if (!actorRole) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  let content = "";
+  try {
+    content = await generateJudgeMessage(
+      {
+        trigger: "closing",
+        topic: args.topic,
+        plaintiffName: args.plaintiffName,
+        defendantName: args.defendantName,
+        lastSpeakerRole: args.lastSpeakerRole,
+      },
+      plaintiffApiKey
+    );
+  } catch (err) {
+    console.error("[judge] closing generation failed:", err);
+    return;
+  }
 
-  // ... 以下、設計書記載の状態遷移分岐
+  if (!content) {
+    // 既存パターン（PR #14 D-5）: 空文字 INSERT ガード
+    return;
+  }
+
+  try {
+    const { error } = await admin
+      .from("judge_messages")
+      .insert({ case_id: args.caseId, content, trigger_type: "closing" });
+    if (error) {
+      console.error("[judge] closing insert failed:", error);
+    }
+  } catch (err) {
+    console.error("[judge] closing insert threw:", err);
+  }
 }
 ```
 
-- `createSessionClient()` の try-catch 保護は既存パターン（LOW-001）に揃える。
-- 書き込みは必ず `createAdminClient()` 経由。
-- 楽観的更新（`WHERE end_proposed_by IS [old]` / `WHERE extension_vote_<side> IS NULL`）で同時実行時の競合を抑える。
-
 ---
 
-## CaseRoom 状態管理に追加するもの
+## 呼び出し側ドラフト（end-proposal / extension-vote 共通パターン）
 
-- polling で取得する case フィールドに以下を追加:
-  - `endProposedBy: "plaintiff" | "defendant" | "guest" | null`
-  - `extensionVotePlaintiff: "continue" | "finish" | null`
-  - `extensionVoteDefendant: "continue" | "finish" | null`
-  - `phase` リテラルに `"extension_voting"` を含める
-- 追加 `useState`:
-  - `isProposingEnd`（in-flight 抑止）
-  - `isVotingExtension`（in-flight 抑止）
-  - `extensionModalState`: `"closed" | "voting" | "awaiting_opponent"`
-- 新規 interval は不要（既存 polling に乗る）。
-- 自分側のロール特定は既存のロジック（plaintiff_id / defendant_id / ゲストトークン）に揃える。
+`insertClosingGreetingsForCase` 成功直後に挿入する。
 
----
+```typescript
+// 1) plaintiff profile（display_name + api_key_encrypted）取得
+const { data: plaintiffProfile } = await admin
+  .from("profiles")
+  .select("display_name, api_key_encrypted")
+  .eq("id", caseRow.plaintiff_id)
+  .single();
+const plaintiffApiKey = plaintiffProfile?.api_key_encrypted
+  ? decryptApiKey(plaintiffProfile.api_key_encrypted)
+  : null;
 
-## フェーズラベル定義の更新
+// 2) defendant 名解決（既存 argument/route.ts L134-144 と同じパターン）
+let defendantName = "反対者";
+if (caseRow.defendant_id) {
+  const { data: defProfile } = await admin
+    .from("profiles")
+    .select("display_name")
+    .eq("id", caseRow.defendant_id)
+    .single();
+  defendantName = defProfile?.display_name ?? "反対者";
+} else if (caseRow.defendant_guest_name) {
+  defendantName = caseRow.defendant_guest_name;
+}
 
-grep ヒント:
+// 3) lastSpeakerRole: arguments テーブルから直前発言者を取得
+const { data: lastArg } = await admin
+  .from("arguments")
+  .select("role")
+  .eq("case_id", id)
+  .eq("is_greeting", false)
+  .order("created_at", { ascending: false })
+  .limit(1)
+  .maybeSingle();
+const lastSpeakerRole: Role = (lastArg?.role as Role) ?? "plaintiff";
 
-```bash
-# PHASE_LABELS の定義箇所を特定
-grep -rn "PHASE_LABELS" lib/ app/
-# Phase 型の定義箇所を特定
-grep -rn "type Phase" lib/
-grep -rn '"verdict"' lib/  # phase リテラルが羅列されている箇所
+// 4) AI 閉廷宣告 INSERT（ヘルパー側でログのみ、例外は伝播しない）
+await insertClosingJudgeMessage(admin, plaintiffApiKey, {
+  caseId: id,
+  topic: caseRow.topic,
+  plaintiffName: plaintiffProfile?.display_name ?? "提案者",
+  defendantName,
+  lastSpeakerRole,
+});
 ```
 
-更新時は **labels と type literal の両方** に `"extension_voting"` を加える。type literal が漏れると TypeScript エラーで気付ける。
-
----
-
-## `app/page.tsx` から削除する箇所
-
-特定方法:
-
-```bash
-grep -n "maxRounds" app/page.tsx
-```
-
-削除対象:
-
-- `maxRounds` の `useState`
-- `<label>議論ラウンド数</label>` 配下の `<select>` ブロック
-- `fetch(..., { body: JSON.stringify({ topic, maxRounds, ... }) })` の `maxRounds` キー
-- 関連する import や型注釈で `maxRounds` だけのために残っているもの
+- `end-proposal` 側では `caseRow = c`（L47-52 で取得済み）。`topic` フィールドを SELECT に含めるよう既存の `select("*")` で取れているはずだが、明示的に確認すること。
+- `extension-vote` 側は `refreshed` を使う（票集計直後の row、L101-105）。`refreshed` も `select("*")` なので `topic` を含む。
+- 上記ブロックを `end-proposal` / `extension-vote` の 2 箇所で書く。**関数化はしない**（共通化候補は 2 経路のみで、`caseRow` の取得名・参照タイミングが異なるため。CLAUDE.md の過度抽象化禁止に従う）。
 
 ---
 
 ## リグレッション確認シナリオ（必須）
 
-1. **新規ケース作成 → 3 回まで普通に進行 → 延長投票で両者 finish → 判決画面に到達**
-   - ラウンド数表示は 0 から数えず 1〜3 で進行すること
-   - 終了挨拶 2 行が判決画面前に表示されていること
-2. **新規ケース作成 → 2 回目で原告が終了提案 → 被告が「同意して終了」 → 判決画面**
-   - 自分が提案中表示が原告側に出ること
-   - 相手側バナーが被告側に出ること
-   - 判決が生成され、それまでの arguments が判決入力に使われていること
-3. **新規ケース作成 → 終了提案を出して撤回 → 普通に 3 回まで進行**
-   - 撤回後、相手側のバナーが消えること
-4. **新規ケース作成 → 3 回終了後の延長投票で原告 continue / 被告 finish → max_rounds が 6 に → 6 回目まで進行**
-   - 4 回目開始時に current_turn が plaintiff にリセットされていること
-   - max_rounds が 6 になったことが画面表示にも反映されていること
-5. **延長後さらに 6 回終了 → 同じ流れで再度延長**
-   - 上限なしを確認
-6. **profile 編集画面で挨拶を変更 → 新ケース開始時に反映**
-   - 旧ケースの挨拶は変わらないこと（既に INSERT 済みのため）
-   - 空文字保存で 400 エラーになること
-   - 「デフォルトに戻す」でカラムが NULL に戻り、新ケースで「よろしくお願いします」が表示されること
-7. **ゲスト被告のケース**
-   - ゲスト被告の挨拶はサーバ既定文「よろしくお願いします」/「ありがとうございました。」が表示されること
-   - ゲスト被告も終了提案アイコンが押せること
-   - ゲスト被告も延長投票モーダルで投票できること
-8. **既存機能の regression なし**
-   - 認証 / フレンド / 法律機能 / プロフィール他項目編集 / アバター変更 / API キー登録
-   - マイページ (`/me`) の表示 / 過去のケースダイジェスト
-   - 旧データ削除後の動作（`/history` などで旧ケースが消えていることを確認）
+1. **3 ラウンド自然完了 → 延長投票 continue 選択 → 新ラウンド開始**
+   - `judge_messages` に `trigger_type='closing'` が新規挿入されない（SQL で COUNT を取って 0 件であること）
+   - 延長後の 4 ラウンド目は `turn` メッセージが従来通り表示される
+2. **3 ラウンド自然完了 → 延長投票で両者 finish → `phase=judging`**
+   - `arguments` に closing greeting 2 行（`role=plaintiff/defendant`, `phase='closing'`, `round=0`, `is_greeting=true`）
+   - `judge_messages` に `trigger_type='closing'` 1 行
+   - `arguments` の closing greeting `created_at` が `judge_messages.created_at` より前
+3. **早期 end-proposal 両者合意 → `phase=judging`**
+   - 上記 #2 と同じ条件
+4. **AI 生成失敗時のフォールバック**
+   - `profiles.api_key_encrypted` を一時的に NULL にして上記 #2 / #3 を試す
+   - `phase=judging` 遷移は成功、closing greeting は挿入される
+   - `judge_messages.trigger_type='closing'` は欠落（0 件）
+   - サーバログに `[judge] closing: plaintiff has no api_key_encrypted` が出る
+5. **`extension_voting` フェーズ中の polling**
+   - 3 ラウンド完了 → 延長投票画面で待機 → `judge_messages` を polling で取得し続けても新規 `trigger_type='closing'` レコードが増えない
+6. **既存 turn メッセージへの影響なし**
+   - 1〜3 ラウンドの各ターン交代時に `trigger_type='turn'` レコードが従来通り挿入される
+   - `argument/route.ts` の matrix チェック失敗・rollback 経路は触っていないため挙動不変
+7. **BUG-007 / BUG-004 関連 regression**
+   - 当該 spec を全件実行して赤化なし
+
+---
+
+## やってはいけないこと
+
+- 既存 `design.md` セクションの削除・短縮（`feedback-design-md` 違反）
+- `lib/judge.ts` の closing プロンプト文言・トークン数・モデル指定の変更（スコープ外）
+- `lib/greetings.ts:insertClosingGreetingsForCase` のシグネチャ・挙動変更
+- `lib/case-closing.ts` 内で `arguments` テーブルや `DEFAULT_CLOSING_GREETING` を参照すること（テーブル境界違反）
+- 過去ケースの `judge_messages` レコードへの遡及 UPDATE / DELETE
+- `extension_voting` フェーズ中の UI / CaseRoom 側コンポーネントへの変更
+- 新規 migration の作成（DB スキーマ変更なし）
+- `judge_messages.trigger_type` の値追加 / 変更（既存 3 値 `'opening' / 'turn' / 'closing'` を維持）
+- `argument/route.ts` の turn 生成パスの破壊（巻き添えで turn が出なくなっていないかオーディ観点 task.md L128 で必ず確認される）
 
 ---
 
 ## 未解決事項 / 実装で迷ったら
 
-1. **AI 履歴から挨拶を除外するか**: 案 1 採用で `arguments` に挨拶が混在するため、AI 入力にも挨拶が入る。初版では除外しない。AI 品質劣化が観察された場合のみ次タスクで対応する。判断は実装後の動作確認時にダイチへ。
-2. **closing フェーズの存続**: 本設計では closing フェーズを廃止せず、closing → extension_voting → (continue) argument 再開 または (finish) judging の順序を採用。closing 中の自由弁論ターンが本当に残るべきかは曖昧、要件定義書通り維持する判断。
-3. **「同意して終了」CTA の二重押下**: バナー CTA とサイドアイコンが同一 API を叩くため、共通の `isProposingEnd` フラグで両方 disable する。
-4. **延長後 `round` の値**: 加算前 `max_rounds + 1`（例: max 3 → 延長後 6、次 round は 4）を採用、`current_turn = 'plaintiff'` にリセット。task.md 明示なし、UX 一貫性のための判断。
-5. **延長突入時の `end_proposed_by` リセット**: extension_voting 突入時に `end_proposed_by = NULL` も同時更新する（過去の終了提案は意味を失うため）。
-6. **挨拶 row の `phase` 値**: 開始挨拶 = `'opening'`、終了挨拶 = `'closing'`（直前のフェーズに揃える）。`'argument'` は使わない。
-7. **`round = 0` を使う既存箇所の確認**: 実装時に `from("arguments")` を全件 grep し、`round = 1` から始まる前提を持つ箇所があれば `is_greeting = false` フィルタを明示追加すること。
-
----
-
-## やってはいけないこと（再掲）
-
-- 既存 `design.md` セクションを削除・短縮しない。
-- 旧データの後方互換ロジックを書かない（`max_rounds = 2/5` のケース対応、`is_greeting` を持たない arguments の分岐などは不要）。
-- 新規 npm 依存を追加しない（アイコン用ライブラリ・モーダル用ライブラリ等）。
-- breakpoint を導入しない。
-- `brand-500` を使わない。
-- 弁護人 AI のプロンプト / 出力契約を変更しない。
-- ヘッダー本体 (`Header.tsx`) のレイアウトを変更しない。
-- マイページ (`/me`) 本体に挨拶設定 UI を追加しない（`/profile` のみ）。
+1. **`nextPhase === "extension_voting"` 時に turn コメントも抑止するか**: 推奨は抑止（try ブロック全体スキップ）。`argument` フェーズを離れたあとに turn コメントが出る意味は薄く、polling 経由でユーザーに不要なメッセージが見える。明示判断不要なら抑止で進める。
+2. **`api_key_encrypted` NULL ケースのテレメトリ強化**: 現状 `console.warn` のみ。プロダクション運用で頻発するなら次タスクで `judge_messages` 側に「AI 生成スキップ印」を残すか検討。本タスクではログのみで OK。
+3. **「閉廷しました」UI ラベル**: task.md スコープ外明示。CaseRoom 内でこの種のラベルを実装中に発見した場合は backlog に派生タスクとして追加し、本 PR では触らない。
+4. **`lastSpeakerRole` の fallback `"plaintiff"`**: 理屈上ありえない経路だが、`generateJudgeMessage` が closing trigger では `lastSpeakerRole` を実際には参照していないため fallback 値は AI 出力に影響しない（プロンプト構築で使われない）。型を満たすためだけの値。
+5. **コミット忘れ防止**: `lib/case-closing.ts` は新規ファイルのため `git add` 忘れの典型ケース。コミット前に `git status` で untracked が残っていないことを必ず確認（feedback `commit_check` の運用化対象）。
 
 ---
 
 ## 関連ドキュメント
 
 - `docs/knowledge/task.md`（最優先）
-- `docs/knowledge/design.md` の `## FEAT-006 対応` セクション（本メモと併読）
+- `docs/knowledge/design.md` の `## BUG-005 閉廷アナウンス条件の修正` セクション（本メモと併読）
 - `docs/knowledge/requirements.md`
 - `docs/knowledge/environment.md`
 - `docs/decisions/003-db-design.md`（RLS 方針）
-- `docs/backlog.md` の FEAT-006
+- `docs/decisions/004-ai-connection.md`（BYOK 方針）
+- `docs/backlog.md` の BUG-005
+- `lib/judge.ts:49-54`（変更しない closing プロンプト本体）
+- `lib/greetings.ts:83-98`（変更しない `insertClosingGreetingsForCase`）
