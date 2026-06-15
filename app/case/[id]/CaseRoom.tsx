@@ -148,7 +148,11 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
     setLoading(true);
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { router.push(`/auth/login?next=/case/${caseId}`); return; }
+      if (!user) {
+        router.push(`/auth/login?next=/case/${caseId}`);
+        setLoading(false);
+        return;
+      }
       const res = await fetch(`/api/cases/${caseId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -167,8 +171,8 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
     // ままだったため、参加直後に明示的に再 fetch して弁護人 AI タブを出す
     // (BUG-004: リロードしないと現れない問題の修正)。
     // 参加自体は成功済みなので fetch エラーは「参加失敗」表示に出さず silent fail
-    // させる (polling/再マウントで復旧する)。
-    try { await fetchDefenseMessages(); } catch { /* silent: 後段で復旧 */ }
+    // させる (defense API の polling 経路は存在しないため復旧は次回マウント時)。
+    try { await fetchDefenseMessages(); } catch { /* silent: 次回マウントで復旧 */ }
     setLoading(false);
   }
 
@@ -194,8 +198,9 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
     // BUG-004: ゲスト経路も同じ理由で参加直後に再 fetch が必要。参加前は
     // defendant_guest_name が NULL + guest cookie 未発行で 401 が返り
     // showDefenseTab=false に倒れていた。参加成功後の defense fetch エラーは
-    // 「参加失敗」表示に出さず silent fail させる (polling/再マウントで復旧)。
-    try { await fetchDefenseMessages(); } catch { /* silent: 後段で復旧 */ }
+    // 「参加失敗」表示に出さず silent fail させる (defense API の polling 経路は
+    // 存在しないため復旧は次回マウント時)。
+    try { await fetchDefenseMessages(); } catch { /* silent: 次回マウントで復旧 */ }
     setLoading(false);
   }
 
