@@ -22,6 +22,14 @@
 - **優先度**: 低（FEAT-003 完成後）
 - **依存**: FEAT-003, FEAT-002
 
+### [LOW-001] Suspense fallback に aria 属性が無く支援技術へ loading 状態を通知できない（app/auth/login/page.tsx:7、app/case/[id]/page.tsx:13） (由来: audit_20260615_202005.md)
+- **内容**: `LoginFormSkeleton`（`app/auth/login/page.tsx:7-38`）と `CaseRoomSkeleton`（`app/case/[id]/page.tsx:12-18`）の最外殻 `<main>` に `aria-busy="true"` / `role="status"` / `aria-live` のいずれも付与されていない。動的 import や JS パース遅延でこの fallback が短時間表示されるとき、スクリーンリーダー利用者にはラベルだけが読まれ「読み込み中である」というコンテキストが伝わらない。`CaseRoomSkeleton` は本文が「読み込み中…」の 1 行テキストのみで、視覚的にも文脈が薄い。 (由来: audit_20260615_202005.md)
+- **修正案**: `CaseRoomSkeleton` の `<main>` か内側の `<p>` に `role="status"` を付け、`aria-live="polite"` を併設する。`LoginFormSkeleton` 側は最外殻 `<main>` に `aria-busy="true"` を付ければ十分。実害は小さく緊急性は無いが、後続タスクで触る際に1行追加で済む対応。 (由来: audit_20260615_202005.md)
+ (由来: audit_20260615_202005.md)
+## 総評 (由来: audit_20260615_202005.md)
+ (由来: audit_20260615_202005.md)
+task.md 指示と実装差分は完全に一致している。`app/auth/login/page.tsx` は `"use client"` が剥がされ Server Component 化、`LoginForm.tsx` は既存 `page.tsx` の中身をそのまま分離移植、`app/case/[id]/page.tsx` は `<Suspense fallback>` で `<CaseRoom />` を包む形へ最小変更。`CaseRoom.tsx`（825 行）、`app/layout.tsx`、`design.md` はすべて無変更で、`useSearchParams()` の出現箇所も `LoginForm.tsx` と `CaseRoom.tsx` の 2 箇所のみに収束している（grep 確認済み）。 (由来: audit_20260615_202005.md)
+
 ---
 
 #### [LOW-001-BUG005] AI キー SET 経路の E2E 動的検証が現状環境で実行されない
