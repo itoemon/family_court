@@ -8,11 +8,114 @@ metadata:
 # セッション引き継ぎ
 
 新しいチャットを開いたら、リードはこのファイルを読んで前回の状況を把握する。
-**更新タイミング**: ダイチが「セッションを乗り換える」「session_context を更新して」と明示したときのみ ([[feedback-session-context]] 参照)。
+**更新タイミング**: リードの判断で好きなタイミングで更新可能 ([[feedback-session-context]] 参照)。
 
 ---
 
-## 最終更新: 2026-06-02（PR 5 本マージ。ヘッダー刷新・マイページ新設・LOW バッチ整理・BUG バックログ追加）
+## 最終更新: 2026-06-15（FEAT-006 + OPS-003 + BUG-007/004 で PR 6 本マージ。Preview DB 分離大事故と復旧、初パイプライン経験、コミット忘れ事故 2 回連続）
+
+### 現在のブランチ・PR 状態
+
+- 現ブランチ: `main`（クリーン、PR #46 マージ後）
+- オープン PR: なし
+- 本セッションでマージした PR: #41, #42, #43, #44, #45, #46
+
+### このセッション (2026-06-13〜06-15) でやったこと
+
+#### 1. PR #41 マージ: FEAT-006 チャット回数仕様の柔軟化 + 固定挨拶
+
+- 挨拶を固定文化（`profiles.opening_greeting/closing_greeting`）してシステム自動投入、ユーザー手動入力 UI を撤廃
+- `cases.phase` から `opening`/`closing` を実質スキップ（`waiting → argument → extension_voting → judging → verdict`）し、参加 PATCH で直接 `phase=argument` に遷移
+- 早期終了（`end-proposal`）と延長投票（`extension-vote`）の API + UI 追加
+- マージ前に旧 cases データ（3 件、いずれも phase=verdict）を本番 DB から `DELETE FROM cases;` で削除
+- パイプライン未経由（オーディ MEDIUM/LOW 5 件 + コパレビュー 7 件は同 PR 内で消化）
+
+#### 2. PR #42 マージ: OPS-003 Preview を test DB に分離（途中で `.env.local` 大事故 → 復旧）
+
+- 経緯: ダイチが「Preview と本番が同じ DB を見てる」と気付き、Preview deployment が本番 DB に書き込んでいた問題が判明（OPS-001 Part 2 で整備した test DB を Vercel Preview にも適用していなかった）
+- Vercel ダッシュボードでの env vars 設定が大袈裟だったので、ダイチが Vercel CLI 経由の自動化を希望 → リードが `npm i -g vercel` でインストール
+- **大事故**: ダイチが `! vercel link` 実行した際、Vercel CLI が `.env.local` を **空 + `VERCEL_OIDC_TOKEN` のみ** で上書き（CLI が自動で `vercel env pull` を走らせる挙動）
+- **復旧**:
+  - `vercel env pull --environment=production` で sensitive 以外を復元（Vercel の `sensitive` type は読み取り API でも値を返さない仕様で 6 キーが空のまま）
+  - ダイチが `./temp/env.local` に過去のバックアップを置いてくれていたので、SUPABASE_ACCESS_TOKEN だけ最新発行版を保持しつつ他をバックアップで埋めて復旧
+  - `./temp/` が gitignored でなかったため即削除
+- 本来の作業: Vercel REST API（`/v10/projects/{id}/env`）で Preview scope の 5 キーを test 値に上書き、UPSTASH 2 キーは preview+production 共有、`NEXT_PUBLIC_SITE_URL` は signup ページのコード fix（`window.location.origin` フォールバック）で動的解決
+- test DB の auth config（`mailer_autoconfirm:false`, SMTP=Gmail, `uri_allow_list` に preview wildcard `*-daichis-projects-9e45ae6c.vercel.app/auth/callback`）を本番ベースで設定。SMTP の access token は `.env.local` の token では test project の権限がなく、`.env.test` の token（test project 専用に発行されていた）で PATCH 成功
+- **判明したこと**: Supabase の access token は project ごとに発行する場合がある。`.env.local` と `.env.test` の SUPABASE_ACCESS_TOKEN は別物
+
+#### 3. PR #43-#44 マージ: BUG-007 ログイン後にページ遷移しない（初パイプライン経験）
+
+- PR #43: backlog 追加のみ
+- PR #44: 修正 + 初の本格パイプライン経由
+- **原因 2 つ**:
+  - `router.push("/")` 直後の `router.refresh()` が current page（login）を再描画して push の遷移効果を打ち消す
+  - `next` クエリパラメータ未解釈
+- **修正**: `router.refresh()` 削除、`useSearchParams()` で `?next=` 対応、open redirect ガード（URL パーサベース `new URL(rawNext, window.location.origin)` で origin 一致時のみ採用）
+- **パイプライン**: テスタ → オーディ → 4 回ループ
+  - オーディ初回: HIGH-001（open redirect）指摘 → URL パーサベース防御に置き換え
+  - オーディ 2 巡目: LOW 2 件（backslash バイパス、負例 E2E 欠落）→ 同 PR 消化
+  - オーディ 3 巡目: HIGH-001（修正が **コミット未 push** で HEAD に反映されていない）+ MEDIUM-001（spec が **untracked**）→ commit 漏れを catch される
+  - オーディ最終: LOW 1 件（Suspense 境界）→ BUG-008 として backlog 化
+- 学び: オーディは git status と HEAD の照合で「実装と PR の齟齬」を catch する能力がある
+
+#### 4. PR #45-#46 マージ: BUG-004 ゲスト/アカウント参加直後の弁護人 AI タブ非表示（コミット忘れ事故 2 回目）
+
+- 原因: CaseRoom の `useEffect([fetchDefenseMessages])` がマウント時 1 回だけ呼ばれ、参加成功イベントに反応しない設計だった。参加前は defense API が 401/403 を返し `showDefenseTab=false` に倒れ、参加後は再 fetch されないままリロードで復帰、というのが正体
+- 調査でアカウント経路にも同種バグが潜在することが判明 → 両経路修正
+- **修正**: `handleJoinAsAccount`/`handleJoinAsGuest` の参加成功直後に `await fetchDefenseMessages()` を明示呼び出し
+- **パイプライン**: テスタ → オーディ → 3 巡＋コパ
+  - オーディ初回: LOW 3 件（try/catch 分離、disable 一貫性、関数移動順）→ 同 PR 消化
+  - オーディ 2 巡目: LOW 2 件（私が前回 finally を消した結果 setLoading 漏れ + コメント不整合）→ 同 PR 消化
+  - オーディ最終: LOW 1 件（restoreRole race comment）→ 同 PR 消化
+  - コパ 3 件（unhandled rejection、E2E 追加要望（済）、task.md 注記矛盾）→ コパ #1 と #3 を消化
+- **PR #46 でやり直し**: 私が PR #45 マージ時に `tests/e2e/bug004-defense-tab.spec.ts` と audit-log/test-log を **add し忘れ**。PR #44 (BUG-007) で同じパターンの指摘を受けたばかりなのに再発させた → PR #46 で補修
+
+### コミット忘れ事故 2 回連続の教訓
+
+PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインログ」を add し忘れた。新しい feedback として [[feedback-commit-check]] に運用化。要点: パイプライン後の commit 前に必ず `git status` で untracked 確認、特に `tests/e2e/*.spec.ts` と `docs/knowledge/(test|audit)-log/*.md` は要注意。
+
+### 次セッション開始時の next アクション（優先順）
+
+1. **session_context 本ファイルの軽い見直し**: 必要なら旧セクション（06-02, 06-04〜06-05, 06-10）を圧縮 or 削除
+2. **backlog 未対応の中から**: BUG-005（閉廷アナウンス条件）/ BUG-006（終了提案通知）/ BUG-008（useSearchParams Suspense 境界）/ OPS-002（test DB スキーマ整合性）/ FEAT-004（法案 Hub）/ MON-001/002（マネタイズ、保留）
+3. **本番動作確認** の任意フォローアップ: BUG-004 / BUG-007 の修正が本番でも動くこと（preview は通過済み）
+
+### 今セッションで学習した運用パターン（恒久知識）
+
+- **Vercel CLI の `vercel link` は `.env.local` を上書きしうる**: 内部で `vercel env pull` が自動実行され、Vercel に登録された env vars で `.env.local` が書き換えられる。**Vercel の `sensitive` type は読み取り API で値を返さない仕様**のため、復旧経路がなく事故になる。`vercel link` 前に `.env.local` をバックアップする運用が必須
+- **Supabase の Personal Access Token は project スコープを持つ**: 本番 project と test project で別 token が要るケースがある（家庭裁判所では実際にそうだった）
+- **`new URL(path, origin)` ベースの open redirect ガード**: `startsWith("/") && !startsWith("//")` だけでは backslash バイパス（`/\evil.com`）や `%2f` 経路を素通しさせる。`new URL(rawNext, window.location.origin)` で URL パーサに委ね `u.origin === window.location.origin` を強制すると、backslash 正規化や `javascript:` スキームや protocol-relative URL 全部に効く防御になる
+- **オーディは git tracking 状態まで見る**: 単にコードを読むだけでなく `git status` と HEAD の照合で「コミット忘れ」「untracked spec」を catch する [[feedback-commit-check]]
+- **テスタが書く新規 spec は untracked 状態で残る**: パイプライン後の commit で `git add tests/e2e/*.spec.ts` を明示しないと取りこぼす
+- **`./temp/` は gitignored ではない**: ダイチが秘密情報の一時保管に `./temp/` を使うことがあるが、`.gitignore` で除外されていないので `?? temp/` として git status に出る。即削除する運用 or `.gitignore` 追加が必要
+- **Vercel REST API による env vars 操作**: `POST /v10/projects/{id}/env`（新規追加）、`PATCH /v10/projects/{id}/env/{envId}`（target 変更）、`DELETE /v9/projects/{id}/env/{envId}`（削除）。`decrypt=true` クエリも sensitive 値には効かない（API レベルで返さない）
+- **Vercel の Preview scope env vars**: 同じ key を target=preview と target=production で別値登録できる。PATCH で target を絞れば「片方の scope から外す」が可能
+
+### マージ済み PR（このセッション）
+
+- **PR #41** (2026-06-13): FEAT-006 チャット回数柔軟化 + 固定挨拶（オーディ MEDIUM/LOW 5 件 + コパ 7 件消化）
+- **PR #42** (2026-06-13): OPS-003 Preview DB 分離（`.env.local` 復旧含む大事故セッション）
+- **PR #43** (2026-06-13): BUG-007 backlog 追加
+- **PR #44** (2026-06-15): BUG-007 修正（初パイプライン経験、open redirect 防御）
+- **PR #45** (2026-06-15): BUG-004 修正（パイプライン経由、コミット忘れ → PR #46 で補修）
+- **PR #46** (2026-06-15): BUG-004 の漏れ補修（spec + パイプラインログ）
+
+### 環境・ツール状態（2026-06-15 時点）
+
+- OS: Ubuntu。tailscale + termius SSH from スマホ + tmux でセッション保持
+- node: nvm v24.16.0、Next.js 16.2.6 の `engines.node >=20.9.0` を満たす
+- claude: ネイティブビルド `~/.local/bin/claude`（node 非依存）
+- **Vercel CLI**: 54.13.0 グローバルインストール済み。`vercel login` / `vercel link` 完了済み。プロジェクト ID = `prj_uKsjj2tpZiJDRVrMw2SqmSZ8ccy2`、team ID = `team_Dj2KiQxEAnQWkHHK1RNqJ59g`
+- Playwright: chromium 導入済み
+- テスト Supabase: `eckrccrfnblzdbflnssf` 完全稼働、auth config も本番ベース（mailer_autoconfirm=false, SMTP=Gmail）に整備済み
+- 本番 Supabase: `nhcsshqcyprbitfctyio`、cases は空（FEAT-006 で旧データ削除済み）、profiles は 5 件残置
+- E2E ターゲット: `.env.local`（本番）↔ `.env.test`（テスト）の env スイッチ + Vercel Preview の env scope 分離で 3 環境完全独立
+- gh CLI: `itoemon` 認証済み
+- lint baseline: 0 errors（継続維持）
+
+---
+
+## 旧最終更新: 2026-06-02（PR 5 本マージ。ヘッダー刷新・マイページ新設・LOW バッチ整理・BUG バックログ追加）
 
 ### 現在のブランチ・PR 状態
 
