@@ -4,6 +4,9 @@ import { verifyGuestToken } from "@/lib/guest-token";
 import { buildCaseResponse } from "@/lib/case-response";
 import { isUuid } from "@/lib/text-utils";
 import { insertClosingGreetingsForCase } from "@/lib/greetings";
+import { insertClosingJudgeMessage } from "@/lib/case-closing";
+import { decryptApiKey } from "@/lib/crypto";
+import type { Role } from "@/lib/types";
 
 type Actor = "plaintiff" | "defendant" | "guest";
 
@@ -173,6 +176,47 @@ export async function POST(
           console.error("[extension-vote] closing greeting insert failed:", greetingError);
           return NextResponse.json({ error: "終了挨拶の保存に失敗しました" }, { status: 500 });
         }
+
+        // BUG-005: closing greeting 挿入成功直後に AI 閉廷宣告を judge_messages へ INSERT。
+        // 失敗してもログのみ（ヘルパー内部で吸収）。phase=judging 遷移はロールバックしない。
+        const { data: plaintiffProfile } = await admin
+          .from("profiles")
+          .select("display_name, api_key_encrypted")
+          .eq("id", refreshed.plaintiff_id)
+          .single();
+        const plaintiffApiKey = plaintiffProfile?.api_key_encrypted
+          ? decryptApiKey(plaintiffProfile.api_key_encrypted)
+          : null;
+
+        let defendantName = "反対者";
+        if (refreshed.defendant_id) {
+          const { data: defProfile } = await admin
+            .from("profiles")
+            .select("display_name")
+            .eq("id", refreshed.defendant_id)
+            .single();
+          defendantName = defProfile?.display_name ?? "反対者";
+        } else if (refreshed.defendant_guest_name) {
+          defendantName = refreshed.defendant_guest_name;
+        }
+
+        const { data: lastArg } = await admin
+          .from("arguments")
+          .select("role")
+          .eq("case_id", id)
+          .eq("is_greeting", false)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        const lastSpeakerRole: Role = (lastArg?.role as Role) ?? "plaintiff";
+
+        await insertClosingJudgeMessage(admin, plaintiffApiKey, {
+          caseId: id,
+          topic: refreshed.topic,
+          plaintiffName: plaintiffProfile?.display_name ?? "提案者",
+          defendantName,
+          lastSpeakerRole,
+        });
       } else {
         console.info("[extension-vote] finish 確定は他経路で実行済み");
       }

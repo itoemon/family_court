@@ -127,36 +127,39 @@ export async function POST(
     ? decryptApiKey(plaintiffProfile.api_key_encrypted)
     : null;
 
-  try {
-    if (!plaintiffApiKey) {
-      console.warn(`[judge] ${nextPhase === "extension_voting" ? "closing" : "turn"}: plaintiff ${c.plaintiff_id} has no api_key_encrypted`);
-    } else {
-      let defendantName = "反対者";
-      if (c.defendant_id) {
-        const { data: defProfile } = await admin
-          .from("profiles")
-          .select("display_name")
-          .eq("id", c.defendant_id)
-          .single();
-        defendantName = defProfile?.display_name ?? "反対者";
-      } else if (c.defendant_guest_name) {
-        defendantName = c.defendant_guest_name;
+  // BUG-005: argument フェーズを離れる場合 (extension_voting 遷移) は judge_message を一切生成しない。
+  // 旧設計では trigger='closing' を出していたが、AI 閉廷宣告は phase=judging 遷移時に
+  // end-proposal / extension-vote 側で生成する設計に変更した。turn メッセージも extension_voting 中は不要。
+  if (nextPhase === "argument") {
+    try {
+      if (!plaintiffApiKey) {
+        console.warn(`[judge] turn: plaintiff ${c.plaintiff_id} has no api_key_encrypted`);
+      } else {
+        let defendantName = "反対者";
+        if (c.defendant_id) {
+          const { data: defProfile } = await admin
+            .from("profiles")
+            .select("display_name")
+            .eq("id", c.defendant_id)
+            .single();
+          defendantName = defProfile?.display_name ?? "反対者";
+        } else if (c.defendant_guest_name) {
+          defendantName = c.defendant_guest_name;
+        }
+        const content = await generateJudgeMessage({
+          trigger: "turn",
+          topic: c.topic,
+          plaintiffName: plaintiffProfile?.display_name ?? "提案者",
+          defendantName,
+          lastSpeakerRole: callerRole,
+        }, plaintiffApiKey);
+        if (content) {
+          await admin.from("judge_messages").insert({ case_id: id, content, trigger_type: "turn" });
+        }
       }
-      // closing 完了 → extension_voting への遷移時に「最終陳述後の総括」judge_message を出す。
-      const triggerType = nextPhase === "extension_voting" ? "closing" : "turn";
-      const content = await generateJudgeMessage({
-        trigger: triggerType,
-        topic: c.topic,
-        plaintiffName: plaintiffProfile?.display_name ?? "提案者",
-        defendantName,
-        lastSpeakerRole: callerRole,
-      }, plaintiffApiKey);
-      if (content) {
-        await admin.from("judge_messages").insert({ case_id: id, content, trigger_type: triggerType });
-      }
+    } catch (err) {
+      console.error("[judge] turn generation failed:", err);
     }
-  } catch (err) {
-    console.error("[judge] turn/closing generation failed:", err);
   }
 
   // 矛盾チェック（認証済みユーザーのみ、失敗しても無視）
