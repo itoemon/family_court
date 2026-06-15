@@ -12,13 +12,13 @@ metadata:
 
 ---
 
-## 最終更新: 2026-06-15（FEAT-006 + OPS-003 + BUG-007/004 + middleware ?next= で PR 7 本マージ + memory main 直 commit。Preview DB 分離大事故と復旧、初パイプライン経験、コミット忘れ事故 2 回連続 → 運用化 → 即実証）
+## 最終更新: 2026-06-15（FEAT-006 + OPS-003 + BUG-007/004 + middleware ?next= で PR 7 本マージ + memory main 直 commit + backlog 11 PR 分の対応済み整理 PR #48）
 
 ### 現在のブランチ・PR 状態
 
-- 現ブランチ: `main`（クリーン、HEAD `1e2d3c4` = memory 更新 main 直 commit）
+- 現ブランチ: `main`（クリーン、HEAD `a9b324f` = PR #48 マージ後）
 - オープン PR: なし
-- 本セッションでマージした PR: #41, #42, #43, #44, #45, #46, #47
+- 本セッションでマージした PR: #41, #42, #43, #44, #45, #46, #47, #48
 
 ### このセッション (2026-06-13〜06-15) でやったこと
 
@@ -79,10 +79,26 @@ metadata:
 - **コミット忘れなし**: 直前で `feedback_commit_check.md` を運用化した直後の PR で、commit 前に git status を確認して spec / ログを取りこぼさず 1 発成功。運用化が即実証された
 - コパ 1 件は E2E カバレッジ指摘だが新規 spec で対応済み、追加対応不要
 
-#### 6. memory 更新を main に直 commit (`1e2d3c4`)
+#### 6. memory 更新を main に直 commit (`1e2d3c4`, `c97f371`)
 
 - 2026-06-15 ダイチが「`./memory` はリードの個人用なので好きなタイミングで更新可」と緩和してくれたため、memory 更新分を別 PR でなく main 直 commit で反映（[[feedback-session-context]] のポリシー緩和を反映）
 - 内容: session_context（06-15 セクション追加）、feedback_session_context（緩和方針反映）、feedback_commit_check（新規）、MEMORY.md（index 更新）
+
+#### 7. PR #48 マージ: backlog 11 PR 分の対応済み整理 + OPS-001 完了反映
+
+- 累積していた対応済み移管漏れを一括整理。`docs/backlog.md` の差分は `-107 +12` (主に削除)
+- **未対応セクションから削除**: FEAT-006 (PR #41) / OPS-003 (PR #42) / BUG-004 (PR #45/#46) / BUG-007 (PR #44) / OPS-001 (Part 1 = PR #29, Part 2 = PR #37、テスト DB 手動セットアップは 2026-06-10 にダイチ完了済み)
+- **対応済みテーブル更新**: 「本 PR (BUG-002)」表記を「PR #36」へ正規化、PR #29 (OPS-001 Part 1) / #37 (OPS-001 Part 2) / #38 (lint) / #39 (spec hard assertion) / #40 (error.tsx) / #41 (FEAT-006) / #42 (OPS-003) / #44 (BUG-007) / #45 (BUG-004) / #46 (BUG-004 補修) / #47 (middleware ?next=) を追記
+- backlog 追加のみの PR (#43) は過去の慣例 (#25/#28/#34) と同様にテーブル外
+- パイプライン未経由（docs 整理のみ）、Vercel preview CI のみで通過
+- ダイチ確認: 当初リードが「ダイチがマージ」と書いたが、過去 PR #41-#47 もリード自走でマージしてた前例に照らしてリード自走でマージ ([[feedback-pipeline-runner]] の徹底)
+
+### 未対応の残項目（PR #48 マージ後）
+
+- **FEAT**: FEAT-004 法案 Hub
+- **OPS**: OPS-002 スキーマ整合性
+- **BUG**: BUG-005 閉廷アナウンス条件 / BUG-006 終了提案通知 / BUG-008 Suspense 境界
+- **MON**: MON-001 課金 / MON-002 広告
 
 ### コミット忘れ事故 2 回連続の教訓 → 即実証
 
@@ -90,9 +106,8 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 
 ### 次セッション開始時の next アクション（優先順）
 
-1. **session_context 本ファイルの軽い見直し**: 必要なら旧セクション（06-02, 06-04〜06-05, 06-10）を圧縮 or 削除
-2. **backlog 未対応の中から**: BUG-005（閉廷アナウンス条件）/ BUG-006（終了提案通知）/ BUG-008（useSearchParams Suspense 境界）/ OPS-002（test DB スキーマ整合性）/ FEAT-004（法案 Hub）/ MON-001/002（マネタイズ、保留）
-3. **本番動作確認** の任意フォローアップ: BUG-004 / BUG-007 の修正が本番でも動くこと（preview は通過済み）
+1. **backlog 未対応の中から**: BUG-005（閉廷アナウンス条件）/ BUG-006（終了提案通知）/ BUG-008（useSearchParams Suspense 境界）/ OPS-002（test DB スキーマ整合性）/ FEAT-004（法案 Hub）/ MON-001/002（マネタイズ、保留）
+2. **本番動作確認** の任意フォローアップ: BUG-004 / BUG-007 の修正が本番でも動くこと（preview は通過済み）
 
 ### 今セッションで学習した運用パターン（恒久知識）
 
@@ -115,6 +130,8 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 - **PR #46** (2026-06-15): BUG-004 の漏れ補修（spec + パイプラインログ）
 - **PR #47** (2026-06-15): middleware の `?next=` 付与（BUG-007 残宿題回収、`feedback_commit_check` 運用化直後の 1 発成功）
 - **`1e2d3c4`** (2026-06-15): memory 更新 main 直 commit（PR なし、`./memory` 個人用ディレクトリ運用）
+- **`c97f371`** (2026-06-15): memory に PR #47 + `1e2d3c4` の追記を main 直 commit
+- **PR #48** (2026-06-15): backlog 11 PR 分の対応済み整理 + OPS-001 完了反映 (`-107 +12`)
 
 ### 環境・ツール状態（2026-06-15 時点）
 
@@ -131,84 +148,28 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 
 ---
 
-## 旧最終更新: 2026-06-02（PR 5 本マージ。ヘッダー刷新・マイページ新設・LOW バッチ整理・BUG バックログ追加）
+## 旧セッション要約（2026-05-30 〜 2026-06-02）
 
-### 現在のブランチ・PR 状態
+### 2026-05-30: claude CLI ネイティブ移行
 
-- 現ブランチ: `main`（クリーン、`bec4e8e` HEAD）
-- オープン PR: なし
+- `claude` を npm 版 → ネイティブビルド (`~/.local/bin/claude`、node 非依存、ELF) へ完全移行
+- **効果**: claude が node18 に pin されなくなり、子プロセスへの node18 強制が消滅。Next.js 16 の E2E が素で回るようになり、後の PR #30 で `scripts/agents.sh` の PATH サニタイズ細工と `package.json` の `volta.node` pin が撤去された
 
-### このセッション (2026-06-02) でやったこと
+### 2026-06-02 マージ済み PR
 
-#### 1. PR #30 マージ: volta 痕跡撤去
-- 前セッション (2026-05-30) で claude をネイティブ版へ移行したため、`scripts/agents.sh` の PATH サニタイズと `package.json` の `volta.node` pin を撤去。
-- 要件は `engines.node: ">=20.9.0"` で表明する形へ切り替え。
-- `stop_dev_server` の PGID 特定ロジックとテスタの判定ロジックは本筋なので残置。
+- **PR #30**: volta 痕跡撤去（要件は `engines.node: ">=20.9.0"` で表明、`scripts/agents.sh` の `start_dev_server` は素の `setsid bash -c "npm run dev"` に簡素化、停止側 PGID 特定ロジックは残置）
+- **PR #31** (FEAT-RESP-HEADER): ヘッダーをアバター起点のドロップダウンメニュー方式へ刷新（全画面サイズ同一 UI、breakpoint 不使用、`role="menu"` / `aria-expanded` 完備、Server/Client 分割で機微情報非送出、`profiles` 取得は `.maybeSingle()`）
+- **PR #32** (FEAT-005): マイページ `/me` を新設（GitHub/Linear 型 4 セクション、ダイジェスト N=5、`Promise.allSettled` でセクション単位フォールバック、profiles 跨ぎ admin の carve-out を維持、middleware の `PROTECTED_PATH_PREFIXES` に追加）
+- **PR #33** (LOW-001/002): 監査由来 LOW 2 件を対応済みへ移管（package.json リネーム経緯 README 明示 / `@upstash/core-analytics` 外部送信不可の 3 段検証）
+- **PR #34**: BUG-002 / BUG-003 backlog 追加（バグ修正 BUG セクション新設）
 
-#### 2. PR #31 マージ: FEAT-RESP-HEADER ヘッダー刷新
-- ダイチからの要望「ヘッダーがスマホビューで綺麗じゃない」に対応。
-- **全画面サイズで同一 UI**（breakpoint 不使用、プロジェクト全体の `sm:/md:/lg:` 0 件運用を維持）。
-- ロゴ + アバター（profiles.avatar_url、未設定は人型アイコン）の 2 要素のみ。
-- アバタークリック → ドロップダウン（外側クリック・Escape クローズ、`role="menu"` / `aria-expanded` / `aria-controls={isOpen ? menuId : undefined}` の ARIA 完備、`<form role="none">` で WAI-ARIA メニュー構造に整合）。
-- 認証時: 過去のケース / フレンド / プロフィール / 区切り / ログアウト。未認証時: ログイン / サインアップ。
-- `Header.tsx` (Server) + `HeaderUserMenu.tsx` (Client) に分割、Props は `isAuthenticated`/`avatarUrl`/`displayName` のみ（機微情報非送出）。
-- `profiles` 取得は `.maybeSingle()`（0 rows 時の error 生成回避、既存慣習に整合）。
+### 旧セッションで確立した恒久知識（後セッションで適用済み）
 
-#### 3. PR #32 マージ: FEAT-005 マイページ新設
-- URL: `/me`、middleware の `PROTECTED_PATH_PREFIXES` に追加。
-- 構成: ヘッダー部 + 4 セクションカード（プロフィール / フレンド / 過去のケース / 参加中の法律）。GitHub・Linear 型デザイン、stone/brand トーン、breakpoint なし。
-- ダイジェスト件数 **N=5**、`defense_custom_instruction` サマリ 100 文字 truncate。
-- `Promise.allSettled` で 5 系統クエリ並列発行、`settledValue` ヘルパーでセクション単位フォールバック（取得失敗で 500 にしない）。
-- **profiles 跨ぎ admin の carve-out** を維持（フレンド表示名/アバターのみ、friend_requests 経由で取得した自分のフレンド ID 集合・最大 5 件・accepted のみが対象）。それ以外は `createSessionClient`。
-- 既存ページ `/profile`・`/friends`・`/history`・`/laws` は無変更、マイページは読み取り専用ダイジェスト + ディープリンクに責務限定（form ゼロ、Server Action ゼロ）。
-- ヘッダードロップダウン認証時メニュー先頭に「マイページ」リンクを追加。
-- LawsCard で `lawsTotalCount` は memberships と pendingInvitations の**両方成功時のみ**計算（片方失敗時はバッジ非表示で他セクションと整合）。法律のソートは `b.sortKey.localeCompare(a.sortKey)` の降順（比較関数の推移性遵守）。
-
-#### 4. PR #33 マージ: LOW-001 / LOW-002 対応済みへ移管
-- **LOW-001**（package.json name 変更ログ未記載）: README.md に「旧名 family_court、PR #17 でリネーム、GitHub リポジトリ URL は family_court のまま、Vercel と package.json は igiari」と明示。追跡性回復のみ、コード変更なし。
-- **LOW-002**（@upstash/core-analytics 外部送信検証）: 3 段検証（ratelimit ソース確認・`if (this.analytics)` ガード確認・`npm run build` 後のバンドル grep）で「ユーザー識別子の外部送信は発生しない」を確定。`analytics: false` のとき Analytics クラスは未インスタンス化、record/ingest 実行経路なし、バンドルにコードは含まれるが動作経路なし。
-- 検証根拠は `docs/backlog.md` の対応済みリストに残置（コミット履歴と合わせて再現性のある根拠）。
-- バックログから監査由来の LOW 項目は完全に消化された（現在ゼロ）。
-
-#### 5. PR #34 マージ: BUG-002 / BUG-003 バックログ追加
-- **BUG-002**: 過去のケース表示時、チャット画面が一瞬表示されてから判決画面へ自動遷移する挙動を解消し、判決確定済みケースを開いた時点から判決画面を直接表示する（`/case/[id]/page.tsx` の SSR 側 phase 判定見直し想定）。
-- **BUG-003**: 判決画面の説得力スコアが**常に 0% または空で表示される**現象を修正する。着手時に計算ロジック（API 側）と表示側（判決画面コンポーネント）の切り分けが必要。
-- 新規セクション「バグ修正（BUG）」を「監査由来の品質改善」と「マネタイズ」の間に追加。
-
-### 次のアクション（優先順）
-
-1. **BUG-002**（中規模・想定 1-2 時間）: 過去のケース表示の直接判決画面遷移。`/case/[id]/page.tsx` の SSR phase 判定で直接出すか、`/case/[id]/verdict` 等への Server Redirect で振り分ける設計検討。
-2. **BUG-003**（要調査）: 説得力スコアが 0%/空。dev サーバ起動 → 再現確認 → 計算 (API) と表示の切り分け、から始める。中身次第で軽くも重くもなる。
-3. **OPS-001 Part2**（中規模・地味）: E2E ターゲット DB を本番から切り離す。テスト用 Supabase プロジェクト + `.env.test`、またはシード&クリーンアップ戦略の設計。
-4. **FEAT-004 法案 Hub** / **MON-001 課金** / **MON-002 広告**（大物 or 低優先）。
-
-### 今セッションで学習した運用パターン（恒久知識）
-
-- **コパ指摘パターンの先回り回避**: PR #31 で 11 件指摘された「テスト品質の落とし穴」(`page: any` / `toBeGreaterThanOrEqual(0)` / `expect(... || true).toBe(true)` / `waitForURL('/')` の中間マッチ / `isVisible().catch(() => false)` の弱い assertion / `page.context()` でステータス見ない) を以降の spec で先回り修正できるよう、ビルド/テスタ完了後にぼくが spec をスキャンして同パターンが入っていないかチェックする運用が有効。次回 spec を書くときも `import { type Page }` で `page: Page` 型化、hard assertion、`Response.status()` で 5xx チェック、を意識する。
-- **オーディ指摘の PR 内自己修正**: LOW で 1-3 行差分なら PR 内自己修正してマージ前に消化する方が筋（PR #27 以来の慣例）。backlog に追記して別 PR にする必要なし。オーディが backlog に自動追記した分は削除して整理する。
-- **コパ指摘のスコープ整合**: PR #30 の「volta 痕跡が docs に残ってる」指摘や PR #33 の「対応済みと未対応に同 ID 二重記載」指摘のように、書類整合は本筋。コードを変えなくても docs 側を必ず揃える。
-- **PR 1 本のコパインライン件数の目安**: 実装が綺麗だと 0-3 件、テストが緩いと 8-11 件出る。テスト spec のレビューはコパが特に厳しい。
-
-### 環境・ツール状態（2026-06-02 時点）
-
-- OS: Ubuntu。tailscale + termius SSH from スマホ + tmux でセッション保持。
-- node: nvm v24.16.0。Next.js 16.2.6 の `engines.node >=20.9.0` を満たす。`package.json` の volta pin は撤去済み。
-- claude: ネイティブビルド `~/.local/bin/claude`（node 非依存、`installMethod: "native"`）。
-- Playwright: chromium 導入済み（`~/.cache/ms-playwright`）。E2E ターゲットは依然**本番 Supabase**（OPS-001 Part2 未対応）。
-- gh CLI: `itoemon` 認証済み。承認スキップ: `.claude/settings.local.json`（bypassPermissions）。
-- Tailwind 4 (`@tailwindcss/oxide-linux-x64-gnu` native binding): 2026-06-02 のテスタ初回実行時に npm optionalDependencies バグで欠落し dev サーバが 500 を返した。`rm -rf node_modules .next && npm install` で復旧。**症状再発時の対処**: 同じくフルクリーン → npm install。
-
----
-
-## 旧最終更新: 2026-05-30（claude をネイティブ版へ移行 = node/volta 根本解決）
-
-### このセッション(2026-05-30)でやったこと
-
-- **claude CLI を npm版 → ネイティブビルドへ完全移行**。
-  - 削除: volta pin の npm版（`volta uninstall @anthropic-ai/claude-code`）＋ nvm(node24) の孤立 npm global（`claude.exe` 実体 239MB ＋空スコープdir を `rm`）。
-  - 再インストール: `claude install stable` → `~/.local/bin/claude`（ELF ネイティブ・node 非依存、ver 2.1.149）。
-  - PATH: `~/.bashrc` 末尾に `export PATH="$HOME/.local/bin:$PATH"` を追記。
-  - **効果**: claude が node18 に pin されなくなり、子プロセスへの node18 強制が消滅 → Next.js 16 の E2E が素で回る。`scripts/agents.sh` の PATH サニタイズ細工は不要化（**2026-06-02 PR #30 で撤去済み**）。
+- **コパ指摘パターンの先回り回避**: テスト品質の落とし穴（`page: any` / `toBeGreaterThanOrEqual(0)` / `expect(... || true).toBe(true)` / `waitForURL('/')` の中間マッチ / `isVisible().catch(() => false)` / `page.context()` でステータス見ない）を spec 書く前に意識する。`import { type Page }` で `page: Page` 型化、hard assertion、`Response.status()` で 5xx チェック
+- **オーディ指摘の PR 内自己修正**: LOW で 1-3 行差分なら PR 内自己修正してマージ前に消化する方が筋（PR #27 以来）。backlog に自動追記された分は削除して整理する
+- **コパ指摘のスコープ整合**: 書類整合（docs と code の対応関係、対応済み/未対応の重複記載）も本筋。コードを変えなくても docs 側を揃える
+- **PR 1 本のコパインライン件数の目安**: 実装が綺麗だと 0-3 件、テストが緩いと 8-11 件
+- **Tailwind 4 oxide native binding 欠落の症状再発時の対処**: `@tailwindcss/oxide-linux-x64-gnu` が npm optionalDependencies バグで欠落して dev サーバが 500 を返す場合、`rm -rf node_modules .next && npm install` でフルクリーン復旧
 
 ---
 
@@ -218,10 +179,10 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 - **マイグレーション適用**: `supabase_execute`（Supabase Management API・`SUPABASE_ACCESS_TOKEN` + `SUPABASE_PROJECT_REF`）経由。`run_migrations` が `applied.txt` で適用済み管理。applied.txt は実 DB と乖離しうるので過信しない（実態は `pg_policies` 等で直接照会）。
 - **`design.md` は永続資料**: 既存セクション削除禁止・末尾追記のみ（[[feedback-design-md]]）。
 - guest_tokens は RLS 有効だがポリシーなし（Service Role のみ）。`expires_at` はアプリ側 ISO 計算。ゲスト参加 API はトークン発行を cases UPDATE より先に。
-- middleware の保護パスは `pathname === "/"`（完全一致）+ `pathname === "/case/new"` + `PROTECTED_PATH_PREFIXES = ["/history", "/profile", "/friends", "/laws", "/me"]`（前方一致）。
+- middleware の保護パスは `pathname === "/"`（完全一致）+ `pathname === "/case/new"` + `PROTECTED_PATH_PREFIXES = ["/history", "/profile", "/friends", "/laws", "/me"]`（前方一致）。`?next=` 付与は PR #47 で実装済み。
 - 配色: 被告/エラー=`rose-*`、弁護人AI=`teal-*`、プライマリ=`brand-700/800`（`brand-500` は WCAG 非対応で不使用）。
 - `search_users` は `SECURITY DEFINER`。`friend_requests` の UNIQUE INDEX は `(LEAST,GREATEST)` で双方向重複ブロック。拒否=レコード削除。
-- **SMTP は Gmail SMTP**（500通/日、アプリパスワード）。サインアップ `emailRedirectTo` は `new URL('/auth/callback', NEXT_PUBLIC_SITE_URL)`、未設定時は中断。
+- **SMTP は Gmail SMTP**（500通/日、アプリパスワード）。サインアップ `emailRedirectTo` は `new URL('/auth/callback', NEXT_PUBLIC_SITE_URL)`、未設定時は `window.location.origin` フォールバック（PR #42 で導入）。
 - **API パスパラメータの UUID 検証**: `lib/text-utils.ts` の `isUuid()` を各メソッドハンドラ先頭（認証/ゲスト分岐より前・DB アクセス前）で通す（PR #27 で全15ルート対応済み）。
 - **profiles 跨ぎ admin の carve-out**: MEDIUM-001 由来で許容される唯一の admin 利用。**自分の ID 集合経由でのみ admin で profiles を取得**（他者の任意 ID で admin を呼ばない）。`/me` の FriendsCard が代表例。
 - `gh pr edit` は古い projects classic API で失敗 → PR body 更新は `gh api -X PATCH /repos/itoemon/family_court/pulls/N -f body=...`。
@@ -229,12 +190,8 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 
 ### マージ済み PR（累計・抜粋）
 
-- PR #19: FEAT-002-p1 プロフィール / PR #20: FEAT-002-p2 フレンド / PR #21: MEDIUM-001 検索レートリミット
-- PR #22: FEAT-003 法律作成 / PR #23: BUG-001 確認メール / PR #24: トークン可視化・ログローテ / PR #25: backlog 整理
-- PR #26: MEDIUM-001 RLS 二層防御 / PR #27: LOW-001/002 UUID 共通化 + fetch ステータス検査 / PR #28: backlog 整理
+- PR #12〜#28: 初期整備（middleware 保護パス・guest tokens HMAC→nonce・igiari リネーム・FEAT-002 プロフィール/フレンド・MEDIUM-001 レートリミット・FEAT-003 法律作成・BUG-001 確認メール・トークン可視化・MEDIUM-001 RLS 二層防御・UUID 共通化）
 - PR #29: OPS-001 Part1 パイプライン tester node20 化
-- **PR #30** (2026-06-02): volta 痕跡撤去・`engines.node` 明示
-- **PR #31** (2026-06-02): FEAT-RESP-HEADER ヘッダーアバタードロップダウン刷新
-- **PR #32** (2026-06-02): FEAT-005 マイページ `/me` 新設
-- **PR #33** (2026-06-02): LOW-001/002 対応済み移管
-- **PR #34** (2026-06-02): BUG-002/003 バックログ追加
+- PR #30-#34 (2026-06-02): volta 痕跡撤去 / FEAT-RESP-HEADER / FEAT-005 マイページ / LOW-001-002 移管 / BUG-002-003 追加
+- PR #35-#40 (2026-06-03〜06-12): BUG-003 説得力スコア / BUG-002 過去ケース判決画面 / OPS-001 Part 2 env スイッチ / chore lint / chore spec hard assertion / feat ui error.tsx
+- PR #41-#48 (2026-06-13〜06-15): FEAT-006 / OPS-003 / BUG-007 backlog / BUG-007 修正 / BUG-004 修正 / BUG-004 補修 / middleware ?next= / backlog 整理
