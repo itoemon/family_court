@@ -2480,13 +2480,13 @@ AI 閉廷宣告の生成と `judge_messages` への INSERT を担う共通ヘル
 - 引数:
   - `admin`: `ReturnType<typeof createAdminClient>`
   - `plaintiffApiKey`: `string | null`（呼び出し側で `decryptApiKey` 済みの平文。`null` の場合は AI 生成をスキップし `console.warn` のみ）
-  - `params`: `{ caseId: string; topic: string; plaintiffName: string; defendantName: string; lastSpeakerRole: Role }`
+  - `params`: `{ caseId: string; topic: string }`
 - 責務:
   1. `plaintiffApiKey` が `null` または空文字なら `console.warn` で「[judge] closing: plaintiff has no api_key_encrypted」相当のログを出して return
-  2. `generateJudgeMessage({ trigger: "closing", topic, plaintiffName, defendantName, lastSpeakerRole }, plaintiffApiKey)` を try/catch で呼ぶ。例外は `console.error` でログのみとし、上位に伝播させない
+  2. `generateJudgeMessage({ trigger: "closing", topic, plaintiffName: "", defendantName: "", lastSpeakerRole: "plaintiff" }, plaintiffApiKey)` を try/catch で呼ぶ（`plaintiffName` / `defendantName` / `lastSpeakerRole` は closing プロンプトで未使用のためダミー値を埋めて `generateJudgeMessage` のシグネチャ互換を保つ）。例外は `console.error` でログのみとし、上位に伝播させない
   3. 生成された文字列が空でなければ `admin.from("judge_messages").insert({ case_id: caseId, content, trigger_type: "closing" })` を try/catch で呼ぶ。INSERT エラーも `console.error` でログのみ
 - 戻り値: `void`（呼び出し側は phase 遷移を続行する設計のため、エラー情報を返さない）
-- **責務外**: `arguments` テーブルへの INSERT、closing greeting 文字列の生成、`phase` カラムの更新、`current_turn` の操作
+- **責務外**: `arguments` テーブルへの SELECT / INSERT、closing greeting 文字列の生成、`phase` カラムの更新、`current_turn` の操作、`lastSpeakerRole` 等のコンテキスト解決
 
 **ファイル境界の制約（重要）**:
 
@@ -2505,44 +2505,30 @@ AI 閉廷宣告の生成と `judge_messages` への INSERT を担う共通ヘル
 
 #### 変更: `app/api/cases/[id]/end-proposal/route.ts`
 
-- L127 の `insertClosingGreetingsForCase` 呼び出し成功（`greetingError == null`）の直後に、以下の処理を追加:
-  1. `profiles` から `plaintiff_id` を使って `display_name, api_key_encrypted` を SELECT
-  2. `defendant_id` があれば同様に `display_name` を SELECT、なければ `defendant_guest_name` を fallback とする
-  3. `decryptApiKey` で平文化
-  4. `lib/case-closing.ts` の `insertClosingJudgeMessage` を呼ぶ。`lastSpeakerRole` は「直前に発言したロール」= `arguments` テーブルで `is_greeting=false` の最後の row を取得して `role` を読む（後述「`lastSpeakerRole` の解決」を参照）
+- `insertClosingGreetingsForCase` 呼び出し成功（`greetingError == null`）の直後に、以下の処理を追加:
+  1. `profiles` から `plaintiff_id` を使って `api_key_encrypted` を SELECT
+  2. `decryptApiKey` で平文化
+  3. `lib/case-closing.ts` の `insertClosingJudgeMessage` を `{ caseId, topic }` のみで呼ぶ
 - 既存の rollback ロジック（`greetingError` 発生時に `phase=argument` に戻す）には触れない。
-- `insertClosingJudgeMessage` 内で起きるエラーは関数内で吸収されるため、呼び出し側で try/catch を再度書く必要はない（が、防御的に try/catch で囲んでもよい。設計上の判断はビルドに委ねる）。
+- `insertClosingJudgeMessage` 内で起きるエラーは関数内で吸収されるため、呼び出し側で try/catch を再度書く必要はない。
+- **`lastSpeakerRole` の解決は不要**（後述「`lastSpeakerRole` の解決方針」参照）。
 
 #### 変更: `app/api/cases/[id]/extension-vote/route.ts`
 
-- `judgingUpdated && judgingUpdated.length > 0` 分岐内、`insertClosingGreetingsForCase` 呼び出し成功（`greetingError == null`）の直後に、`end-proposal` と同一の処理（`profiles` / API キー解決 → `insertClosingJudgeMessage` 呼び出し）を追加。
-- `lastSpeakerRole` は同じ方法（`arguments` の `is_greeting=false` 最後の row）で解決。
+- `judgingUpdated && judgingUpdated.length > 0` 分岐内、`insertClosingGreetingsForCase` 呼び出し成功（`greetingError == null`）の直後に、`end-proposal` と同一の処理（`profiles.api_key_encrypted` SELECT → `decryptApiKey` → `insertClosingJudgeMessage({ caseId, topic })`）を追加。
 - `eitherContinue` 経路（延長確定）には何も追加しない。
 
-#### `lastSpeakerRole` の解決方針
+#### `lastSpeakerRole` / `plaintiffName` / `defendantName` の解決方針（撤去）
 
-`argument/route.ts` の従来呼び出しでは `callerRole`（その API call の発言者）を `lastSpeakerRole` として渡していた。`end-proposal` / `extension-vote` 経由ではその情報がリクエスト自体には乗らないため、`arguments` テーブルから以下のクエリで導出する:
+当初設計では `end-proposal` / `extension-vote` 呼び出し側で `arguments` テーブルから `lastSpeakerRole` を導出し、`profiles.display_name` で `plaintiffName` / `defendantName` を解決して `insertClosingJudgeMessage` に渡す方針を採用していた。しかし実装着手時に `lib/judge.ts:49-56` の closing プロンプトを再確認したところ、`topic` のみ参照し `lastSpeakerRole` / `plaintiffName` / `defendantName` を一切使用していないことが判明（オーディ 2 巡目 `audit_20260615_192508.md` LOW-001 指摘、コミット `b7419e7` で消化）。
 
-```text
-SELECT role FROM arguments
- WHERE case_id = $1 AND is_greeting = false
- ORDER BY created_at DESC
- LIMIT 1
-```
+このため最終設計では以下のように簡略化している:
 
-これにより「閉廷宣告の直前に話したのは誰か」が `plaintiff` / `defendant` のいずれかとして得られる。クエリ失敗 / 0 件の場合は `"plaintiff"` を fallback とする（理屈上ありえない経路だが、AI プロンプトの欠落で生成失敗するより安全側に倒す）。
+- `insertClosingJudgeMessage` の引数は `{ caseId, topic }` のみ
+- ヘルパー内で `generateJudgeMessage` のシグネチャ互換のため `plaintiffName: ""` / `defendantName: ""` / `lastSpeakerRole: "plaintiff"` のダミー値を埋めて呼ぶ
+- 呼び出し側（`end-proposal` / `extension-vote`）は `profiles.api_key_encrypted` の SELECT と `decryptApiKey` のみを行う。`arguments` テーブルへの追加 SELECT・`defendantName` の組み立てロジックは持ち込まない
 
-この解決は `insertClosingJudgeMessage` の呼び出し側（`end-proposal` / `extension-vote`）で行う。ヘルパー内には書かない（ヘルパーが `arguments` テーブルを SELECT する責務を持たないため）。
-
-#### `defendantName` の解決方針
-
-既存 `argument/route.ts` のパターン（L134-144）と同じ:
-
-1. `c.defendant_id` が非 null → `profiles.display_name` を SELECT、`null` の場合は `"反対者"` を fallback
-2. `c.defendant_id` が null かつ `c.defendant_guest_name` が存在 → `defendant_guest_name` を使用
-3. いずれもなければ `"反対者"` を fallback
-
-呼び出し側（`end-proposal` / `extension-vote`）で同じロジックを書く。今回は 2 経路のみで共通化のメリットが小さいため、ヘルパー化は次回タスクで判断する（過度な抽象化の予防）。
+`lib/judge.ts` の closing プロンプトを将来 `lastSpeakerRole` 依存に拡張する場合は、本ヘルパーの引数復活と呼び出し側 SELECT の追加を同時に行う必要がある（ダミー値で動作してしまうため、コンパイラには検知されない暗黙のリスク）。
 
 ### セキュリティ設計（認証・認可・入力検証の方針）
 

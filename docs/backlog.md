@@ -22,15 +22,6 @@
 - **優先度**: 低（FEAT-003 完成後）
 - **依存**: FEAT-003, FEAT-002
 
-
-### [LOW-001] design.md / eng-to-aud.md の `lastSpeakerRole` 解決方針記述が実装と乖離（docs/knowledge/design.md:2503-2509, docs/knowledge/handoff/eng-to-aud.md:39-43） (由来: audit_20260615_195641.md)
-- **内容**: (由来: audit_20260615_195641.md)
-  `docs/knowledge/design.md` の `## BUG-005 閉廷アナウンス条件の修正` セクション L2503-2509 では「`lastSpeakerRole` は `end-proposal` / `extension-vote` の呼び出し側で `arguments` テーブルを `is_greeting=false` で SELECT して取得し、`insertClosingJudgeMessage` の `params.lastSpeakerRole` に渡す」と明記されている。`docs/knowledge/handoff/eng-to-aud.md` L39-43（「### 2. `lastSpeakerRole` の解決」節）でも同方針を踏襲している。 (由来: audit_20260615_195641.md)
- (由来: audit_20260615_195641.md)
-  しかし実装は前回監査 LOW-001（`audit_20260615_192508.md`）の消化として、コミット `b7419e7` で `lastSpeakerRole` の `arguments` SELECT を呼び出し側から撤去し、`lib/case-closing.ts:6-9` の引数を `{ caseId, topic }` のみへ簡略化している。ヘルパー内部 (`lib/case-closing.ts:38-40`) では `generateJudgeMessage` 呼び出しのシグネチャ互換のため `plaintiffName: ""`、`defendantName: ""`、`lastSpeakerRole: "plaintiff"` のダミー値を埋めている。`lib/judge.ts:49-56` の closing プロンプトは `topic` のみを参照するため機能影響は無く、`grep -rn "trigger_type.*closing" app/ lib/` も `lib/case-closing.ts:56` の 1 箇所に収束しており実装本体に欠陥は無い。 (由来: audit_20260615_195641.md)
- (由来: audit_20260615_195641.md)
-  問題は **設計書（永続資料）の記述が現実装と一致していない** 点。次パイプラインで `## BUG-005` セクションを参照したアーキ / ビルドが「呼び出し側で `arguments` SELECT が必要」と誤読してリファクタリングを誤る、または `lib/judge.ts` の closing プロンプトを `lastSpeakerRole` 依存に拡張する際にヘルパー側の簡略化に気づかず矛盾を持ち込むリスクがある。 (由来: audit_20260615_195641.md)
-
 ---
 
 #### [LOW-001-BUG005] AI キー SET 経路の E2E 動的検証が現状環境で実行されない
