@@ -35,7 +35,13 @@ export async function middleware(request: NextRequest) {
     pathname === "/case/new" ||
     PROTECTED_PATH_PREFIXES.some(p => pathname === p || pathname.startsWith(p + "/"));
   if (!user && isProtected) {
-    return NextResponse.redirect(new URL("/auth/login", request.url));
+    // 保護パスへのアクセスを ?next= に記録し、ログイン成功後に元のページへ戻れるようにする。
+    // 値は内部パスのみで構成される (request.nextUrl.pathname / search はサーバ側で
+    // 認識した相対パス + クエリ)。ログインページ側の open redirect ガード
+    // (app/auth/login/page.tsx の `new URL()` + origin 一致チェック) が二重に防御する。
+    const loginUrl = new URL("/auth/login", request.url);
+    loginUrl.searchParams.set("next", pathname + request.nextUrl.search);
+    return NextResponse.redirect(loginUrl);
   }
 
   return supabaseResponse;
