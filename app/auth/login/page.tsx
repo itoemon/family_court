@@ -1,53 +1,9 @@
-"use client";
+import { Suspense } from "react";
+import LoginForm from "./LoginForm";
 
-import { useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import Link from "next/link";
-import { createClient } from "@/lib/supabase/client";
-
-export default function LoginPage() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const supabase = createClient();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  async function handleLogin(e: { preventDefault(): void }) {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) {
-      setError("メールアドレスまたはパスワードが違います");
-      setLoading(false);
-      return;
-    }
-    // ?next= があればそこへ (middleware の保護パス → /auth/login?next=... の戻り先)、
-    // なければトップへ。router.refresh() を併用すると current page (login) の再描画が
-    // 走って push の遷移効果を打ち消すケースがあるため refresh は呼ばない (push 先で
-    // 最新の auth cookie で server-render される)。
-    //
-    // open redirect 対策: URL パーサベースで origin が一致する場合のみ許可する。
-    // 文字列前方一致のガードは backslash や %2f 等のバイパス余地が残るため、
-    // window.location.origin を base に URL を構築して同一 origin を強制する。
-    // 不正な URL や外部 origin はすべて "/" にフォールバックする。
-    const rawNext = searchParams.get("next");
-    let next = "/";
-    if (rawNext) {
-      try {
-        const u = new URL(rawNext, window.location.origin);
-        if (u.origin === window.location.origin) {
-          next = u.pathname + u.search + u.hash;
-        }
-      } catch {
-        // 不正な URL は "/" にフォールバック
-      }
-    }
-    router.push(next);
-  }
-
+// useSearchParams() を呼ぶ LoginForm を Suspense 境界でラップする。
+// BUG-008: Next.js 16 App Router の公式ガイダンス遵守と、将来の静的最適化への備え。
+function LoginFormSkeleton() {
   return (
     <main className="min-h-screen bg-stone-50 flex flex-col items-center justify-center p-6">
       <div className="w-full max-w-sm">
@@ -60,66 +16,31 @@ export default function LoginPage() {
         </div>
 
         <div className="bg-white rounded-3xl shadow-sm border border-stone-100 p-7 space-y-4">
-          <form onSubmit={handleLogin} className="space-y-4">
+          <div className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-stone-400 uppercase tracking-wider mb-1.5">
                 メールアドレス
               </label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                placeholder="you@example.com"
-                className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-transparent transition text-sm"
-              />
+              <div className="w-full h-12 bg-stone-100 rounded-xl animate-pulse" />
             </div>
             <div>
               <label className="block text-xs font-semibold text-stone-400 uppercase tracking-wider mb-1.5">
                 パスワード
               </label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                placeholder="••••••••"
-                className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-stone-800 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-transparent transition text-sm"
-              />
+              <div className="w-full h-12 bg-stone-100 rounded-xl animate-pulse" />
             </div>
-
-            {error && (
-              <p className="text-rose-500 text-sm bg-rose-50 border border-rose-100 rounded-xl px-4 py-2">
-                {error}
-              </p>
-            )}
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full bg-brand-700 hover:bg-brand-800 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
-            >
-              {loading ? "ログイン中..." : "ログイン"}
-            </button>
-          </form>
-
-          <div className="relative">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-stone-100" />
-            </div>
-            <div className="relative flex justify-center text-xs">
-              <span className="bg-white px-3 text-stone-400">または</span>
-            </div>
+            <div className="w-full h-12 bg-stone-200 rounded-xl animate-pulse" />
           </div>
-
-          <p className="text-center text-sm text-stone-500">
-            アカウントをお持ちでない方は{" "}
-            <Link href="/auth/signup" className="text-brand-600 font-semibold hover:text-brand-700">
-              新規登録
-            </Link>
-          </p>
         </div>
       </div>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<LoginFormSkeleton />}>
+      <LoginForm />
+    </Suspense>
   );
 }
