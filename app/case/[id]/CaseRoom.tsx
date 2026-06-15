@@ -71,6 +71,10 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
       if (!res.ok) return;
       const data: Case = await res.json();
       if (data.callerRole === "plaintiff" || data.callerRole === "defendant") {
+        // handleJoinAsAccount / handleJoinAsGuest と並走した場合、極端に遅い
+        // この応答が join 直後の state を上書きする経路が理屈上ある。ただし
+        // サーバが返す callerRole は join 後の DB 状態に基づくため
+        // ("defendant" を返す)、上書き後の state も等価で実害なし (BUG-004 監査)。
         setMyRole(data.callerRole);
       }
       setCaseData(data);
@@ -89,15 +93,23 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
   }, [caseId, router]);
 
   const fetchDefenseMessages = useCallback(async () => {
-    const res = await fetch(`/api/cases/${caseId}/defense`);
-    if (res.status === 401 || res.status === 403) {
-      setShowDefenseTab(false);
-      return;
+    // ネットワーク失敗・JSON パース失敗等の例外を関数内で握りつぶし、呼び出し側
+    // (useEffect / handleJoin*) で unhandled promise rejection が起きないようにする。
+    // 401/403 は権限の問題で「タブ非表示」が正しい挙動、その他のエラーは silent fail
+    // (次回マウントで復旧)。
+    try {
+      const res = await fetch(`/api/cases/${caseId}/defense`);
+      if (res.status === 401 || res.status === 403) {
+        setShowDefenseTab(false);
+        return;
+      }
+      if (!res.ok) return;
+      const data = await res.json();
+      setDefenseMessages(data.messages ?? []);
+      setShowDefenseTab(true);
+    } catch {
+      /* silent: ネットワーク/パース失敗は次回マウントで復旧 */
     }
-    if (!res.ok) return;
-    const data = await res.json();
-    setDefenseMessages(data.messages ?? []);
-    setShowDefenseTab(true);
   }, [caseId]);
 
   useEffect(() => {
