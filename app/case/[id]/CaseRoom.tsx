@@ -88,6 +88,18 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
     } catch { /* ignore polling errors */ }
   }, [caseId, router]);
 
+  const fetchDefenseMessages = useCallback(async () => {
+    const res = await fetch(`/api/cases/${caseId}/defense`);
+    if (res.status === 401 || res.status === 403) {
+      setShowDefenseTab(false);
+      return;
+    }
+    if (!res.ok) return;
+    const data = await res.json();
+    setDefenseMessages(data.messages ?? []);
+    setShowDefenseTab(true);
+  }, [caseId]);
+
   useEffect(() => {
     // fetchCase は内部で await 後に setCaseData → setState は同期 cascading にはならない。
     // react-hooks/set-state-in-effect は call site で保守的に flag するため意図を明示して disable。
@@ -96,6 +108,14 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
     const interval = setInterval(fetchCase, 2000);
     return () => clearInterval(interval);
   }, [fetchCase]);
+
+  useEffect(() => {
+    // マウント時の初回 fetch のみ担当。参加成功直後の再 fetch は
+    // handleJoinAsAccount / handleJoinAsGuest 側で明示呼び出しする (BUG-004 対応)。
+    // fetchCase と同じく await 後 setState で同期 cascading にはならない。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchDefenseMessages();
+  }, [fetchDefenseMessages]);
 
   useEffect(() => {
     if (caseData?.phase === "judging" && !requestingVerdict) {
@@ -138,15 +158,18 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
       if (!res.ok) throw new Error(data.error);
       setMyRole("defendant");
       setCaseData(data);
-      // 参加前の defense API は権限なしで 401/403 を返して showDefenseTab=false の
-      // ままだったため、参加直後に明示的に再 fetch して弁護人 AI タブを出す
-      // (BUG-004: リロードしないと現れない問題の修正)。
-      await fetchDefenseMessages();
     } catch (err) {
       setError(err instanceof Error ? err.message : "エラーが発生しました");
-    } finally {
       setLoading(false);
+      return;
     }
+    // 参加前の defense API は権限なしで 401/403 を返して showDefenseTab=false の
+    // ままだったため、参加直後に明示的に再 fetch して弁護人 AI タブを出す
+    // (BUG-004: リロードしないと現れない問題の修正)。
+    // 参加自体は成功済みなので fetch エラーは「参加失敗」表示に出さず silent fail
+    // させる (polling/再マウントで復旧する)。
+    try { await fetchDefenseMessages(); } catch { /* silent: 後段で復旧 */ }
+    setLoading(false);
   }
 
   async function handleJoinAsGuest(e: { preventDefault(): void }) {
@@ -163,15 +186,17 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
       if (!res.ok) throw new Error(data.error);
       setMyRole("defendant");
       setCaseData(data);
-      // BUG-004: ゲスト経路も同じ理由で参加直後に再 fetch が必要。
-      // 参加前は defendant_guest_name が NULL + guest cookie 未発行で 401 が
-      // 返り showDefenseTab=false に倒れていた。
-      await fetchDefenseMessages();
     } catch (err) {
       setError(err instanceof Error ? err.message : "エラーが発生しました");
-    } finally {
       setLoading(false);
+      return;
     }
+    // BUG-004: ゲスト経路も同じ理由で参加直後に再 fetch が必要。参加前は
+    // defendant_guest_name が NULL + guest cookie 未発行で 401 が返り
+    // showDefenseTab=false に倒れていた。参加成功後の defense fetch エラーは
+    // 「参加失敗」表示に出さず silent fail させる (polling/再マウントで復旧)。
+    try { await fetchDefenseMessages(); } catch { /* silent: 後段で復旧 */ }
+    setLoading(false);
   }
 
   async function submitArgument(content: string) {
@@ -206,25 +231,6 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
-
-  const fetchDefenseMessages = useCallback(async () => {
-    const res = await fetch(`/api/cases/${caseId}/defense`);
-    if (res.status === 401 || res.status === 403) {
-      setShowDefenseTab(false);
-      return;
-    }
-    if (!res.ok) return;
-    const data = await res.json();
-    setDefenseMessages(data.messages ?? []);
-    setShowDefenseTab(true);
-  }, [caseId]);
-
-  useEffect(() => {
-    // マウント時の初回 fetch のみ担当。参加成功直後の再 fetch は
-    // handleJoinAsAccount / handleJoinAsGuest 側で明示呼び出ししているため、
-    // ここでの呼び出しは純粋な初期化だけになり set-state-in-effect は発火しない。
-    fetchDefenseMessages();
-  }, [fetchDefenseMessages]);
 
   async function handleSendDefense(e: { preventDefault(): void }) {
     e.preventDefault();

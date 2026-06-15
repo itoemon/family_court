@@ -55,3 +55,17 @@ design.md `## BUG-004 対応 → 監査観点` セクションに記載した 3 
 1. **race condition の有無**: `setCaseData(data)` の React reconciliation と `fetchDefenseMessages` 内の `setShowDefenseTab` の順序
 2. **disable コメント削除の妥当性**: react-hooks plugin の挙動厳格化への耐性
 3. **参加前 401/403 ログのノイズ**: ガード追加すべきかの判断
+
+---
+
+## 追記: 初回オーディ (audit_20260615_111731.md) の LOW 3 件を同 PR で消化
+
+| ID | 内容 | 対応 |
+|---|---|---|
+| LOW-001 | `await fetchDefenseMessages()` が `handleJoin*` の try/catch 内で defense fetch エラーを「参加失敗」として誤表示する | try/catch を分離して silent fail に。参加 PATCH の try/catch を抜けてから defense fetch の独立した try/catch でラップ |
+| LOW-002 | `fetchDefenseMessages` 側だけ disable コメントを削除して `fetchCase` 側と不一致 | lint で両者の挙動を実測した結果、`fetchDefenseMessages` 側を fetchCase の隣に移動した瞬間に同じく error 判定に変わったため、**両方とも disable コメントを残して一貫性を回復** |
+| LOW-003 | `handleJoin*` が `fetchDefenseMessages` の宣言より上にある (ソース順 vs 参照順の逆転) | `fetchDefenseMessages` の useCallback と useEffect を `fetchCase` の直後に移動。動作変更なし |
+
+差分が `+13/-3` から `+35/-29` に拡大したが、動作変更は LOW-001 のみ (defense fetch エラー時の UX が「参加失敗エラー表示」→「silent fail で polling/再マウントで復旧」に変わる)。LOW-002/003 は静的な改善でロジックは不変。
+
+ローカル `npm run lint` は 0 errors / 0 warnings。
