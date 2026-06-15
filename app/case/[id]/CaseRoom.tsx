@@ -138,6 +138,10 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
       if (!res.ok) throw new Error(data.error);
       setMyRole("defendant");
       setCaseData(data);
+      // 参加前の defense API は権限なしで 401/403 を返して showDefenseTab=false の
+      // ままだったため、参加直後に明示的に再 fetch して弁護人 AI タブを出す
+      // (BUG-004: リロードしないと現れない問題の修正)。
+      await fetchDefenseMessages();
     } catch (err) {
       setError(err instanceof Error ? err.message : "エラーが発生しました");
     } finally {
@@ -159,6 +163,10 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
       if (!res.ok) throw new Error(data.error);
       setMyRole("defendant");
       setCaseData(data);
+      // BUG-004: ゲスト経路も同じ理由で参加直後に再 fetch が必要。
+      // 参加前は defendant_guest_name が NULL + guest cookie 未発行で 401 が
+      // 返り showDefenseTab=false に倒れていた。
+      await fetchDefenseMessages();
     } catch (err) {
       setError(err instanceof Error ? err.message : "エラーが発生しました");
     } finally {
@@ -212,8 +220,9 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
   }, [caseId]);
 
   useEffect(() => {
-    // fetchDefenseMessages も await 後に setState（fetchCase と同じ理由で disable）。
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    // マウント時の初回 fetch のみ担当。参加成功直後の再 fetch は
+    // handleJoinAsAccount / handleJoinAsGuest 側で明示呼び出ししているため、
+    // ここでの呼び出しは純粋な初期化だけになり set-state-in-effect は発火しない。
     fetchDefenseMessages();
   }, [fetchDefenseMessages]);
 

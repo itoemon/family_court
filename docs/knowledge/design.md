@@ -2300,3 +2300,56 @@ export interface ArgumentRow {
 - `router.refresh()` を削除したことによる副作用がないか（ログイン後にヘッダーが最新 auth 状態で表示されるか、Server Component が最新の auth cookie で render されるか）
 - `useSearchParams()` の利用について Next 16 の Suspense ラップ要件に抵触していないか（既存 `CaseRoom.tsx` が同パターンで通っているので問題ない想定だが、build 警告が出ていないかの確認）
 - `next` パラメータの open redirect 脆弱性: 外部 URL が `?next=https://evil.example.com` のように渡された場合、`router.push(next)` で外部に遷移してしまう可能性がないか。Next.js の `router.push` は内部パス扱いをするため通常は問題ないが、念のため検証する観点
+
+---
+
+## BUG-004 対応: ゲスト/アカウント参加直後に弁護人 AI タブが表示されない問題
+
+### 由来
+
+`docs/backlog.md` の BUG-004（2026-06-13 ダイチ手動確認）。被告がゲストとして参加した直後、対話チャットのみが表示され「弁護人AI」タブが表示されない。ページをリロードすると弁護人 AI タブが現れる症状。調査の結果、**アカウント参加経路でも同じバグが潜在している**ことが判明したため、両経路を併せて修正する。
+
+### 原因の特定
+
+`app/case/[id]/CaseRoom.tsx` の useEffect が `fetchDefenseMessages` をマウント時 1 回だけ呼び、その後の参加成功イベントに反応していなかった。
+
+#### マウント時の初回呼び出しが 401/403 になる経路
+
+`fetchDefenseMessages` は `/api/cases/[id]/defense` を fetch する。この時点では:
+
+- ゲスト経路: `cases.defendant_guest_name` がまだ NULL、ブラウザに guest cookie もない → `resolveAuth` が 401 を返す
+- アカウント経路: `cases.defendant_id` がまだ NULL（参加していない状態）→ `resolveAuth` が「user.id が plaintiff/defendant のどちらでもない」と判定して 403 を返す
+
+CaseRoom 側はこれを受けて `setShowDefenseTab(false)` に倒れる（`app/case/[id]/CaseRoom.tsx:202-212`）。
+
+#### 参加後に再 fetch されない
+
+useEffect の依存配列が `[fetchDefenseMessages]` で、`fetchDefenseMessages` は `useCallback([caseId])` のため caseId が変わらない限り再生成されない。つまり「マウント時に 1 回だけ呼ばれる」設計。参加成功で `setMyRole("defendant")` しても `fetchDefenseMessages` は再呼び出しされず、`showDefenseTab=false` のまま残る。
+
+リロードで CaseRoom が再マウント → guest cookie 有 + `defendant_guest_name` 有（または `defendant_id = user.id`）→ 200 OK → `showDefenseTab=true` で復帰する、という挙動だった。
+
+### 修正方針
+
+`handleJoinAsAccount` と `handleJoinAsGuest` の両方で、参加 PATCH 成功 → `setMyRole("defendant")` + `setCaseData(data)` の直後に `await fetchDefenseMessages()` を明示呼び出しする。これにより:
+
+- 認証クッキーないし guest cookie が確実に有効な状態で defense API が呼ばれ、200 OK → `showDefenseTab=true` が成立する
+- useEffect 内の呼び出しは「マウント時の初回 fetch」専用となり、副作用パターンが純化される。結果として `react-hooks/set-state-in-effect` の disable コメントが不要になり、削除した
+
+### スコープ外（別タスクで扱う）
+
+- defense API の `resolveAuth` の経路自体の見直し（例: 参加前の閲覧者に空配列を返す設計に変えるなど）。現状の 401/403 は authorization の要件として正しい挙動であり、本タスクは「クライアント側で参加後に再 fetch する」ことで解決する。
+- `useEffect` の依存配列を `[fetchDefenseMessages, myRole]` のようにして自動再走させる案。これは「state 更新を依存配列で受ける」設計に倒れ、コードの意図が「マウント時の初回 fetch + イベント駆動の再 fetch」と分かれている方が明示的なため採用しない。
+
+### テスト観点
+
+`tests/e2e/` の既存 spec（CRITICAL-M04: ゲスト被告フロー）を流用しつつ、以下の観点で追加検証する。
+
+1. **ゲスト参加直後の弁護人 AI タブ表示**: 別ユーザーでケース作成 → ゲスト経路で参加 → `setMyRole("defendant")` 直後にリロードせずに「弁護人 AI」タブが表示されること。
+2. **アカウント参加直後の弁護人 AI タブ表示**: 同じシナリオでアカウント経由参加 → リロードせずに「弁護人 AI」タブが表示されること。
+3. **リグレッション**: 既存 CRITICAL-M04（ゲスト被告フロー全体）が引き続き通過すること。
+
+### 監査観点（オーディに渡す論点）
+
+- `handleJoinAsAccount` / `handleJoinAsGuest` 内で `await fetchDefenseMessages()` を呼ぶことによる race condition の有無（`setCaseData(data)` の React reconciliation と `fetchDefenseMessages` 内の `setShowDefenseTab` の順序）
+- `react-hooks/set-state-in-effect` disable コメント削除の妥当性（plugin が今後挙動を厳格化したときに再発しないか）
+- `fetchDefenseMessages` が参加直前にも呼ばれている事実は変わらないため、参加前の 401/403 が CSP / network panel 等に出る点。これは「正しい authorization の挙動」だが、ノイズログを減らす意味で「myRole が null のときは fetchDefenseMessages を呼ばない」というガードを入れる選択肢もある。本 PR では既存挙動を維持する判断としたが、オーディが推奨するなら次 PR で対応する。
