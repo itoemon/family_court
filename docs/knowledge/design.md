@@ -2353,3 +2353,63 @@ useEffect の依存配列が `[fetchDefenseMessages]` で、`fetchDefenseMessage
 - `handleJoinAsAccount` / `handleJoinAsGuest` 内で `await fetchDefenseMessages()` を呼ぶことによる race condition の有無（`setCaseData(data)` の React reconciliation と `fetchDefenseMessages` 内の `setShowDefenseTab` の順序）
 - `react-hooks/set-state-in-effect` disable コメント削除の妥当性（plugin が今後挙動を厳格化したときに再発しないか）
 - `fetchDefenseMessages` が参加直前にも呼ばれている事実は変わらないため、参加前の 401/403 が CSP / network panel 等に出る点。これは「正しい authorization の挙動」だが、ノイズログを減らす意味で「myRole が null のときは fetchDefenseMessages を呼ばない」というガードを入れる選択肢もある。本 PR では既存挙動を維持する判断としたが、オーディが推奨するなら次 PR で対応する。
+
+---
+
+## FEAT-MIDDLEWARE-NEXT 対応: 保護パスのリダイレクトに `?next=` を付与する
+
+### 由来
+
+BUG-007（PR #44）対応時に「`middleware.ts` の `/auth/login` リダイレクトに `next` パラメータを付与する改修」をスコープ外として残していた残宿題。`app/auth/login/page.tsx` 側は `useSearchParams().get("next") || "/"` で `?next=` を解釈する実装が既に入っており、middleware 側で `next` を付与した瞬間に「保護パス → ログイン → 元のページに戻る」フローが完成する前方互換構成だった。本タスクはこの宿題の回収。
+
+### 修正方針
+
+`middleware.ts:37-39` の以下の経路を変更する。
+
+変更前:
+
+```ts
+if (!user && isProtected) {
+  return NextResponse.redirect(new URL("/auth/login", request.url));
+}
+```
+
+変更後:
+
+```ts
+if (!user && isProtected) {
+  const loginUrl = new URL("/auth/login", request.url);
+  loginUrl.searchParams.set("next", pathname + request.nextUrl.search);
+  return NextResponse.redirect(loginUrl);
+}
+```
+
+`pathname + request.nextUrl.search` で「保護パスの絶対パス + クエリ」を `next` に格納する。例:
+
+- `/history` にアクセス → `/auth/login?next=%2Fhistory` → ログイン後 `/history` へ
+- `/history?filter=verdict` にアクセス → `/auth/login?next=%2Fhistory%3Ffilter%3Dverdict` → ログイン後 `/history?filter=verdict` へ
+
+### スコープ外（別タスクで扱う）
+
+- ハッシュフラグメント（`#anchor`）の保持: middleware はサーバサイドのためフラグメントを受け取れない。クライアント側で保持する仕組みが必要だが本タスク範囲外。
+- 「ログアウト後のリダイレクト先処理」: 別途検証。
+- ログイン後の遷移先を `/me` などにユーザーごとカスタマイズする機能: 本タスク範囲外。
+
+### セキュリティ観点
+
+`pathname + search` は `request.nextUrl` 由来でサーバ側が認識した相対パスのみで構成される。外部 URL の混入余地はない（middleware は同一オリジン内のリクエストにしか作用しない、matcher も内部パスに限定）。さらに `app/auth/login/page.tsx` の open redirect ガード（`new URL(rawNext, window.location.origin)` で origin 一致確認）が二重防御として機能する。
+
+### テスト観点
+
+`tests/e2e/` に以下の観点で spec を追加する想定。
+
+1. **基本動作**: 未認証で `/history` にアクセス → URL が `/auth/login?next=%2Fhistory` に変わること（リダイレクト先の URL 確認）。
+2. **クエリ保持**: 未認証で `/history?filter=verdict` 等にアクセス → URL が `/auth/login?next=` に元クエリも含めてエンコードされていること。
+3. **ログイン後の復帰**: 上記の状態でログイン → 元の保護パスに正しく戻ること（BUG-007 修正と連携）。
+4. **既存ログイン動作のリグレッション**: `/auth/login` を直接開いてログイン（`next` なし）→ `/` に遷移すること。
+
+### 監査観点（オーディに渡す論点）
+
+- `pathname + request.nextUrl.search` の値が常に内部パス由来であるかの再確認（middleware の matcher 設定 + Next.js の仕様で保証されているが、念のため）
+- ループの可能性: `/auth/login` 自体は matcher で除外されているため middleware 経由でリダイレクトされない（無限ループにならない）
+- `searchParams.set("next", value)` の URLEncode が正しく機能していること（手動エンコードでなく URL API に任せる）

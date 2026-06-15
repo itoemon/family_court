@@ -2,12 +2,12 @@
 
 > **注意**: このメモは task.md を補足するものです。task.md と矛盾する場合は task.md を優先してください。
 
-**タスク**: BUG-004 — 参加直後に弁護人 AI タブが表示されない問題の修正（ゲスト経路 + アカウント経路の両方）
+**タスク**: FEAT-MIDDLEWARE-NEXT — middleware の保護パスリダイレクトに `?next=` を付与
 **日時**: 2026-06-15
-**ブランチ**: fix/bug004-defense-tab-after-join
+**ブランチ**: feat/middleware-next-param
 **特記**: 本タスクはリードが先行実装を済ませた状態でテスタ・オーディに渡している。アーキ・ビルドは省略。リードが実装した差分の妥当性検証と E2E spec 追加が本パイプラインの主目的。
 
-由来: `docs/backlog.md` の BUG-004、`docs/knowledge/design.md ## BUG-004 対応`。
+由来: BUG-007（PR #44）のフォローアップ。`docs/knowledge/design.md ## FEAT-MIDDLEWARE-NEXT 対応`。
 
 ---
 
@@ -15,57 +15,51 @@
 
 | ファイル | 種別 | 内容 |
 |---|---|---|
-| `app/case/[id]/CaseRoom.tsx` | 変更 | (1) `handleJoinAsAccount` の参加成功後に `await fetchDefenseMessages()` を追加 (2) `handleJoinAsGuest` の参加成功後に同じく `await fetchDefenseMessages()` を追加 (3) `useEffect` 内の `eslint-disable-next-line react-hooks/set-state-in-effect` を削除（不要になったため lint warning 解消） |
+| `middleware.ts` | 変更 | 保護パス → `/auth/login` リダイレクト時に `?next=pathname+search` を付与 |
 
-差分: `+13 / -3`。
+差分: 数行（`+6 / -1`）。
 
 ---
 
 ## 設計判断と注意事項
 
-### 修正アプローチ
+### `pathname + request.nextUrl.search` を採用した理由
 
-参加 PATCH 成功後にクライアント側で明示的に `fetchDefenseMessages()` を呼ぶことで、認証クッキー / guest cookie が確実に有効な状態で defense API が呼ばれる。これにより 200 OK が返り、`setShowDefenseTab(true)` で弁護人 AI タブが表示される。
+`pathname` だけだと元のクエリ（例: `?filter=verdict`）が失われる。`request.nextUrl.search` を結合することでクエリも保持し、ログイン後の復帰先が「ユーザーが見ていた状態に完全に戻る」ようにする。
 
-### 代替案を採用しなかった理由
+### `searchParams.set` による自動エンコード
 
-- **useEffect の依存配列に `myRole` を追加して自動再走**: 「state 更新を依存配列で受ける」設計に倒れ、コードの意図が曖昧になる。「マウント時の初回 fetch + 明示的なイベント駆動の再 fetch」と分かれている方が読者にとって明示的なため、明示呼び出し方式を採用。
-- **defense API の resolveAuth 経路自体の見直し**: 参加前の閲覧者に空配列を返す等は authorization の要件として現状の 401/403 が正しいため、本 PR では触らない。
+`URL` API の `searchParams.set("next", value)` は値を自動的に URLEncode する。手動で `encodeURIComponent` する必要はなく、エンコード漏れや二重エンコードのリスクがない。
 
-### lint warning 解消について
+### login ページ側との連携
 
-`react-hooks/set-state-in-effect` の disable コメントが不要と判定された理由: `fetchDefenseMessages` が `handleJoinAsAccount` / `handleJoinAsGuest` からも直接呼ばれるようになったことで、useEffect 内の呼び出しが「マウント時の初回 fetch」に純化された。eslint plugin はこのパターンを「副作用としては問題なし」と判定する。
+`app/auth/login/page.tsx` は BUG-007 修正で既に `useSearchParams().get("next") || "/"` を解釈し、`new URL(rawNext, window.location.origin)` で origin 一致を確認した上で pathname+search+hash を採用する形になっている。本タスクで middleware から `next` を付与した瞬間に「保護パス → ログイン → 元のページに戻る」フローが完成する。
+
+### 無限ループの非発生
+
+`middleware.ts` の `config.matcher` は `/auth/login` を明示的に除外している。よって `/auth/login` 自体がリダイレクト対象になることはなく、無限ループは発生しない。
+
+### セキュリティ
+
+`pathname + request.nextUrl.search` は `request.nextUrl` 由来で、サーバ側が認識した相対パスのみ。外部 URL の混入余地はない。さらに login ページ側の open redirect ガードが二重防御として機能する。
 
 ---
 
 ## テスト観点（テスタへの引き継ぎ）
 
-1. **アカウント参加直後の弁護人 AI タブ表示**: ユーザー A でケース作成 → ユーザー B が別ブラウザコンテキストで「アカウントで参加」→ リロードせずに「弁護人 AI」タブが表示されること。
-2. **ゲスト参加直後の弁護人 AI タブ表示**: ユーザー A でケース作成 → ゲスト経路で参加 → リロードせずに「弁護人 AI」タブが表示されること。
-3. **リグレッション**: 既存 CRITICAL-M04 が引き続き通過すること。
+1. **基本動作**: 未認証で `/history` にアクセス → `/auth/login?next=...` に変わり、`next` の値が `/history` を指していること（URLEncode 込みでも OK）
+2. **クエリ保持**: 未認証で `/history?filter=verdict` 等にアクセス → `next` に元クエリも含まれること
+3. **ログイン後復帰**: 上記の状態でログイン → 元の保護パスに戻ること
+4. **リグレッション**: BUG-007 で書いた `tests/e2e/auth-login.spec.ts` の BUG-007-1（`/auth/login` を直接開いてログイン → `/` 遷移）が引き続き通過すること
 
-E2E 実行環境: `TEST_MODE=1` 経由で `.env.test` を読み、テスト Supabase（`eckrccrfnblzdbflnssf`）に対して動作する。E2E ユーザー（`e2e_user_a` / `e2e_user_b`、パスワード `E2eTest123!`）は既にテスト DB に存在する。
+E2E 実行環境: `TEST_MODE=1` 経由で `.env.test` を読み、テスト Supabase（`eckrccrfnblzdbflnssf`）に対して動作する。
 
 ---
 
 ## 監査観点（オーディへの引き継ぎ）
 
-design.md `## BUG-004 対応 → 監査観点` セクションに記載した 3 点を中心に確認すること:
+design.md `## FEAT-MIDDLEWARE-NEXT 対応 → 監査観点` セクションに記載した 3 点:
 
-1. **race condition の有無**: `setCaseData(data)` の React reconciliation と `fetchDefenseMessages` 内の `setShowDefenseTab` の順序
-2. **disable コメント削除の妥当性**: react-hooks plugin の挙動厳格化への耐性
-3. **参加前 401/403 ログのノイズ**: ガード追加すべきかの判断
-
----
-
-## 追記: 初回オーディ (audit_20260615_111731.md) の LOW 3 件を同 PR で消化
-
-| ID | 内容 | 対応 |
-|---|---|---|
-| LOW-001 | `await fetchDefenseMessages()` が `handleJoin*` の try/catch 内で defense fetch エラーを「参加失敗」として誤表示する | try/catch を分離して silent fail に。参加 PATCH の try/catch を抜けてから defense fetch の独立した try/catch でラップ |
-| LOW-002 | `fetchDefenseMessages` 側だけ disable コメントを削除して `fetchCase` 側と不一致 | lint で両者の挙動を実測した結果、`fetchDefenseMessages` 側を fetchCase の隣に移動した瞬間に同じく error 判定に変わったため、**両方とも disable コメントを残して一貫性を回復** |
-| LOW-003 | `handleJoin*` が `fetchDefenseMessages` の宣言より上にある (ソース順 vs 参照順の逆転) | `fetchDefenseMessages` の useCallback と useEffect を `fetchCase` の直後に移動。動作変更なし |
-
-差分が `+13/-3` から `+35/-29` に拡大したが、動作変更は LOW-001 のみ (defense fetch エラー時の UX が「参加失敗エラー表示」→「silent fail で polling/再マウントで復旧」に変わる)。LOW-002/003 は静的な改善でロジックは不変。
-
-ローカル `npm run lint` は 0 errors / 0 warnings。
+1. `pathname + request.nextUrl.search` の値が内部パス由来である保証
+2. 無限リダイレクトループの非発生（`/auth/login` が matcher で除外されている事実）
+3. `searchParams.set` の URLEncode の正しさ
