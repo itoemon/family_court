@@ -1,21 +1,22 @@
 import type { createAdminClient } from "@/lib/supabase/server";
 import { generateJudgeMessage } from "@/lib/judge";
-import type { Role } from "@/lib/types";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
 interface InsertClosingJudgeMessageArgs {
   caseId: string;
   topic: string;
-  plaintiffName: string;
-  defendantName: string;
-  lastSpeakerRole: Role;
 }
 
 // phase=judging 遷移成功後に呼び出される前提。
 // 失敗してもログのみで例外は伝播させない（呼び出し側は判決生成フローへ進む）。
 // 責務: judge_messages テーブルへの closing INSERT のみ。
 // 責務外: arguments テーブル / 固定挨拶文字列 / cases UPDATE / 認可判定。
+//
+// lib/judge.ts:49-56 の closing プロンプトは topic だけを参照し、
+// plaintiffName / defendantName / lastSpeakerRole を一切使わない。
+// このためヘルパー引数では caseId と topic のみを公開する。
+// generateJudgeMessage のシグネチャ互換のためダミー値を内部で埋めて呼ぶ。
 export async function insertClosingJudgeMessage(
   admin: AdminClient,
   plaintiffApiKey: string | null,
@@ -34,9 +35,9 @@ export async function insertClosingJudgeMessage(
       {
         trigger: "closing",
         topic: args.topic,
-        plaintiffName: args.plaintiffName,
-        defendantName: args.defendantName,
-        lastSpeakerRole: args.lastSpeakerRole,
+        plaintiffName: "",
+        defendantName: "",
+        lastSpeakerRole: "plaintiff",
       },
       plaintiffApiKey
     );
