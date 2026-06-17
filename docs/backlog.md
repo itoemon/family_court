@@ -31,6 +31,22 @@
 - **優先度**: 低（実装本体の静的レビューと grep 検証は通過済み、NULL 経路の hard assertion は機能している）
 - **由来**: 2026-06-15 BUG-005 オーディ 2 巡目 (`audit_20260615_192508.md` LOW-003)
 
+### [LOW-001] 既存の終了提案がある状態でのページ初回ロード/リロード時に意図しないビープが鳴る（app/case/[id]/CaseRoom.tsx:164-193） (由来: audit_20260617_093345.md)
+- **内容**: (由来: audit_20260617_093345.md)
+  ビープ再生 useEffect は `prevIsOpponentEndProposalRef`（`useRef(false)`、CaseRoom.tsx:164）で前回値を追跡し、`false → true` 遷移時のみ再生する設計（task.md L89 の観点に準拠）。しかし ref はマウント毎に `false` で初期化されるうえ、依存配列に `myRole`（CaseRoom.tsx:193）を含むため、**「相手が既に終了提案中の状態でページを開く/リロードする」シナリオで誤発火する**。 (由来: audit_20260617_093345.md)
+  具体的な発火列（原告が `?role=plaintiff` でリロードした場合）: (由来: audit_20260617_093345.md)
+  1. 初回 render: `myRole="plaintiff"` / `caseData=null` → `endProposedBy=null` → `isOpponent=false`、ref は `false` のまま（CaseRoom.tsx:166-172） (由来: audit_20260617_093345.md)
+  2. polling で `caseData` 取得（`endProposedBy="defendant"`）→ 依存 `caseData?.endProposedBy` が `null→"defendant"` に変化し effect 再実行 → `isOpponent=true`、`prev=false` → **ビープ発火**（CaseRoom.tsx:173-191） (由来: audit_20260617_093345.md)
+  この瞬間は「セッション中に相手が新たに提案した」のではなく「既存の提案を画面が読み込んだだけ」であり、task.md L43-44 が意図する *false→true 遷移（＝新規提案の到来）* とは意味が異なる。 (由来: audit_20260617_093345.md)
+-- (由来: audit_20260617_093345.md)
+### [LOW-002] 終了提案の自分/相手判定ロジックが useEffect と render で重複している（app/case/[id]/CaseRoom.tsx:166-171 と 443-448） (由来: audit_20260617_093345.md)
+- **内容**: (由来: audit_20260617_093345.md)
+  ビープ用 useEffect 内（CaseRoom.tsx:166-171）の `isMyEnd` / `isOpponent` 算出は、render 側（CaseRoom.tsx:443-448）の `isMyEndProposal` / `isOpponentEndProposal` と完全に同一のロジック（`plaintiff/defendant/guest` の対応付け）を手書きで複製している。render 側はアーリーリターン（CaseRoom.tsx:418）より後で算出されるため Hook から参照できず複製せざるを得ない事情はあるが、**配色バナー（視覚通知）と音（聴覚通知）が別々の式で同条件を表現しており、片方だけ将来改修されると「バナーは出るが鳴らない / 鳴るがバナーが出ない」というドリフトが起きうる**。特に `guest` 分岐（CaseRoom.tsx:170, 447）の扱いが二重管理になっている点がリスク。 (由来: audit_20260617_093345.md)
+- **修正案**: (由来: audit_20260617_093345.md)
+  `endProposedBy` と `myRole` を引数に取り `{ isMyEnd, isOpponent }` を返す純関数（例: `computeEndProposalState(endProposedBy, myRole)`）をコンポーネント外に切り出し、useEffect と render の両方から呼ぶ。これにより判定の単一情報源化が図れ、バナーとビープの条件一致が構造的に保証される。 (由来: audit_20260617_093345.md)
+ (由来: audit_20260617_093345.md)
+## 総評 (由来: audit_20260617_093345.md)
+
 ---
 
 ### 運用・テスト基盤（OPS）
