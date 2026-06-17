@@ -155,6 +155,43 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [caseData?.arguments?.length, caseData?.judgeMessages?.length]);
 
+  // BUG-006: 相手の終了提案を検知したらビープ音で通知する。
+  // polling (fetchCase, 2 秒間隔) で caseData が更新された結果として
+  // isOpponentEndProposal が false → true へ遷移した瞬間を ref で追跡し、
+  // Web Audio API で 880Hz / 0.15s の単音を再生する。autoplay policy で
+  // 失敗しても catch で無視 (バナー強調 animate-pulse + amber 配色が
+  // 視覚補助としてメイン)。
+  const prevIsOpponentEndProposalRef = useRef(false);
+  useEffect(() => {
+    const endProposedBy = caseData?.endProposedBy ?? null;
+    const isMyEnd =
+      !!endProposedBy &&
+      ((myRole === "plaintiff" && endProposedBy === "plaintiff") ||
+        (myRole === "defendant" && (endProposedBy === "defendant" || endProposedBy === "guest")));
+    const isOpponent = !!endProposedBy && !isMyEnd && !!myRole;
+    const prev = prevIsOpponentEndProposalRef.current;
+    prevIsOpponentEndProposalRef.current = isOpponent;
+    if (prev || !isOpponent) return;
+    try {
+      const AudioCtx =
+        window.AudioContext ??
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const osc = ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.value = 880;
+      const gain = ctx.createGain();
+      gain.gain.value = 0.08;
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.15);
+      setTimeout(() => ctx.close(), 200);
+    } catch {
+      // autoplay policy などで失敗しても無視する。
+    }
+  }, [caseData?.endProposedBy, myRole]);
+
   async function handleJoinAsAccount() {
     setError("");
     setLoading(true);
@@ -498,8 +535,12 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
 
       {isOpponentEndProposal && (
         <div className="max-w-2xl mx-auto w-full px-4 pt-2">
-          <div className="bg-stone-100 border border-stone-300 text-stone-700 rounded-xl px-4 py-3 flex flex-col gap-2">
-            <p className="text-sm">
+          <div
+            className="bg-amber-50 border border-amber-300 text-amber-900 rounded-xl px-4 py-3 flex flex-col gap-2 animate-pulse"
+            role="alert"
+            aria-live="polite"
+          >
+            <p className="text-sm font-semibold">
               {opponentName ?? "相手"}さんが話し合いの終了を提案しています。
             </p>
             <button
