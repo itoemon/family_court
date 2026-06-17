@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
-import { Case, Role, Argument, JudgeMessage, DefenseMessage } from "@/lib/types";
+import { Case, Role, Argument, JudgeMessage, DefenseMessage, EndProposalActor } from "@/lib/types";
 import JudgeMessageBubble from "@/app/components/JudgeMessageBubble";
 import ContradictionWarningBubble from "@/app/components/ContradictionWarningBubble";
 import DefenseChat from "@/app/components/DefenseChat";
@@ -24,6 +24,22 @@ const ROLE_LABELS: Record<Role, string> = {
   plaintiff: "提案者",
   defendant: "反対者",
 };
+
+// FEAT-006 / BUG-006: 終了提案の自分/相手判定を render と useEffect の両方で
+// 同じロジックから引くため、純関数として切り出す。バナー (視覚) と
+// ビープ音 (聴覚) の発火条件をひとつの定義に集約しドリフトを防ぐ。
+function computeEndProposalState(
+  endProposedBy: EndProposalActor | null | undefined,
+  myRole: Role | null
+): { isMyEndProposal: boolean; isOpponentEndProposal: boolean } {
+  const proposed = endProposedBy ?? null;
+  const isMyEndProposal =
+    !!proposed &&
+    ((myRole === "plaintiff" && proposed === "plaintiff") ||
+      (myRole === "defendant" && (proposed === "defendant" || proposed === "guest")));
+  const isOpponentEndProposal = !!proposed && !isMyEndProposal && !!myRole;
+  return { isMyEndProposal, isOpponentEndProposal };
+}
 
 export default function CaseRoom({ caseId }: { caseId: string }) {
   const searchParams = useSearchParams();
@@ -161,16 +177,17 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
   // Web Audio API で 880Hz / 0.15s の単音を再生する。autoplay policy で
   // 失敗しても catch で無視 (バナー強調 animate-pulse + amber 配色が
   // 視覚補助としてメイン)。
-  const prevIsOpponentEndProposalRef = useRef(false);
+  // 初回マウントを「新規提案到来」と誤検知しないため ref の初期値を null とし、
+  // null → 何かの遷移はトリガから除外する。
+  const prevIsOpponentEndProposalRef = useRef<boolean | null>(null);
   useEffect(() => {
-    const endProposedBy = caseData?.endProposedBy ?? null;
-    const isMyEnd =
-      !!endProposedBy &&
-      ((myRole === "plaintiff" && endProposedBy === "plaintiff") ||
-        (myRole === "defendant" && (endProposedBy === "defendant" || endProposedBy === "guest")));
-    const isOpponent = !!endProposedBy && !isMyEnd && !!myRole;
+    const { isOpponentEndProposal: isOpponent } = computeEndProposalState(
+      caseData?.endProposedBy ?? null,
+      myRole
+    );
     const prev = prevIsOpponentEndProposalRef.current;
     prevIsOpponentEndProposalRef.current = isOpponent;
+    if (prev === null) return;
     if (prev || !isOpponent) return;
     try {
       const AudioCtx =
@@ -441,11 +458,10 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
 
   // FEAT-006: 終了提案 / 延長投票の自分側状態算出
   const endProposedBy = caseData.endProposedBy;
-  const isMyEndProposal =
-    !!endProposedBy &&
-    ((myRole === "plaintiff" && endProposedBy === "plaintiff") ||
-      (myRole === "defendant" && (endProposedBy === "defendant" || endProposedBy === "guest")));
-  const isOpponentEndProposal = !!endProposedBy && !isMyEndProposal && !!myRole;
+  const { isMyEndProposal, isOpponentEndProposal } = computeEndProposalState(
+    endProposedBy,
+    myRole
+  );
 
   const myExtensionVote =
     myRole === "plaintiff"
