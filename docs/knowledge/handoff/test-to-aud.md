@@ -61,7 +61,7 @@ grep -n "isOpponentEndProposal" app/case/\[id\]/CaseRoom.tsx
 ```
 
 期待結果:
-- render 部分: `bg-amber-50`, `border-amber-300`, `text-amber-900`, `animate-pulse`, `role="alert"`, `aria-live="polite"` が追加
+- render 部分: `bg-amber-50`, `border-amber-300`, `text-amber-900`, `animate-pulse`, `role="alert"` が追加（`role="alert"` は暗黙に `aria-live="assertive"` を持つため `aria-live` の追加は不要）
 - 条件ロジック（`&&`）自体は変わっていない
 
 ### 3. ビープ音 useEffect の確認
@@ -73,17 +73,30 @@ grep -B 5 -A 20 "useEffect.*endProposedBy" app/case/\[id\]/CaseRoom.tsx
 
 期待結果:
 ```typescript
+// boolean | null 型の ref で「未確定」「false」「true」を区別する。
+// caseData / myRole が null のうちは ref を更新せず、確定後の最初の観測値を
+// ベースラインとして ref に焼き込む (その回は鳴らさない)。以降の
+// false → true 遷移のみで再生する。
+const prevIsOpponentEndProposalRef = useRef<boolean | null>(null);
 useEffect(() => {
-  if (prevEndProposedRef.current === null && caseData?.endProposedBy) {
-    // false → true 遷移のみで再生
-    try {
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      // 880Hz / sine wave / 0.15s / gain 0.08
-    } catch (error) {
-      console.error('[case] opponent end proposal beep:', error);
-    }
+  if (!caseData || !myRole) return;
+  const { isOpponentEndProposal: isOpponent } = computeEndProposalState(
+    caseData.endProposedBy,
+    myRole
+  );
+  const prev = prevIsOpponentEndProposalRef.current;
+  prevIsOpponentEndProposalRef.current = isOpponent;
+  if (prev === null) return;          // ベースライン化 (初回確定時は鳴らさない)
+  if (prev || !isOpponent) return;    // false → true 遷移以外は鳴らさない
+  try {
+    const AudioCtx =
+      window.AudioContext ??
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    // 880Hz / sine wave / 0.15s / gain 0.08
+  } catch {
+    // autoplay policy などで失敗しても無視 (バナー強調が補助)
   }
-  prevEndProposedRef.current = caseData?.endProposedBy || null;
 }, [caseData?.endProposedBy, myRole]);
 ```
 
@@ -93,7 +106,7 @@ useEffect(() => {
 git status
 ```
 
-期待: 変更ファイルは `app/case/[id]/CaseRoom.tsx` のみ
+期待: `app/` 配下の実装変更は `app/case/[id]/CaseRoom.tsx` のみ（docs / test-log / audit-log は本タスクの記録として更新あり）
 
 ```bash
 git diff app/case/\[id\]/CaseRoom.tsx | head -100

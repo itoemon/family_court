@@ -177,12 +177,15 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
   // Web Audio API で 880Hz / 0.15s の単音を再生する。autoplay policy で
   // 失敗しても catch で無視 (バナー強調 animate-pulse + amber 配色が
   // 視覚補助としてメイン)。
-  // 初回マウントを「新規提案到来」と誤検知しないため ref の初期値を null とし、
-  // null → 何かの遷移はトリガから除外する。
+  // 「既に出ている提案を初回ロードで読み込んだだけ」では鳴らさないため、
+  // caseData / myRole が確定する前は ref を更新せず、確定後の最初の観測値を
+  // ベースラインとして ref に焼き込む (その回は鳴らさない)。以降の
+  // false → true 遷移のみで再生する。
   const prevIsOpponentEndProposalRef = useRef<boolean | null>(null);
   useEffect(() => {
+    if (!caseData || !myRole) return;
     const { isOpponentEndProposal: isOpponent } = computeEndProposalState(
-      caseData?.endProposedBy ?? null,
+      caseData.endProposedBy,
       myRole
     );
     const prev = prevIsOpponentEndProposalRef.current;
@@ -207,6 +210,11 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
     } catch {
       // autoplay policy などで失敗しても無視する。
     }
+    // 依存配列は caseData?.endProposedBy と myRole のみ。caseData 全体を入れると
+    // 2 秒ごとの polling で fetchCase が新参照の caseData を返すたびに effect が
+    // 無駄に再実行される。早期 return の caseData null チェックは依存に挙げる
+    // 必要のない type narrowing 用途のため、exhaustive-deps を無効化する。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caseData?.endProposedBy, myRole]);
 
   async function handleJoinAsAccount() {
@@ -554,7 +562,6 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
           <div
             className="bg-amber-50 border border-amber-300 text-amber-900 rounded-xl px-4 py-3 flex flex-col gap-2 animate-pulse"
             role="alert"
-            aria-live="polite"
           >
             <p className="text-sm font-semibold">
               {opponentName ?? "相手"}さんが話し合いの終了を提案しています。
