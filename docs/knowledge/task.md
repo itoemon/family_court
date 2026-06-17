@@ -2,98 +2,111 @@
 
 > **優先順位**: このファイルの内容は最優先。設計書・handoff メモと矛盾する場合は必ずこちらを優先すること。
 >
-> **重要 1**: `docs/knowledge/design.md` は永続資料である。既存の設計を絶対に削除・短縮しないこと（[[feedback-design-md]] 参照）。本タスクは UI 構造のみの予防的修正で、設計書への追記対象は無い。design.md の修正は **しない**。
+> **重要 1**: `docs/knowledge/design.md` は永続資料である。既存の設計を絶対に削除・短縮しないこと（[[feedback-design-md]] 参照）。本タスクは UI 通知の局所追加で、設計書への追記対象は無い。design.md の修正は **しない**。
 >
-> **重要 2**: 本タスクは **リードが先行実装を済ませた状態でテスタ・オーディに渡している**。アーキ・ビルドは省略する（PR #47 と同じパターン）。テスタはリグレッション確認が主目的、オーディはリード実装の差分監査が主目的。
+> **重要 2**: 本タスクは **リードが先行実装を済ませた状態でテスタ・オーディに渡している**。アーキ・ビルドは省略する（PR #47 / PR #50 と同じパターン）。テスタはリグレッション確認が主目的、オーディはリード実装の差分監査が主目的。
 
 ## 今回のタスク
 
-`useSearchParams()` を使う Client Component に `<Suspense>` 境界を付与する。Next.js 16 App Router の公式ガイダンス遵守と、将来の静的最適化への備え。
+相手が「終了を提案」したことを能動的に通知する。現状の `isOpponentEndProposal` バナーは静的で、画面が active でも見落とされやすい。
 
-**バックログ ID**: BUG-008
-**ブランチ**: `feature/20260615-201330-bug-008`（既に切ってある）
+**バックログ ID**: BUG-006
+**ブランチ**: `feature/20260617-091907-bug-006`（既に切ってある）
 
 ---
 
 ### 背景
 
-`app/auth/login/page.tsx` と `app/case/[id]/CaseRoom.tsx` で `useSearchParams()` を直接呼び出しているが、いずれも最寄りの祖先で `<Suspense>` でラップされていない。`app/layout.tsx:44` の `<Suspense>` は `<Header />` のみを包んでおり、`{children}` 配下には Suspense 境界が存在しない。
+現状、相手が「終了を提案」したことは polling 経由でバナー（`isOpponentEndProposal` 分岐、`CaseRoom.tsx:499-514`）が表示されるが、配色が `bg-stone-100` + `border-stone-300` と他のシステム表示と同等で、視覚的な強調がない。相手画面が active でも見落とされる可能性があり、active でない場合は気づきようがない。
 
-現時点ではテスタ実行で build エラー・ランタイム警告が観測されていない。両ページとも `"use client"` 全体で初めからクライアント側レンダリングであり静的化されていないため実害なし。ただし Next.js の公式ガイダンスでは Suspense ラップが推奨されており、将来 Next.js の静的最適化が強化された際に build 警告が出る可能性がある。
-
-backlog [BUG-008]、由来: 2026-06-15 BUG-007 監査（audit_20260615_095410.md LOW-001）。
+backlog [BUG-006]、由来: 2026-06-13 ダイチ手動確認。
 
 ---
 
 ### 修正方針（実装済み）
 
-#### 1. `/auth/login` ― Server + Client 分割
+#### 通知方式の選定（2026-06-17 ダイチ確認）
 
-- `app/auth/login/LoginForm.tsx` を新規作成し、現状の `page.tsx` の中身（`useState` / `useRouter` / `useSearchParams` / フォーム JSX）をそのまま移す。`export default function LoginForm` とする
-- `app/auth/login/page.tsx` を Server Component に書き換え、`<Suspense fallback={<LoginFormSkeleton />}><LoginForm /></Suspense>` でラップ
-- `LoginFormSkeleton` は同ファイル内で定義（または `LoginForm.tsx` から export）。ログインフォームの骨組み（h1「ログイン」 + 無効化された input 2 つ + 無効化されたボタン）を表示
+「バナー強調 + 音」のシンプル組み合わせを採用。ブラウザ通知 API（Notification.requestPermission）は許可フロー設計が必要なため別タスクへ。タブタイトル点滅（document.title 書き換え）も別タスク。
 
-#### 2. `/case/[id]` ― 既存 Server Component に Suspense ラップ
+#### 1. バナー強調（視覚通知）
 
-- `app/case/[id]/page.tsx` は既に Server Component（PR #36 で変換済み）。`<CaseRoom caseId={id} />` を `<Suspense fallback={<CaseRoomSkeleton />}><CaseRoom caseId={id} /></Suspense>` でラップ
-- `CaseRoomSkeleton` は `app/case/[id]/page.tsx` 内に定義するか、別ファイルに切り出す。シンプルな「読み込み中…」テキストで OK（CaseRoom は 825 行と大きいが、Suspense fallback は loading 状態の placeholder で十分）
-- `CaseRoom.tsx` 自体は触らない（825 行のロジックを変更しない）
+`CaseRoom.tsx:499-516` の `isOpponentEndProposal` バナーを次のとおり強調する:
 
----
+- 配色を amber 系へ変更（`bg-amber-50` + `border-amber-300` + `text-amber-900`）。プロジェクト内で「警告 / 注意」トーンとして既に確立（`ContradictionWarningBubble.tsx`, `app/page.tsx`, `app/me/_components/LawsCard.tsx`）
+- `animate-pulse` を最外殻 `<div>` に追加して脈動アニメーション。ユーザーが「同意して終了」を押すか、相手が撤回するまで継続
+- テキストに `font-semibold` を追加して文字も強調
+- アクセシビリティ: `role="alert"` + `aria-live="polite"` を追加（スクリーンリーダー向け）
 
-### スコープ外
+#### 2. ビープ音（聴覚通知）
 
-- `CaseRoom.tsx` の内部リファクタ（825 行の責務分割は別タスク）
-- `useSearchParams()` のロジック変更（既存挙動を維持）
-- `app/layout.tsx` の `<Suspense>` 境界の見直し（`Header` だけ包む構造は本タスクで触らない）
-- 他の Client Component (例: `signup/page.tsx`) の Suspense 化（`useSearchParams()` を使っていない経路は対象外）
+`CaseRoom.tsx` に新規 `useEffect` を追加し、polling で `caseData` が更新された結果として `isOpponentEndProposal` が **false → true 遷移** した瞬間を `useRef` で検知して、Web Audio API でビープ音を再生する:
+
+- 周波数 880Hz / sine wave / 0.15 秒 / gain 0.08（控えめな音量）
+- `window.AudioContext` または `webkitAudioContext` で構築、未対応ブラウザは静かにスキップ
+- `try/catch` で autoplay policy 等の失敗を握り、`phase=judging` 遷移はロールバックしない（バナー強調が補助）
+- 音源ファイルは追加しない（Web Audio API で生成、依存ゼロ）
+
+#### 3. スコープ外（明示）
+
+- 自分側終了提案バナー（`isMyEndProposal`、`CaseRoom.tsx:518-524`）は触らない（自分のアクション結果なので強調不要）
+- ブラウザ通知 API（Notification.requestPermission）の許可フロー実装
+- タブタイトル点滅（document.title 書き換え）
+- 音量設定 / ミュート UI（将来の課題）
+- 終了提案 *以外* の通知（延長投票確定、判決完了など）
 
 ---
 
 ### テスト観点（テスタが行うリグレッション確認の方向性）
 
-`TEST_MODE=1` 経由でテスト Supabase（`eckrccrfnblzdbflnssf`）に対して動作する。E2E ユーザー A/B（`e2e_user_a@example.com` / `e2e_user_b@example.com`、パスワード `E2eTest123!`）はテスト DB に存在。
+`TEST_MODE=1` 経由でテスト Supabase（`eckrccrfnblzdbflnssf`）に対して動作する。E2E ユーザー A/B はテスト DB に存在。
 
 #### 必須（リグレッション確認）
 
-1. **CRITICAL M01〜M04 をフル実行**: 既存の 2 ユーザー会話・セッション復元・第三者割り込み拒否・ゲスト被告フローが全て通過すること
-2. **BUG-007 / BUG-004 関連 spec 実行**: 既存の `?next=` 解釈・ログイン後遷移・弁護人 AI タブ表示が引き続き動作すること
-3. **`tests/e2e/bug005-closing-trigger.spec.ts` 実行**: BUG-005 の動作が壊れていないこと
+1. **CRITICAL M01〜M04 をフル実行**: 既存の認証・会話フロー・セッション復元・第三者割り込み拒否が全て通過すること
+2. **BUG-007 / BUG-004 / BUG-005 spec の実行**: 既存挙動への影響がないこと
 
 #### 推奨
 
-4. `npm run build` が `useSearchParams()` 関連の警告を出さないこと（実装時に既に確認済み、テスタは build を回さなくて良い）
+3. `npm run build` が新規 `useEffect` に関する警告を出さないこと（実装時に既に確認済み）
 
-#### 新規 spec
+#### 新規 spec の方針
 
-本タスクでは新規 E2E spec を **追加しない**。Suspense 境界の有無は静的な構造変更で、既存 CRITICAL spec が認証フロー全体を経由しているため、これらが通れば回帰検知として十分。新規 spec を増やすメリットは小さい（spec 増加によるパイプライン時間増のデメリットの方が大きい）。
+本タスクでは新規 E2E spec を **追加しない**。理由:
+
+- バナー配色変更と `animate-pulse` は Playwright で「アニメーションが動いている」を検証するのが難しい（ロバスト性に欠ける）
+- Web Audio API の音再生は E2E では音声出力の有無を確認できない（ブラウザ環境依存）
+- どちらも UI 装飾と補助通知の範疇で、機能要件としては `isOpponentEndProposal` バナーが表示されること自体が主体（既存挙動）
+
+代わりに、本変更がリグレッションを起こさないことを既存 CRITICAL + BUG spec のフル実行で担保する。
 
 ---
 
 ### オーディに対する観点
 
-- `app/auth/login/page.tsx` が Server Component（`"use client"` ディレクティブなし）になっていること
-- `LoginForm.tsx` に `useSearchParams()` が残っていること、`<Suspense>` の祖先側でラップされていること
-- `app/case/[id]/page.tsx` が `<Suspense>` で `<CaseRoom />` を包んでいること、CaseRoom 自身は変更されていないこと
-- fallback の Skeleton コンポーネントが「読み込み中」を視覚的に示すレベルの最小実装になっていること（過度な装飾を避ける）
-- `useSearchParams()` を使う他の Client Component が新たに発生していないこと（grep `-rn "useSearchParams" app/` で 2 箇所のみであることを確認）
-- **git status 最終確認**: 新規ファイル `LoginForm.tsx` が untracked のまま残っていないこと（[[feedback-commit-check]]）
+- `CaseRoom.tsx` のバナー条件レンダリング (`isOpponentEndProposal && ...`) のロジック自体が変更されていないこと
+- `useEffect` の依存配列が `[caseData?.endProposedBy, myRole]` で適切なこと（過度な依存を入れていない）
+- `useRef` の前回値追跡が `false → true` 遷移のみで再生をトリガすること（`true → true` や逆遷移で再生しないこと）
+- `try/catch` で AudioContext 失敗を握っており、phase 遷移や他処理に影響を与えないこと
+- 配色変更が `ContradictionWarningBubble.tsx` などのプロジェクト既存パターンに整合していること
+- 自分側 `isMyEndProposal` バナーは触られていないこと
+- **git status 最終確認**: 新規ファイルなし、変更は `CaseRoom.tsx` と `task.md` のみであること（[[feedback-commit-check]]）
 
 ---
 
 ### 関連ファイル
 
-- `app/auth/login/page.tsx` (Server Component に書き換え、Suspense ラップ追加)
-- `app/auth/login/LoginForm.tsx` (新規、既存 page.tsx の中身を移植)
-- `app/case/[id]/page.tsx` (Suspense ラップ追加、`CaseRoomSkeleton` 定義)
-- `app/case/[id]/CaseRoom.tsx` (変更なし)
-- `app/layout.tsx` (変更なし)
+- `app/case/[id]/CaseRoom.tsx`（音再生 `useEffect` 追加 + バナー強調）
+- `docs/knowledge/task.md`（本ファイル）
+- 既存テストファイル（変更なし、リグレッション確認のため）
 
 ---
 
 ### 確定事項
 
-- リード先行実装で進める（アーキ・ビルド省略、PR #47 前例）
-- 新規 E2E spec は追加しない（既存 CRITICAL でリグレッション検知が十分）
-- design.md への追記はしない（UI 構造変更のみで、永続資料に残す設計判断が無い）
-- ブランチ命名は agents.sh のハードコード命名と併存しないよう、リードが事前に切る形を採用
+- 通知方式: **バナー強調 + ビープ音** のシンプル組み合わせ（2026-06-17 ダイチ確認）
+- ブラウザ通知 API / タブタイトル点滅は別 PR
+- 音源ファイル追加せず Web Audio API で生成
+- リード先行実装で進める（PR #47 / PR #50 と同じパターン）
+- 新規 E2E spec は追加しない（既存 CRITICAL + BUG spec でリグレッション確認が十分）
+- design.md への追記はしない

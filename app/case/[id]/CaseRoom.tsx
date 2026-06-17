@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
-import { Case, Role, Argument, JudgeMessage, DefenseMessage } from "@/lib/types";
+import { Case, Role, Argument, JudgeMessage, DefenseMessage, EndProposalActor } from "@/lib/types";
 import JudgeMessageBubble from "@/app/components/JudgeMessageBubble";
 import ContradictionWarningBubble from "@/app/components/ContradictionWarningBubble";
 import DefenseChat from "@/app/components/DefenseChat";
@@ -24,6 +24,22 @@ const ROLE_LABELS: Record<Role, string> = {
   plaintiff: "提案者",
   defendant: "反対者",
 };
+
+// FEAT-006 / BUG-006: 終了提案の自分/相手判定を render と useEffect の両方で
+// 同じロジックから引くため、純関数として切り出す。バナー (視覚) と
+// ビープ音 (聴覚) の発火条件をひとつの定義に集約しドリフトを防ぐ。
+function computeEndProposalState(
+  endProposedBy: EndProposalActor | null | undefined,
+  myRole: Role | null
+): { isMyEndProposal: boolean; isOpponentEndProposal: boolean } {
+  const proposed = endProposedBy ?? null;
+  const isMyEndProposal =
+    !!proposed &&
+    ((myRole === "plaintiff" && proposed === "plaintiff") ||
+      (myRole === "defendant" && (proposed === "defendant" || proposed === "guest")));
+  const isOpponentEndProposal = !!proposed && !isMyEndProposal && !!myRole;
+  return { isMyEndProposal, isOpponentEndProposal };
+}
 
 export default function CaseRoom({ caseId }: { caseId: string }) {
   const searchParams = useSearchParams();
@@ -154,6 +170,52 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
     if (count === 0) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [caseData?.arguments?.length, caseData?.judgeMessages?.length]);
+
+  // BUG-006: 相手の終了提案を検知したらビープ音で通知する。
+  // polling (fetchCase, 2 秒間隔) で caseData が更新された結果として
+  // isOpponentEndProposal が false → true へ遷移した瞬間を ref で追跡し、
+  // Web Audio API で 880Hz / 0.15s の単音を再生する。autoplay policy で
+  // 失敗しても catch で無視 (バナー強調 animate-pulse + amber 配色が
+  // 視覚補助としてメイン)。
+  // 「既に出ている提案を初回ロードで読み込んだだけ」では鳴らさないため、
+  // caseData / myRole が確定する前は ref を更新せず、確定後の最初の観測値を
+  // ベースラインとして ref に焼き込む (その回は鳴らさない)。以降の
+  // false → true 遷移のみで再生する。
+  const prevIsOpponentEndProposalRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!caseData || !myRole) return;
+    const { isOpponentEndProposal: isOpponent } = computeEndProposalState(
+      caseData.endProposedBy,
+      myRole
+    );
+    const prev = prevIsOpponentEndProposalRef.current;
+    prevIsOpponentEndProposalRef.current = isOpponent;
+    if (prev === null) return;
+    if (prev || !isOpponent) return;
+    try {
+      const AudioCtx =
+        window.AudioContext ??
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const osc = ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.value = 880;
+      const gain = ctx.createGain();
+      gain.gain.value = 0.08;
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.15);
+      setTimeout(() => ctx.close(), 200);
+    } catch {
+      // autoplay policy などで失敗しても無視する。
+    }
+    // 依存配列は caseData?.endProposedBy と myRole のみ。caseData 全体を入れると
+    // 2 秒ごとの polling で fetchCase が新参照の caseData を返すたびに effect が
+    // 無駄に再実行される。早期 return の caseData null チェックは依存に挙げる
+    // 必要のない type narrowing 用途のため、exhaustive-deps を無効化する。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [caseData?.endProposedBy, myRole]);
 
   async function handleJoinAsAccount() {
     setError("");
@@ -404,11 +466,10 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
 
   // FEAT-006: 終了提案 / 延長投票の自分側状態算出
   const endProposedBy = caseData.endProposedBy;
-  const isMyEndProposal =
-    !!endProposedBy &&
-    ((myRole === "plaintiff" && endProposedBy === "plaintiff") ||
-      (myRole === "defendant" && (endProposedBy === "defendant" || endProposedBy === "guest")));
-  const isOpponentEndProposal = !!endProposedBy && !isMyEndProposal && !!myRole;
+  const { isMyEndProposal, isOpponentEndProposal } = computeEndProposalState(
+    endProposedBy,
+    myRole
+  );
 
   const myExtensionVote =
     myRole === "plaintiff"
@@ -498,8 +559,11 @@ export default function CaseRoom({ caseId }: { caseId: string }) {
 
       {isOpponentEndProposal && (
         <div className="max-w-2xl mx-auto w-full px-4 pt-2">
-          <div className="bg-stone-100 border border-stone-300 text-stone-700 rounded-xl px-4 py-3 flex flex-col gap-2">
-            <p className="text-sm">
+          <div
+            className="bg-amber-50 border border-amber-300 text-amber-900 rounded-xl px-4 py-3 flex flex-col gap-2 animate-pulse"
+            role="alert"
+          >
+            <p className="text-sm font-semibold">
               {opponentName ?? "相手"}さんが話し合いの終了を提案しています。
             </p>
             <button
