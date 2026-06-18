@@ -5,6 +5,7 @@ import MemberList from "./_components/MemberList";
 import InvitePanel from "./_components/InvitePanel";
 import ProposalPanel from "./_components/ProposalPanel";
 import InvitationAccept from "./_components/InvitationAccept";
+import VisibilityToggle from "./_components/VisibilityToggle";
 
 export default async function LawDetailPage({
   params,
@@ -21,7 +22,7 @@ export default async function LawDetailPage({
 
   const { data: law } = await supabase
     .from("laws")
-    .select("id, name, article, owner_id, created_at, updated_at")
+    .select("id, name, article, owner_id, is_public, created_at, updated_at")
     .eq("id", lawId)
     .maybeSingle();
 
@@ -156,6 +157,9 @@ export default async function LawDetailPage({
             existingMemberIds={memberData.map(m => m.user_id)}
             pendingInviteeIds={pendingInvitations.map(i => i.invitee_id)}
           />
+        )}
+        {isOwner && (
+          <VisibilityToggle lawId={lawId} isPublic={law.is_public} />
         )}
       </div>
     </main>

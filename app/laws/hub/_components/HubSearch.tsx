@@ -1,0 +1,83 @@
+'use client';
+
+import { useEffect, useRef, useState } from "react";
+import type { PublicLawListItem } from "@/lib/types";
+import PublicLawCard from "./PublicLawCard";
+
+interface Props {
+  initialLaws: PublicLawListItem[];
+  initialQuery: string;
+}
+
+// 検索ボックス + 結果差し替え。初期表示は SSR 済みの initialLaws、
+// 以降の絞り込みは debounce して GET /api/laws/public?q=... を fetch する（設計 (B)）。
+export default function HubSearch({ initialLaws, initialQuery }: Props) {
+  const [query, setQuery] = useState(initialQuery);
+  const [laws, setLaws] = useState<PublicLawListItem[]>(initialLaws);
+  const [error, setError] = useState<string | null>(null);
+  // 初回マウント時のみ SSR 結果をそのまま使い再取得をスキップする。以降は値に
+  // 関わらず debounce fetch する（空文字復帰時も再取得して一覧を全件へ戻すため）。
+  const mountedRef = useRef(false);
+
+  useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      return;
+    }
+
+    // AbortController で前のリクエストを中断し、古いクエリのレスポンスが
+    // 後から返って最新の結果を上書きする競合（stale response）を防ぐ。
+    const controller = new AbortController();
+    const handle = setTimeout(async () => {
+      setError(null);
+      try {
+        const res = await fetch(
+          `/api/laws/public?q=${encodeURIComponent(query)}`,
+          { signal: controller.signal }
+        );
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          setError(data?.error ?? "検索に失敗しました");
+          return;
+        }
+        setLaws(data ?? []);
+      } catch (e) {
+        if ((e as { name?: string }).name === "AbortError") return; // 中断は無視
+        setError("検索に失敗しました");
+      }
+    }, 300);
+
+    return () => {
+      clearTimeout(handle);
+      controller.abort();
+    };
+  }, [query]);
+
+  return (
+    <div className="space-y-4">
+      <input
+        type="text"
+        value={query}
+        onChange={e => setQuery(e.target.value)}
+        placeholder="法律名で検索"
+        maxLength={100}
+        className="w-full border border-stone-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
+      />
+
+      {error && <p className="text-sm text-rose-600">{error}</p>}
+
+      {laws.length === 0 ? (
+        <div className="text-center py-16 text-stone-400">
+          <p className="text-lg">公開されている法律がありません</p>
+          <p className="text-sm mt-1">条件を変えて検索してみましょう</p>
+        </div>
+      ) : (
+        <ul className="space-y-3">
+          {laws.map(law => (
+            <PublicLawCard key={law.id} law={law} />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}

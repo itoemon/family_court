@@ -146,8 +146,18 @@ export interface Law {
   name: string;
   article: string;
   owner_id: string;
+  is_public: boolean;
   created_at: string;
   updated_at: string;
+}
+
+// Hub 一覧のレスポンス境界型。owner_id を持たないことで個人識別子の漏洩を型レベルでも防ぐ。
+export interface PublicLawListItem {
+  id: string;
+  name: string;
+  article: string;
+  owner_display_name: string;
+  created_at: string;
 }
 
 export interface LawMember {

@@ -2550,3 +2550,438 @@ AI 閉廷宣告の生成と `judge_messages` への INSERT を担う共通ヘル
 - 注意事項（解消未確定の論点）:
   - **`lastSpeakerRole` を SELECT する追加 DB アクセスのコスト**: 既存 `end-proposal` / `extension-vote` には arguments テーブルへの SELECT がなく、本タスクで 1 ラウンドトリップ追加される。`judging` 遷移経路は頻度が低いため許容と判断するが、もし polling 中の負荷観測で問題が出たら、`end-proposal` 内で `cases.current_turn` の反転値を fallback として使う最適化を後追いで検討する（ただし current_turn は「次に話す人」を示すため、反転すれば「直前に話した人」になるという前提が成立するかは要検証。今回は精度を優先して arguments 由来とする）。
   - **`api_key_encrypted` が NULL のケース**: 原告がプロフィール画面で API キーを未登録のまま `phase=judging` に到達するシナリオでは、AI 閉廷宣告生成がスキップされる（`console.warn` ログのみ）。closing greeting は INSERT されるため会話としては最低限成立する。verdict 生成自体も同じ API キーを使うため、未登録状態では verdict 画面側で別途エラー処理が走る既存挙動に乗る（本タスクで verdict 側の挙動は変えない）。
+
+---
+
+## FEAT-004 法案 Hub（公開・インポート）
+
+由来: `docs/backlog.md` の `[FEAT-004] 法案 Hub（公開・インポート機能）`。依存: FEAT-003（法律作成機能）/ FEAT-002（フレンド機能）。スコープ確定: task.md「スコープ確定事項（2026-06-18 ダイチ確認）」。
+
+### 概要（変更の目的・背景）
+
+FEAT-003 で「オーナー + 招待メンバーのみ閲覧可」の法律機能を実装済みである。`laws` には公開フラグが無く、フレンド関係外のユーザーが他人の良い法律を再利用する手段がない。FEAT-004 は「オーナーが任意で法律を公開 → 他の認証ユーザーが Hub（`/laws/hub`）で閲覧・検索 → 自分がオーナーの新規法律として純クローンでインポート」という流れを追加する、新サブシステムの最小実装である。
+
+設計の最重要原則は **「公開で広げる範囲を `laws` 本体（`name` / `article`）だけに限定する」** ことである。公開法律であってもメンバー構成・招待・提案・投票は非メンバーに一切見せない。これは既存の RLS 境界（`law_members` / `law_invitations` / `law_proposals` / `law_proposal_votes` は「メンバーのみ SELECT」）を**変更しない**ことで自動的に担保する。本タスクで触れるのは `laws` の公開可視範囲を 1 段広げる SELECT ポリシーの追加のみである。
+
+確定済みの 3 方針（task.md より、設計はこの前提で固定）:
+
+1. **公開モデル = `is_public` トグル**: `laws` に `is_public boolean` を 1 つ追加し、オーナーが ON/OFF で Hub 公開を切り替える最小モデル。`visibility` enum 化・限定公開は行わない。
+2. **インポート = 純クローン**: 公開法律の `name` + `article` をコピーしてインポーターがオーナーの**新規法律**を作る。出自リンク（`imported_from` 等）は**持たない**。
+3. **Hub の可視範囲 = 認証ユーザーのみ**: 既存 `laws` が `authenticated` 限定 GRANT なのと一貫させる。`anon` 公開・SEO はしない。`/laws/hub` は middleware の `/laws` プレフィックス保護に既に含まれる（後述「制約・前提条件」で確認）。
+
+### API 仕様（変更・追加するエンドポイント）
+
+#### 共通方針（既存パターン踏襲）
+
+全 3 エンドポイントとも FEAT-003 / environment.md の規約に従う:
+
+- 認証確認は `createSessionClient()` + `auth.getUser()`。`null` なら 401。
+- 動的セグメント `[id]` は処理先頭・DB アクセス前に `isUuid()`（`lib/text-utils.ts`、PR #27 で共通化済み）で検証し、不正なら 400。不正値そのものをレスポンス/ログにエコーしない（LOW バッチ対応の方針踏襲）。
+- 書き込み（visibility 更新・import の INSERT）は `createAdminClient()` 経由で行い、認可はアプリ層で明示的に判定する（RLS に委ねない）。
+- エラーレスポンス形状は既存ルートと同形 `Response.json({ error: <string> }, { status })`。
+- 読み取り（Hub 一覧の `laws` SELECT）は MEDIUM-001 の二層防御方針に整合させ、`laws` 本体は `createSessionClient()`（新 RLS `laws_select_public` で二重防御）で読む。他ユーザーの `profiles.display_name` だけは `createAdminClient()` で narrow に取得する（理由は後述）。
+
+---
+
+#### 1. `PATCH /api/laws/[id]/visibility`（公開トグル・オーナーのみ）
+
+法律の Hub 公開状態を切り替える。
+
+**リクエスト**
+```json
+{ "is_public": true }
+```
+
+**レスポンス**
+```json
+{ "id": "uuid", "is_public": true }
+```
+
+**処理順序**
+1. `auth.getUser()` → null なら 401
+2. `isUuid(id)` → 不正なら 400
+3. body の `is_public` が `boolean` 型か検証（`typeof !== "boolean"` なら 400）
+4. `createAdminClient()` で対象 `laws` の `owner_id` を SELECT → 行なしなら 404
+5. `owner_id !== user.id` なら 403
+6. `createAdminClient()` で `laws.is_public` を更新。**`updated_at` は触らない**
+7. 更新後の `{ id, is_public }` を返す
+
+**`updated_at` を更新しない設計判断**: FEAT-003 では `updated_at` は「条文（`article`）の改定が合意成立した時刻」を表す意味論で運用している（改定合意時に `laws.updated_at = now()`）。公開状態の切り替えは条文改定ではなく可視性メタデータの変更であるため、`updated_at` を動かすと「最終改定日時」の意味が壊れ、`/laws` 一覧等の並び順・表示に意図しない影響を与える。したがって visibility 変更では `updated_at` を据え置く。
+
+**エラー**
+| ステータス | 条件 |
+|-----------|------|
+| 400 | `id` が UUID でない / `is_public` が boolean でない |
+| 401 | 未認証 |
+| 403 | 呼び出し元がオーナーでない |
+| 404 | 法律が存在しない |
+
+---
+
+#### 2. `GET /api/laws/public`（Hub 一覧・認証ユーザー）
+
+公開法律を新しい順に返す。Hub ページの初期表示およびクライアント側の検索に用いる。
+
+**クエリパラメータ**
+- `q`（任意）: `name` の部分一致検索語。サーバ側で `trim` + 長さ上限（後述）+ LIKE 特殊文字エスケープを行う。
+
+**レスポンス**
+```json
+[
+  {
+    "id": "uuid",
+    "name": "法律名",
+    "article": "条文テキスト",
+    "owner_display_name": "表示名",
+    "created_at": "ISO8601"
+  }
+]
+```
+
+**`owner_id` を返さないこと**（task.md 明示）。オーナーの個人識別子・メール等は一切含めない。表示名（`owner_display_name`）のみ返す。
+
+**処理**
+1. `auth.getUser()` → null なら 401
+2. `q` を正規化（`trim`、空なら無条件、長さ上限超過は上限で切る、LIKE 特殊文字 `% _ \` をエスケープ）
+3. 共有ヘルパー `fetchPublicLaws({ sessionClient, adminClient, q })`（後述）を呼び出して整形済み配列を取得
+4. 配列を返す
+
+**件数上限 = 50（MVP）の根拠**: 本アプリの想定ユーザー規模（恋人・夫婦・家族の少人数・低頻度利用、ADR-002）では公開法律の総数が当面小さい。ページネーション UI を持ち込むと Hub の最小スコープを超える。`created_at DESC` で新着 50 件に固定し、「探したいものは検索（`q`）で絞る」運用とする。将来 50 件で溢れる規模になった時点でカーソルページネーションを追加する（スコープ外・後述）。上限到達時にサイレントに打ち切られることを UI 側で示すかは実装段階で判断（最小実装では「新着 50 件」である旨の注記で足りる）。
+
+**`owner_display_name` の取得方法と admin 利用範囲（重要）**:
+
+- `laws` 本体（`is_public = true` の行）は `createSessionClient()` で SELECT する。新 RLS `laws_select_public` により認証ユーザーは公開法律行を読める（= RLS が認可境界そのものを表現し、二層防御になる）。
+- ただしオーナーは**他人**であり、`profiles` の他人行 SELECT 権限は FEAT-002 以降「本人行のみ」に絞られている（MEDIUM-001 でも `profiles` の他者列開放は意図的にスコープ外とした）。そのため `owner_display_name` はセッションクライアントでは取得できない。
+- 解決策: `laws` を読んで得た `owner_id` の集合に対し、`createAdminClient()` で `profiles` を `select("id, display_name").in("id", ownerIds)` の **1 クエリ（バッチ）** で引き、`owner_id → display_name` のマップを作って各行に解決する。**`owner_id` はレスポンス整形時に捨てる**（応答境界で落とす）。
+- admin の利用範囲は「`profiles.display_name` の読み取りのみ」に限定する。`api_key_encrypted` 等の機微列は SELECT しない。これは FEAT-003 `GET /api/laws` がオーナー名を解決するのに admin で `profiles` を引いていたのと同一の限定パターンである。
+
+**エラー**
+| ステータス | 条件 |
+|-----------|------|
+| 401 | 未認証 |
+
+---
+
+#### 3. `POST /api/laws/[id]/import`（純クローン）
+
+公開法律をインポートし、呼び出しユーザーがオーナーの新規法律を作成する。
+
+**パスパラメータ**: `[id]` = インポート**元**の公開法律 ID。
+
+**リクエスト**: ボディなし。
+
+**レスポンス**
+```json
+{ "id": "uuid" }
+```
+（新規作成された法律の ID。UI はこれで `/laws/[id]` に遷移する）
+
+**処理順序**
+1. `auth.getUser()` → null なら 401
+2. `isUuid(id)` → 不正なら 400
+3. `createAdminClient()` でインポート元 `laws` を `select("id, name, article, is_public")` で取得 → 行なしなら 404
+4. `is_public !== true` なら 403（非公開法律はインポート不可）
+5. `createAdminClient()` で新規 `laws` を INSERT:
+   - `name` = インポート元と同一
+   - `article` = インポート元のコピー
+   - `owner_id` = インポーター（`user.id`）
+   - `is_public` = `false`（クローンは既定で非公開。公開したければインポーター自身が visibility トグルで明示的に公開する）
+6. `createAdminClient()` で `law_members` にインポーター本人を INSERT（`law_id` = 新規法律, `user_id` = `user.id`）。FEAT-003 `POST /api/laws` の「作成者 = オーナー兼メンバー」初期化と同一手順
+7. 新規法律の `{ id }` を返す
+
+**設計上の注意（純クローンの徹底）**:
+- インポート元の `law_members` / `law_invitations` / `law_proposals` / `law_proposal_votes` は**一切コピーしない**。複製するのは `name` と `article` のみ。
+- 出自リンク（`imported_from` 等のカラム）は持たない（確定方針 2）。元法律と新法律の間にデータ上の参照関係を作らない。
+- **元法律は完全に不変**: import 経路はインポート元 `laws` 行を `is_public` の読み取りにしか使わず、UPDATE/DELETE しない。所有者・条文・行数が変わらないことを E2E で検証する。
+- name/article の文字数制約（`name` ≤ 100 / `article` ≤ 2000）はインポート元が作成時に既に満たしているため新たな検証は不要だが、DB の CHECK 制約（FEAT-003 で定義済み）は INSERT 時に引き続き効く。
+- 重複インポート検知はしない（同じ法律を何度でもインポート可、確定スコープ）。
+
+**`laws` + `law_members` の 2 INSERT の整合性**: FEAT-003 `POST /api/laws` と同一の初期化手順を踏襲する。2 文に分けて INSERT する場合、`law_members` INSERT が失敗するとメンバー無しの孤児 `laws` 行が残るリスクがあるが、これは FEAT-003 法律作成と同一の既存パターンであり、本タスクで新たに整合性機構（RPC/トランザクション）を導入することはしない（FEAT-003 の実装手順をそのまま再利用する）。FEAT-003 の `POST /api/laws` がエラーハンドリング・順序をどう実装しているかをビルドが確認し、import でも同一手順を再現すること（引き継ぎメモ参照）。
+
+**エラー**
+| ステータス | 条件 |
+|-----------|------|
+| 400 | `id` が UUID でない |
+| 401 | 未認証 |
+| 403 | インポート元が非公開（`is_public = false`） |
+| 404 | インポート元が存在しない |
+
+### データモデル（DB スキーマ・型定義の変更）
+
+#### `laws` への列追加
+
+```sql
+ALTER TABLE public.laws
+  ADD COLUMN IF NOT EXISTS is_public boolean NOT NULL DEFAULT false;
+```
+
+- `NOT NULL DEFAULT false`: 既存の全法律は非公開がデフォルト。公開は明示的なオプトインのみ。
+- `ADD COLUMN IF NOT EXISTS` で冪等化（OPS-002 方針。`schema.sql` と二重適用しても 42701/duplicate column で停止しない）。
+
+#### RLS ポリシー追加（既存ポリシーは変更しない）
+
+```sql
+DROP POLICY IF EXISTS laws_select_public ON public.laws;
+CREATE POLICY laws_select_public ON public.laws FOR SELECT
+  TO authenticated
+  USING (is_public = true);
+```
+
+**設計の核心（複数 PERMISSIVE ポリシーの OR 評価）**: PostgreSQL は同一テーブル・同一コマンド（SELECT）に対する複数の **PERMISSIVE** ポリシーを **OR** で結合する。したがって既存の `laws_select_member_or_invitee`（MEDIUM-001 で導入、オーナー/メンバー/pending invitee に許可）と、新規 `laws_select_public`（`is_public = true` に許可）は OR 評価され、**ある行は「メンバー等である」または「公開である」のいずれかを満たせば SELECT 可**となる。これにより:
+- メンバーは自分の非公開法律を従来どおり閲覧できる（`laws_select_member_or_invitee` 経由、挙動不変）。
+- 全認証ユーザーは公開法律を閲覧できる（`laws_select_public` 経由、新規）。
+- 既存ポリシーを**一切書き換えない**ため、メンバー閲覧 UX のリグレッションが構造的に起きない。
+
+**`TO authenticated` 限定**: ポリシーを `authenticated` ロールに限定し、`anon` には評価させない（確定方針 3・FEAT-002 LOW-001 の最小権限の教訓）。既存 `laws` の GRANT は `authenticated` のみで、本タスクで GRANT は変更しない。
+
+**他テーブルのポリシーは変更しない**: `law_members` / `law_invitations` / `law_proposals` / `law_proposal_votes` の SELECT ポリシーは「メンバーのみ」のまま据え置く。これにより、法律が公開されても**メンバー構成・招待・提案・投票は非メンバーから観測不能**であることが RLS 側で自動的に保証される（Hub はこれらのテーブルを引かない）。
+
+#### インデックス（推奨・冪等）
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_laws_public_created
+  ON public.laws (created_at DESC)
+  WHERE is_public = true;
+```
+
+Hub 一覧の `WHERE is_public = true ORDER BY created_at DESC LIMIT 50` を支える部分インデックス。MVP 規模では性能上必須ではないが、コストが極小で前方安全性が高いため推奨する。`IF NOT EXISTS` + 明示名で冪等化する。
+
+#### migration ファイル（新規 1 枚・冪等）
+
+ファイル例: `supabase/migrations/<timestamp>_feat004_laws_is_public.sql`
+
+```sql
+-- FEAT-004: laws に is_public を追加し、公開法律を全認証ユーザーが
+--           SELECT できる RLS ポリシーを足す（Hub 公開・インポートの土台）。
+-- 冪等方針: OPS-002 に従い ADD COLUMN IF NOT EXISTS / DROP POLICY IF EXISTS → CREATE。
+BEGIN;
+
+ALTER TABLE public.laws
+  ADD COLUMN IF NOT EXISTS is_public boolean NOT NULL DEFAULT false;
+
+DROP POLICY IF EXISTS laws_select_public ON public.laws;
+CREATE POLICY laws_select_public ON public.laws FOR SELECT
+  TO authenticated
+  USING (is_public = true);
+
+CREATE INDEX IF NOT EXISTS idx_laws_public_created
+  ON public.laws (created_at DESC)
+  WHERE is_public = true;
+
+COMMIT;
+```
+
+- 既存マイグレーション（`20260526000003_feat003_laws.sql` 等）は applied 済みのため**編集しない**。新規 1 枚を追加する。
+- `BEGIN`/`COMMIT` で囲み、列追加・ポリシー作成・インデックス作成を 1 トランザクションにまとめる。
+
+#### `schema.sql` への反映方針（OPS-002 = 冷凍庫）
+
+`supabase/schema.sql` は本番スナップショット（「冷凍庫」）であり、新カラム・新ポリシーの**真実は migration 側**にある。OPS-002 の方針に従い、本タスクでは `schema.sql` を編集しない。`schema.sql → migrations/*.sql` の昇順一括適用（`scripts/setup-test-db.sh`、PR #55）は、冪等化済みの本 migration を再適用してもエラーなく通る（`ADD COLUMN IF NOT EXISTS` / `DROP POLICY IF EXISTS`）。テスト DB への適用はリードが行う（task.md 記載）。
+
+#### 型定義（TypeScript）
+
+`lib/types.ts` の既存 `Law` インターフェースに 1 フィールド追加する:
+
+```typescript
+export interface Law {
+  id: string;
+  name: string;
+  article: string;
+  owner_id: string;
+  is_public: boolean;   // ← 追加（FEAT-004）
+  created_at: string;
+  updated_at: string;
+}
+```
+
+Hub 一覧アイテム用の新規型を追加する（`owner_id` を含まない = レスポンス境界の型で個人識別子の漏洩を型レベルでも防ぐ）:
+
+```typescript
+export interface PublicLawListItem {
+  id: string;
+  name: string;
+  article: string;
+  owner_display_name: string;
+  created_at: string;
+}
+```
+
+### コンポーネント設計（新設・変更するファイルの責務と仕様）
+
+#### 共有データ取得ヘルパー（新設）
+
+`lib/laws-public.ts`（新規）に Hub 一覧取得ロジックを 1 箇所へ集約する。
+
+設計判断（トレードオフ）: Hub ページ（Server Component の初期表示）と `GET /api/laws/public`（クライアント検索用 API）は**同一の取得・整形ロジック**を必要とする。同じ SQL 形・`owner_display_name` 解決・`owner_id` 除去・件数上限を 2 箇所に書くと、片方だけ修正されて漏洩境界がずれる危険がある。したがって両者が呼ぶ純粋な取得ヘルパー `fetchPublicLaws({ sessionClient, adminClient, q })` を切り出す（`lib/case-closing.ts` / `lib/text-utils.ts` 等、ロジックを lib に切り出す既存慣習に整合）。
+
+責務:
+1. `sessionClient` で `laws` を `select("id, name, article, owner_id, created_at").eq("is_public", true)` ＋ `q` があれば `.ilike("name", "%"+escaped+"%")` ＋ `.order("created_at", { ascending: false })` ＋ `.limit(50)` で取得（新 RLS `laws_select_public` で二層防御）。
+2. 取得行の `owner_id` 集合に対し `adminClient` で `profiles` を `select("id, display_name").in("id", ownerIds)` でバッチ取得し、`owner_id → display_name` マップを作る。
+3. 各行を `PublicLawListItem` に整形し（`owner_id` を捨て、`owner_display_name` を解決。display_name 欠落時は空文字や「（名前未設定）」等のフォールバック）、配列を返す。
+
+#### API ルート（新設 3 本）
+
+```
+app/api/laws/
+  public/
+    route.ts            # GET（Hub 一覧。fetchPublicLaws を呼ぶ）
+  [id]/
+    visibility/
+      route.ts          # PATCH（公開トグル・オーナーのみ）
+    import/
+      route.ts          # POST（純クローン）
+```
+
+各ルートの責務は「API 仕様」節に記載のとおり。`isUuid` ガード・認証確認・認可判定・admin 書き込みの順序を厳守する。
+
+#### Hub ページ（新設）
+
+```
+app/laws/
+  hub/
+    page.tsx                       # Server Component: 初期一覧表示
+    _components/
+      PublicLawCard.tsx            # 公開法律 1 件の表示カード（条文プレビュー含む）
+      HubSearch.tsx                # Client: 検索ボックス + 検索結果の差し替え
+      ImportButton.tsx             # Client: インポート実行 → 遷移
+```
+
+**`app/laws/hub/page.tsx`（Server Component）**
+- `createSessionClient()` で `auth.getUser()`（middleware 保護下だが二重で確認）。
+- `fetchPublicLaws({ sessionClient, adminClient, q: searchParams.q })` で初期一覧（または初期検索結果）を取得。
+- `HubSearch`（検索ボックス）と、各 `PublicLawCard` を縦並びでレンダリング。
+- `/laws` への戻り導線・空状態（0 件）メッセージを含む。
+- 配色・トーンは既存 `app/laws/` を踏襲（stone ベース、`brand-700/800` をプライマリに）。
+
+**`PublicLawCard.tsx`**（Server / Client いずれでも可。表示専用なので Server 推奨だが、`ImportButton` を内包するため実装上は Client 子を内側に持つ構成）
+- 表示要素: `name` / `owner_display_name` / `article` プレビュー / `ImportButton`。
+- 条文プレビュー: 長文は折りたたみまたは省略（CSS `line-clamp` もしくは `truncate` ヘルパー）。`article` は**プレーンテキストとして描画**し、HTML 注入を許さない（既存 `ArticleSection` の描画パターンを踏襲）。
+- Hub ページと検索結果（`HubSearch` のクライアント側差し替え）の**両方で同じ `PublicLawCard` を使う**ことで、表示ロジックの二重実装を避ける。
+
+**`HubSearch.tsx`（Client Component）**
+- `name` 部分一致の検索ボックス。入力をデバウンスして `GET /api/laws/public?q=...` を fetch し、結果（`PublicLawListItem[]`）でクライアント側のリストを差し替える。
+- `fetch` の `res.ok` を必ず検査し、失敗時はエラー表示してリストを壊さない（LOW-002 の「fetch ステータス検査」教訓を踏襲。エラー配色は `rose-*`、`brand-*` をエラーに使わない）。
+- 設計判断（トレードオフ）: 検索方式は (A) URL クエリ更新で Server Component を再レンダリング、(B) クライアント側 fetch で結果差し替え、の 2 案がある。task.md は `GET /api/laws/public` を IN スコープに明示しており、(B) を採ることでこのエンドポイントが Hub の検索体験で実際に使われ、初期表示（SSR・(A) 相当の `searchParams.q`）と live 検索の両立ができる。**推奨は (B)**（初期 SSR は `searchParams.q`、以降の絞り込みは debounce fetch）。両経路が `fetchPublicLaws` と `PublicLawCard` を共有するため整合は保たれる。
+
+**`ImportButton.tsx`（Client Component）**
+- クリックで `POST /api/laws/[id]/import` を実行。`res.ok` を検査。
+- 成功時は返却 `{ id }` で `router.push("/laws/" + id)`（新規法律の詳細へ遷移）。
+- 失敗時（403/404/401/500）はエラー表示し遷移しない。多重クリック防止に処理中は disabled。
+
+#### 公開トグル UI（`/laws/[id]` への追記）
+
+```
+app/laws/[id]/_components/
+  VisibilityToggle.tsx             # Client: 現在の公開状態表示 + ON/OFF 切替（新設）
+```
+
+- `/laws/[id]/page.tsx`（Server Component）の**オーナー分岐でのみ** `VisibilityToggle` をレンダリングする（非オーナー・非メンバーには出さない）。`laws.is_public` を初期値として props で渡す。
+- `VisibilityToggle`: 現在の公開状態（公開中/非公開）を表示し、トグル操作で `PATCH /api/laws/[id]/visibility { is_public }` を実行。`res.ok` 検査の上、成功時は `router.refresh()` または楽観的更新で表示を同期。
+- 既存 `ArticleSection` / `MemberList` / `ProposalPanel` と同居する詳細画面に自然に収まる配置（オーナー向け操作群の近く）。配色は既存トーン踏襲。
+- 公開トグルは「危険操作」ではないため `rose-*` 等の警告色を用いず stone/brand トーンで統一する（FEAT-RESP-HEADER のログアウト扱いと同じ思想）。
+
+#### `/laws` → `/laws/hub` の導線
+
+`app/laws/page.tsx`（既存 Server Component）に `/laws/hub` への遷移リンクを 1 つ追加する。
+
+設計判断（トレードオフ）: 導線は (A) `/laws` 一覧ページ内のリンク、(B) 共通ヘッダ（`HeaderUserMenu`）への項目追加の 2 案がある。(B) はグローバル到達性が高いが、ヘッダは直近 FEAT-RESP-HEADER で刷新されたばかりで、項目追加はその設計（最小項目セット）に影響する。**推奨は (A)**（`/laws` ページ内リンク）。Hub は「法律」機能の一部であり `/laws` からの遷移が文脈的に自然で、ヘッダ刷新の意図を崩さず変更も最小で済む。将来 Hub の利用頻度が高まればヘッダ導線を別途検討する（スコープ外）。
+
+#### middleware
+
+`/laws/hub` は既存の `/laws` プレフィックス保護に含まれる（FEAT-005 設計で確認した `PROTECTED_PATH_PREFIXES` のプレフィックスマッチ、PR #15 E-6）。**middleware は変更不要**。ビルドは `middleware.ts` が `/laws` をプレフィックスマッチで保護していること（`/laws/hub` が確かに保護対象に入ること）を grep で確認し、もし完全一致判定だった場合のみ報告すること（引き継ぎメモ参照）。
+
+### セキュリティ設計（認証・認可・入力検証の方針）
+
+#### 認証・認可
+
+| 操作 | 認可条件 |
+|------|---------|
+| 公開トグル（visibility PATCH） | 認証済み + `laws.owner_id == user.id` |
+| Hub 一覧（GET /api/laws/public） | 認証済み（全認証ユーザー） |
+| インポート（POST import） | 認証済み + インポート元が `is_public == true` |
+| Hub ページ（/laws/hub） | 認証済み（middleware `/laws` 保護下） |
+
+- 公開トグルはオーナーのみ。非オーナーの PATCH は 403。
+- インポートは元法律が `is_public = true` の場合のみ。非公開を import しようとしたら 403（存在しなければ 404）。
+- Hub 一覧・インポートとも認証必須。`anon` には一切開放しない（`laws_select_public` は `TO authenticated`）。
+
+#### 情報漏洩防止（本タスクの最重要観点）
+
+- **`owner_id` ・メール等の個人識別子を Hub API レスポンスに含めない**。返すのは `owner_display_name` のみ。型 `PublicLawListItem` に `owner_id` を持たせないことで型レベルでも防ぐ。
+- **公開法律でもメンバー情報・招待・提案・投票は非メンバーに見せない**。`law_members` / `law_invitations` / `law_proposals` / `law_proposal_votes` の SELECT ポリシーは「メンバーのみ」のまま変更せず、Hub はこれらを一切クエリしない。RLS とアプリ両面で非公開を担保する。
+- **公開法律の `/laws/[id]` 詳細ページは非メンバーに開放しない**（task.md OUT スコープ）。新 RLS `laws_select_public` により非メンバーでも `laws` 行自体は SELECT 可能になるが、`/laws/[id]/page.tsx` の**メンバーシップ・ゲート（`law_members` 判定で非メンバー・非 pending invitee を redirect）を緩めてはならない**。非メンバーの公開法律閲覧は Hub 内のプレビューで完結させる。これは本タスクのリグレッション・ガードであり、E2E でなく実装制約として厳守する（引き継ぎメモ・オーディ観点参照）。
+
+#### 入力検証
+
+- `is_public`: `boolean` 型チェック（`typeof !== "boolean"` で 400）。
+- `q`: `string` 化 + `trim` + 長さ上限（`name` 最大長 100 に整合させ 100 文字程度を上限とする。超過分は切り捨て）+ LIKE 特殊文字（`%` `_` `\`）のエスケープ。ワイルドカード注入・意図しない全件マッチを防ぐ。
+- パス `[id]`: `isUuid()` で UUID 形式検証（不正なら 400）。不正値をレスポンス/ログにエコーしない。
+
+#### 描画
+
+- `article`・`name`・`owner_display_name` はすべてプレーンテキストとして描画する（React の既定エスケープに委ね、`dangerouslySetInnerHTML` を使わない）。既存 `ArticleSection` の条文描画パターンを踏襲し、HTML/スクリプト注入を許さない。
+
+#### レートリミット
+
+- FEAT-003 の `POST /api/laws`（法律作成）には Upstash レートリミットが設定されていない（レートリミットは PR #21 で `/api/users/search` にのみ導入）。インポート（`POST /api/laws/[id]/import`）は法律作成と同種の書き込みであり、**MVP では FEAT-003 の法律作成と同じくレートリミットを設けない**（一貫性優先）。ビルドは `POST /api/laws` 実装にレートリミット呼び出しが無いことを確認し、無ければ import でも踏襲する。将来、書き込み系全般にレートリミットを導入する際は法律作成・インポートを一括対象とする（スコープ外）。
+
+### 制約・前提条件
+
+#### 前提条件
+- FEAT-003（`laws` / `law_members` / `law_invitations` / `law_proposals` / `law_proposal_votes` テーブル、`/laws` 系ページ・API）が稼働済みであること（PR #22）。
+- MEDIUM-001 の `laws_select_member_or_invitee` ポリシーが適用済みであること（PR #26、本タスクはこれに OR で `laws_select_public` を足す）。
+- `lib/text-utils.ts` に `isUuid()` が存在すること（PR #27 で共通化済み）。
+- middleware が `/laws` をプレフィックスマッチで保護していること（PR #15 E-6、FEAT-005 で `PROTECTED_PATH_PREFIXES` を確認済み）。
+- テスト DB（`eckrccrfnblzdbflnssf`）へ本 migration が適用済みであること（冪等。リードが適用、task.md 記載）。
+
+#### 機能上の制約
+- 公開は明示的オプトインのみ（`is_public` 既定 `false`）。既存法律は移行後も全件非公開。
+- インポートは純クローン（`name` + `article` のみ）。出自リンク・元作者クレジットは持たない。
+- インポート元は import 経路で不変（read-only 参照のみ）。
+- 重複インポート検知なし（同一法律を何度でもインポート可）。
+- Hub の `anon` 公開・SEO なし。
+
+#### スコープ外（本タスクで実装しない）
+- `visibility` の enum 化・限定公開（フレンドのみ公開等）。
+- インポート出自リンク（`imported_from`）・元作者クレジット表示。
+- `anon`（未認証）への Hub 公開・SEO・OGP。
+- いいね / 人気度 / タグ / カテゴリ / 並べ替え（新着固定）。
+- 公開法律へのコメント・モデレーション・通報。
+- 非メンバーによる公開法律の `/laws/[id]` 詳細ページ閲覧（Hub 内プレビューで完結）。
+- Hub 一覧のページネーション（50 件固定。溢れたらカーソルページネーションを後日）。
+- 書き込み系 API のレートリミット導入（法律作成と一貫して未導入）。
+
+#### 注意事項（曖昧要件・実装段階で確定する論点。ビルドへ判断を丸投げしない方針で明示）
+- **検索方式 (A)/(B) の最終選択**: 本設計は (B)（クライアント debounce fetch + SSR 初期表示）を推奨するが、実装容易性の観点で (A)（URL クエリ更新で Server 再レンダリング）に倒しても task.md 要件は満たす。ただし (A) の場合でも `GET /api/laws/public` は IN スコープのため実装すること（最低限ヘルパー `fetchPublicLaws` の API 表層として）。
+- **条文プレビューの省略量**: カードの `article` プレビュー文字数（例: 先頭 100〜200 文字 + `…`、または CSS `line-clamp`）は実装段階で既存トーンに合わせて確定する。プレーンテキスト描画は必須。
+- **`owner_display_name` 欠落時の表示**: `profiles.display_name` が空/未取得のオーナーがいた場合のフォールバック文言（空文字 or 「（名前未設定）」）は実装段階で `MeHeader` 等の既存フォールバックに揃える。
+- **`law_members` INSERT 失敗時の孤児 `laws` 行**: FEAT-003 `POST /api/laws` と同一の既存挙動に従う（本タスクで整合性機構を新規導入しない）。FEAT-003 の実装手順をビルドが確認し再現すること。
+- **件数上限到達の UI 表現**: 50 件上限に達した場合の「新着 50 件のみ表示中」の注記有無は実装段階で判断（最小実装では省略可）。
+
+### 実装中に発見・修正した RLS 無限再帰（FEAT-003 由来）
+
+FEAT-004 で公開法律を session client（ユーザー JWT）で読む経路を追加したことで、FEAT-003 / MEDIUM-001 由来の RLS 設計に潜んでいた**無限再帰（`42P17: infinite recursion detected in policy`）**が顕在化した。本タスクの一部として恒久修正する（migration `20260618190000_feat004_fix_laws_rls_recursion.sql`）。
+
+**症状**: 認証ユーザーが `laws` を RLS 下で SELECT すると 42P17 で失敗し、`/laws`・`/laws/[id]` が notFound になる。owner 自身の法律でも planner がポリシーのサブクエリを展開する過程で再帰検出に至る。
+
+**根本原因**: SELECT ポリシーが RLS 下のサブクエリで自テーブル・相互参照テーブルを参照していた。
+- `law_members_select` が `EXISTS(SELECT FROM law_members ...)` で**自テーブルを自己参照**。
+- `laws_select_member_or_invitee`（`EXISTS(law_invitations)`）と `law_invitations_select`（`EXISTS(laws)`）が **laws ↔ law_invitations の相互参照**。
+
+ポリシーのサブクエリにも RLS は適用されるため、これらは評価時に自分自身のポリシーを無限に再帰展開する。FEAT-003 出荷時から潜在していたが、`laws` を session client で読む経路が薄かったため未発覚だった（FEAT-004 で露見）。
+
+**修正方針（Supabase 定石）**: 判定を **SECURITY DEFINER 関数**（所有者権限で実行し RLS を適用しない）に切り出し、各ポリシーからそれを呼ぶことで RLS 再帰の連鎖を断つ。可視性のセマンティクスは完全に不変。
+- `private.is_law_member(p_law_id, p_user_id)`: `law_members` のメンバー判定。
+- `private.is_law_owner(p_law_id, p_user_id)`: `laws` のオーナー判定。
+- いずれも `SECURITY DEFINER` / `STABLE` / `SET search_path = ''`、参照はスキーマ修飾。
+- **配置スキーマは `public` ではなく `private`**（MEDIUM-001 対応）。PostgREST は公開スキーマ（既定 `public`）の関数のみ `/rest/v1/rpc/...` として露出するため、`public` に置くと認証ユーザーが任意の `law_id`/`user_id` でメンバー/オーナー関係を照会できる **boolean オラクル**になる（人間関係グラフの漏洩面）。`private` に置けば RLS からは呼べる（`GRANT USAGE ON SCHEMA private` + `GRANT EXECUTE ... TO authenticated`）が RPC からは外れる。「RLS ヘルパーは非公開スキーマに置く」Supabase 定石。
+- 張り替え対象ポリシー（セマンティクス不変）: `law_members_select` / `law_invitations_select` / `law_proposals_select` / `law_proposal_votes_select` / `laws_select_member_or_invitee`。
+- migration 末尾で `NOTIFY pgrst, 'reload schema'` を発行（後述の PostgREST キャッシュ問題への対応）。
+
+**検証**: A のユーザー JWT で `laws` / `law_members` を REST 直叩きして 42P17 が消えたことを確認。E2E は `tests/e2e/laws.spec.ts`（CRITICAL-L01〜L04: 作成・招待・改定合意・オーナー移譲）が 4/4 通過し、メンバー/招待/提案/移譲のセマンティクスが保たれていることを確認した。
+
+### 運用上の知見: Management API 直 SQL 適用と PostgREST スキーマキャッシュ
+
+migration を Supabase Management API（`/v1/projects/{ref}/database/query`）の直 SQL で適用すると、アプリが使う **PostgREST のスキーマキャッシュが自動更新されない**。このため新カラム（例: `laws.is_public`）を含む `select()` が REST 経由で「column does not exist」扱いになり、`maybeSingle()` が `{data:null}` を返して画面が notFound に倒れる、という形で顕在化する。
+
+**対応**: スキーマを変更する migration の末尾に `NOTIFY pgrst, 'reload schema';` を発行してキャッシュを即時リロードする（本 FEAT-004 の 2 migration はいずれも発行する）。テスト DB へ手動適用した場合も同様にリロードが必要。`scripts/setup-test-db.sh` / `scripts/agents.sh:run_migrations` でも将来このリロードを組み込む余地がある（別タスク）。
