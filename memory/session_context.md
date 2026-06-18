@@ -12,13 +12,13 @@ metadata:
 
 ---
 
-## 最終更新: 2026-06-18（OPS-002 冪等化 PR #53 + setup-test-db.sh PR #55 + backlog 整理 #52/#54。これまでに PR #41-#55）
+## 最終更新: 2026-06-18（OPS-002 冪等化 #53 + setup-test-db.sh #55 + LOW-001-BUG005 #56 + backlog 整理 #52/#54。これまでに PR #41-#56）
 
 ### 現在のブランチ・PR 状態
 
-- 現ブランチ: `main`（クリーン、HEAD `9414b38` = PR #55 マージ後）
+- 現ブランチ: `main`（クリーン、HEAD `1b3b529` = PR #56 マージ後）
 - オープン PR: なし
-- 本連続セッション (2026-06-13〜2026-06-18) でマージした PR: #41〜#55（#48 と #52/#54 は backlog 整理）
+- 本連続セッション (2026-06-13〜2026-06-18) でマージした PR: #41〜#56（#48 と #52/#54 は backlog 整理）
 
 ### このセッション (2026-06-18) でやったこと
 
@@ -48,6 +48,15 @@ metadata:
 - **検証**: 構文 / --dry-run / 本番ブロック / env 未設定 / populated test DB への通常実行で既初期化検出＝安全停止、の 5 シナリオ。実 SQL は OPS-002 で冪等性実証済みなので test DB を壊さず検証完了（preflight が initialized を検出して止まる＝ハーネス全体のスモークテスト）
 - **コパ 4 件消化** (1 PR 1 review): `ls` パース→nullglob 配列 / `curl -sS` + 明示 die / `--help` の shebang 混入除外 / docs に curl・jq 前提明記。すべて LOW、PR 内自己修正してから判定マージ
 - スコープ外: テスト DB の**定期リセット**（public スキーマ drop/recreate）は破壊的 + grant 復元が絡むため別タスク（e2e-test-db.md 残課題に継続記載）
+
+#### E. PR #56 マージ: LOW-001-BUG005 api_key SET 経路の E2E 動的検証
+
+- 問題: e2e_user_a の `api_key_encrypted=NULL` のため BUG-005 の主要価値（AI 閉廷宣告の INSERT + greeting→AI 順序）が CI で一度も踏まれず、リグレッション検知に空白
+- 対応: `lib/judge.ts:generateJudgeMessage` に `TEST_MODE=1` モック分岐（実 Anthropic 回避、決定的非空文字列）。spec に BUG-005-4 追加（**専用 ephemeral plaintiff** を admin で作成し api_key を SET、SET 経路を隔離検証、後始末で case→user 削除）
+- **設計判断**: 共有 e2e_user_a に key を立てず専用ユーザーで隔離（`workers:1` だが隔離性重視）。`handle_new_user` トリガが profile を自動生成、`profiles.id` は `on delete cascade` なので user 削除で profile も消える。case が plaintiff_id を FK 参照するため cleanup は case→user の順
+- **TEST_MODE の届き方**: agents.sh が `export TEST_MODE=1` → claude -p テスタ → Bash → playwright と継承、dev:test サーバ(setsid)も同シェルから継承。両方が見るので spec の `test.skip(TEST_MODE!=='1')` ガードは CI で実行、未設定の手動実行では skip
+- **コパ 5 件消化** (1 PR 1 review): 本番 TEST_MODE 誤設定ガード(production は無視+警告) / spec の TEST_MODE skip ガード / ENCRYPTION_KEY 形式チェック / メール一意化(Date.now+randomBytes) / cleanup delete エラー warn
+- 検証: dev:test (TEST_MODE=1) で bug005 4/4 通過、cleanup 残骸 0、e2e_user_a 汚染なし
 
 ### このセッション (2026-06-13〜06-15) でやったこと
 
@@ -163,7 +172,7 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 
 ### 次セッション開始時の next アクション（優先順）
 
-1. **backlog 未対応の中から**: FEAT-004（法案 Hub、規模大・FEAT-003/002 依存）/ LOW-001-BUG005（AI キー SET 経路の E2E、小粒）/ MON-001/002（マネタイズ、保留）
+1. **backlog 未対応の中から**: FEAT-004（法案 Hub、規模大・FEAT-003/002 依存）/ MON-001/002（マネタイズ、保留）。※ LOW-001-BUG005 は PR #56 で対応済み
 2. **任意フォローアップ**: テスト DB の定期リセット機能（`setup-test-db.sh --reset` 相当、public スキーマ drop/recreate + grant 復元。e2e-test-db.md 残課題）/ 本番動作確認（BUG-004/007 の修正が本番でも動くか、preview は通過済み）/ test DB に累積した cases 99 行の掃除
 
 ### 今セッションで学習した運用パターン（恒久知識）
@@ -203,6 +212,7 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 - **PR #53** (2026-06-18): OPS-002 migration 冪等化。schema.sql と二重定義の 3 ファイルを `DROP POLICY IF EXISTS` / `ADD COLUMN IF NOT EXISTS` 化。populated test DB への再適用で冪等性実証 (`+16 -9`)。approach B 採用、本番 introspection 不要
 - **PR #54** (2026-06-18): backlog の OPS-002 を対応済みへ移管 (PR #53 反映)。docs のみコパ 0 件マージ
 - **PR #55** (2026-06-18): `scripts/setup-test-db.sh` でテスト DB セットアップ自動化。Management API 経由で schema.sql → migrations 一括適用、本番 ref ブロック + 既初期化 preflight + --dry-run。コパ LOW 4 件を PR 内消化 (`+138 -2`)
+- **PR #56** (2026-06-18): LOW-001-BUG005 api_key SET 経路の E2E 動的検証。`lib/judge.ts` に TEST_MODE モック分岐（本番ガード付き）、spec に BUG-005-4（専用 ephemeral plaintiff で隔離検証）。コパ 5 件 PR 内消化 (`+176 -9`)。bug005 4/4 通過
 
 ### 環境・ツール状態（2026-06-15 時点）
 
@@ -266,4 +276,4 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 - PR #30-#34 (2026-06-02): volta 痕跡撤去 / FEAT-RESP-HEADER / FEAT-005 マイページ / LOW-001-002 移管 / BUG-002-003 追加
 - PR #35-#40 (2026-06-03〜06-12): BUG-003 説得力スコア / BUG-002 過去ケース判決画面 / OPS-001 Part 2 env スイッチ / chore lint / chore spec hard assertion / feat ui error.tsx
 - PR #41-#51 (2026-06-13〜06-17): FEAT-006 / OPS-003 / BUG-007 backlog / BUG-007 修正 / BUG-004 修正 / BUG-004 補修 / middleware ?next= / backlog 整理 / BUG-005 閉廷アナウンス / BUG-008 Suspense 境界 / BUG-006 終了提案通知
-- PR #52-#55 (2026-06-18): backlog 整理（BUG-006 削除 + #49-51 反映）/ OPS-002 migration 冪等化 / backlog OPS-002 移管 / setup-test-db.sh 自動化
+- PR #52-#56 (2026-06-18): backlog 整理（BUG-006 削除 + #49-51 反映）/ OPS-002 migration 冪等化 / backlog OPS-002 移管 / setup-test-db.sh 自動化 / LOW-001-BUG005 api_key SET 経路 E2E
