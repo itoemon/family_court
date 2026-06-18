@@ -102,12 +102,20 @@ export default async function LawsPage() {
             <h1 className="text-2xl font-bold text-stone-800">法律</h1>
             <p className="text-stone-500 text-sm mt-1">あなたが参加している法律の一覧</p>
           </div>
-          <Link
-            href="/laws/new"
-            className="px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors"
-          >
-            法律を作る
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/laws/hub"
+              className="px-4 py-2 border border-stone-300 text-stone-700 text-sm rounded-lg hover:bg-stone-100 transition-colors"
+            >
+              Hub を見る
+            </Link>
+            <Link
+              href="/laws/new"
+              className="px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors"
+            >
+              法律を作る
+            </Link>
+          </div>
         </div>
 
         <PendingInvitations invitations={pendingInvitations} />

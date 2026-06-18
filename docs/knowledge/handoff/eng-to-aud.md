@@ -2,142 +2,80 @@
 
 > **注意**: このメモは task.md を補足するものです。task.md と矛盾する場合は task.md を優先してください。
 
-**タスク**: BUG-005 — 閉廷アナウンス条件の修正（AI 閉廷宣告の発火位置を `phase=judging` 遷移時へ移動）
-**日時**: 2026-06-15
-**ブランチ**: feature/20260615-163410（task.md 推奨は `fix/bug-005-closing-announcement-trigger` だが、アーキの設計・引き継ぎコミットが既に本ブランチに乗っていたためそのまま流用）
+**タスク**: FEAT-004 — 法案 Hub（公開・インポート機能）
+**日時**: 2026-06-18
+**ブランチ**: feature/20260618-181925
 
-由来: backlog [BUG-005]、ダイチ手動確認（2026-06-13）。`docs/knowledge/design.md` 末尾 `## BUG-005 閉廷アナウンス条件の修正` を参照。
+由来: backlog [FEAT-004]。`docs/knowledge/design.md` 末尾 `## FEAT-004 法案 Hub（公開・インポート）` および `docs/knowledge/handoff/arch-to-eng.md` を参照。
 
 ---
 
-## 変更ファイル一覧
+## 変更・新規ファイル一覧
 
 | ファイル | 種別 | 内容 |
 |---|---|---|
-| `lib/case-closing.ts` | 新規 | `insertClosingJudgeMessage` ヘルパー（AI 閉廷宣告生成 → `judge_messages` INSERT のみ） |
-| `app/api/cases/[id]/argument/route.ts` | 変更 | `argument` 以外への遷移時は `judge_messages` INSERT を一切しない。closing 生成パスを削除 |
-| `app/api/cases/[id]/end-proposal/route.ts` | 変更 | 両者合意で `phase=judging` 遷移成功 + closing greeting INSERT 成功直後に AI 閉廷宣告を生成・INSERT |
-| `app/api/cases/[id]/extension-vote/route.ts` | 変更 | 両者 finish で `phase=judging` 遷移成功 + closing greeting INSERT 成功直後に AI 閉廷宣告を生成・INSERT |
-
-DB スキーマ変更なし。新規 migration なし（design.md の方針通り）。
+| `supabase/migrations/20260618181925_feat004_laws_is_public.sql` | 新規 | `laws.is_public` 追加 + `laws_select_public` ポリシー + 部分インデックス（冪等） |
+| `lib/types.ts` | 変更 | `Law` に `is_public` 追加、`PublicLawListItem` 新設（`owner_id` を持たない） |
+| `lib/laws-public.ts` | 新規 | `fetchPublicLaws` / `normalizeQuery` / `PUBLIC_LAWS_LIMIT` の共有ロジック |
+| `app/api/laws/[id]/visibility/route.ts` | 新規 | PATCH 公開トグル（オーナーのみ） |
+| `app/api/laws/public/route.ts` | 新規 | GET Hub 一覧（認証ユーザー） |
+| `app/api/laws/[id]/import/route.ts` | 新規 | POST 純クローン import |
+| `app/laws/hub/page.tsx` + `_components/{HubSearch,PublicLawCard,ImportButton}.tsx` | 新規 | Hub ページ |
+| `app/laws/[id]/_components/VisibilityToggle.tsx` | 新規 | オーナー向け公開トグル UI |
+| `app/laws/[id]/page.tsx` | 変更 | `is_public` を SELECT に追加、オーナー分岐に `VisibilityToggle` を配置 |
+| `app/laws/page.tsx` | 変更 | `/laws/hub` への導線リンク追加 |
+| `tests/e2e/feat004-laws-hub.spec.ts` | 新規 | E2E（公開→Hub出現→import→元法律不変、非公開非出現、認可境界） |
 
 ---
 
-## 設計判断と注意事項
+## 設計書からの逸脱・実装上の判断
 
-### 1. AI 閉廷宣告ヘルパー (`lib/case-closing.ts`) の責務
+1. **検索方式は設計推奨の (B) を採用**（注意事項①の確定）。Hub 初期表示は Server Component が `searchParams.q` で SSR し、以降の絞り込みは `HubSearch`（Client）が 300ms debounce で `GET /api/laws/public?q=...` を fetch して結果を差し替える。初期表示と検索結果は同じ `PublicLawCard` を共有。`res.ok` を検査し失敗時はリストを壊さずエラー表示（LOW-002 踏襲、エラー色 `rose-*`）。
 
-- `judge_messages` テーブルへの INSERT のみ。
-- `arguments` テーブル / `DEFAULT_CLOSING_GREETING` / `cases` UPDATE / 認可判定には触れない（テーブル境界保護。task.md 「テーブル境界の整理」確定事項）。
-- AI 生成失敗 / INSERT 失敗とも `console.error` でログのみ。例外を上位に伝播させない。
-- `plaintiffApiKey` が `null` の場合は `console.warn` で `[judge] closing: plaintiff has no api_key_encrypted (case=<id>)` を出して return。
+2. **配色: 新規プライマリ操作（import / 公開トグル ON）に `brand-700/800` を採用**。design.md「配色トーン（stone ベース、`brand-700/800` をプライマリに）」に従った。ただし既存 `app/laws/page.tsx` の「法律を作る」ボタンは `stone-800` を使っており、新規 import/公開ボタンと色が異なる点に留意（既存ボタンは変更していない）。`brand-500` は不使用、エラーは `rose-*`。
 
-### 2. `lastSpeakerRole` の解決
+3. **条文プレビューは CSS `line-clamp-4`**（注意事項②の確定）。`whitespace-pre-wrap` でプレーンテキスト描画、`dangerouslySetInnerHTML` 不使用。HTML/スクリプト注入なし。
 
-- 呼び出し側 (`end-proposal` / `extension-vote`) で `arguments` から `is_greeting=false` の最新 row を SELECT して `role` を取得。
-- クエリ失敗 / 0 件は `"plaintiff"` を fallback。
-- 解決責務はヘルパーに持たせず、呼び出し側に置く（ヘルパーが `arguments` を触らない方針のため）。
+4. **`owner_display_name` 欠落時のフォールバックは「（名前未設定）」**（注意事項③の確定）。`lib/laws-public.ts` で解決。
 
-### 3. `argument/route.ts` の closing 削除方針
+5. **件数上限到達 UI**: ヘッダに「（新着 50 件）」と常時注記。明示的な「50件で打ち切り」警告は最小実装として省略（注意事項⑤、省略可の確定）。
 
-- 旧設計の三項演算子 `nextPhase === "extension_voting" ? "closing" : "turn"` を完全に削除。
-- `nextPhase === "argument"` の場合のみ turn judge message を生成。`extension_voting` 遷移時は turn も含めて `judge_messages` INSERT を一切行わない（アーキ引き継ぎ「実装の順序」#2、推奨方針に従った）。
-- これにより `argument/route.ts` 経由で `trigger_type='closing'` が INSERT されることはなくなった。
+6. **`q` 正規化**: `trim` → 100 文字に切り詰め → LIKE 特殊文字（`\` `%` `_`）をエスケープ（`\` を先に処理）。`ilike("name", "%"+escaped+"%")` で部分一致。ワイルドカード注入・全件マッチを防止。
 
-### 4. `caseRow` 参照のインライン化（共通化見送り）
+---
 
-- `end-proposal` と `extension-vote` の 2 経路で同等の処理（profile 取得・defendant 名解決・lastSpeakerRole 取得・ヘルパー呼び出し）が並ぶが、関数化していない。
-- 理由: アーキ引き継ぎメモで「2 経路のみ・`caseRow` の参照タイミングが異なる・CLAUDE.md の過度抽象化禁止」が明示されている。
-- 共通化されている部分は `lib/case-closing.ts` の `insertClosingJudgeMessage` のみ（テーブル境界保護目的の最小単位）。
+## 着手前確認の結果（arch-to-eng「grep / 確認すること」への回答）
 
-### 5. 設計書からの逸脱なし
-
-- design.md / arch-to-eng.md の指示にすべて準拠。逸脱した箇所はない。
+- **middleware の `/laws` 保護**: `middleware.ts:32` の `PROTECTED_PATH_PREFIXES` に `/laws` があり、`pathname === p || pathname.startsWith(p + "/")` の**プレフィックスマッチ**。`/laws/hub` は保護対象に入る。**middleware 変更不要**（確認のみ）。
+- **`POST /api/laws` の初期化手順**: `laws` INSERT（`.select("id").single()`）→ `law_members` INSERT の 2 文。import でも**同一手順**を再現（トランザクション/RPC は新規導入せず）。`law_members` INSERT 失敗時は 500 を返す（FEAT-003 と同じ。孤児 `laws` 行の可能性も FEAT-003 と同一挙動。新規整合性機構は導入しない）。
+- **レートリミット**: `POST /api/laws` にレートリミット呼び出しは無い。import でも踏襲して**設けない**。
+- **Route Handler `params`**: 本バージョン（Next 16.2.6）では `params: Promise<{ id: string }>`。既存ルートに合わせ `await params` 後に `isUuid()` ガード。`searchParams` も `Promise`（Hub ページで `await`）。`npm run build` で型生成・検証が通ることを確認済み。
+- **`isUuid` import**: `@/lib/text-utils`。**`profiles.display_name`** 解決は `createAdminClient()` で `.in("id", ownerIds)`（FEAT-003 `GET /api/laws` と同パターン）。機微列（`api_key_encrypted` 等）は SELECT しない。
 
 ---
 
 ## テスタへの注意点
 
-### 必須シナリオ（task.md 「テスト観点」より）
-
-1. **3 ラウンド完了 → 延長投票 continue → 新ラウンド**
-   - `judge_messages` で `trigger_type='closing'` の COUNT が 0 件であることを assert。
-2. **3 ラウンド完了 → 延長投票で両者 finish → `phase=judging`**
-   - `arguments` に closing greeting 2 行（`phase='closing'`, `is_greeting=true`）
-   - `judge_messages` に `trigger_type='closing'` 1 行
-   - `arguments.created_at` (closing greeting) < `judge_messages.created_at` (AI 閉廷宣告) の順序を確認。
-3. **早期 end-proposal 両者合意 → `phase=judging`**
-   - 上記 #2 と同じ条件で assert。
-4. **AI 生成失敗時のフォールバック（推奨）**
-   - `profiles.api_key_encrypted` を NULL の状態にして上記 #2 / #3 を再現。
-   - `phase=judging` 遷移は成功、closing greeting は挿入される。
-   - `judge_messages.trigger_type='closing'` は欠落（0 件）。
-   - サーバログに `[judge] closing: plaintiff has no api_key_encrypted (case=<id>)` が出る。
-5. **`extension_voting` 中の polling**
-   - 3 ラウンド完了 → 延長投票画面で待機 → polling で `judge_messages` を取得し続けても新規 `trigger_type='closing'` レコードが増えない。
-
-### 既存 spec への影響確認
-
-- `tests/e2e/` 配下を全件実行。BUG-007 / BUG-004 / FEAT-006 関連 spec が赤化しないこと。
-- 特に turn 生成パス (`argument/route.ts`) は 3 ラウンド以内では従来通り `trigger_type='turn'` が挿入される（巻き添えで turn が出なくなっていないか確認）。
-
-### テスト DB
-
-- `TEST_MODE=1` 経由でテスト Supabase（`eckrccrfnblzdbflnssf`）に対して動作する。
-- E2E ユーザー A/B（`e2e_user_a@example.com` / `e2e_user_b@example.com`、パスワード `E2eTest123!`）はテスト DB に存在。
+- **migration の適用が前提**: テスト DB（`eckrccrfnblzdbflnssf`）へ `20260618181925_feat004_laws_is_public.sql` を適用しないと `is_public` 列・`laws_select_public` ポリシーが無く、Hub・公開トグルが動かない。**適用はリードが実施**（task.md / 冪等なので再適用安全）。
+- **新規 spec**: `tests/e2e/feat004-laws-hub.spec.ts`。`E2E_TEST_EMAIL_A/B` + `PASSWORD_A/B` + `NEXT_PUBLIC_SUPABASE_URL` + `SUPABASE_SECRET_KEY` を要求（未設定時は `test.skip`）。DB 直接検証は `@supabase/supabase-js` の admin client（既存 `bug005-closing-trigger.spec.ts` 同パターン）。
+- 認可テスト（403）は `page.request.patch/post` で認証 cookie 付きの直接 API 呼び出しを使用。
+- UI セレクタ依存箇所: 公開トグルボタン文言「Hub に公開する」「非公開にする」、バッジ「公開中」「非公開」、import ボタン「インポート」、検索 placeholder「法律名で検索」。
+- 既存 `tests/e2e/laws.spec.ts`（CRITICAL-L01〜L04）+ CRITICAL（M01〜M04）のリグレッションが無いこと（`laws_select_member_or_invitee` は未変更、新ポリシーは OR で追加のみ）。
 
 ---
 
-## オーディへの注意点
+## オーディへの注意点（観点への対応状況）
 
-### grep 確認
-
-```bash
-grep -rn "trigger_type.*closing" app/ lib/
-```
-
-期待結果: `lib/case-closing.ts` の 1 箇所のみ（`judge_messages` INSERT 行）。`app/` 配下に `trigger_type='closing'` の INSERT が残っていれば設計違反。
-
-### コードレビュー観点
-
-- `argument/route.ts` の turn 生成パスが破壊されていない（`nextPhase === "argument"` 内で従来通り動作）。
-- `lib/case-closing.ts` 内に `arguments` テーブル / `DEFAULT_CLOSING_GREETING` への参照がない（テーブル境界保護）。
-- 呼び出し順序: 両経路（end-proposal / extension-vote）で `insertClosingGreetingsForCase` → `insertClosingJudgeMessage` の順が保たれている。
-- ヘルパーのエラーハンドリングが既存パターン（try/catch でログのみ、phase 遷移は続行）と整合している。
-- 並行リクエストでの重複 INSERT 抑止: `end-proposal` / `extension-vote` 双方で `phase=judging` への楽観ロック (`WHERE phase=argument` / `WHERE phase=extension_voting AND 両者票一致`) が既存実装で効いており、AI 閉廷宣告 INSERT 経路もその後でしか走らないため自然に 1 回に絞られる。
-
-### セキュリティ観点
-
-- 平文 API キー (`plaintiffApiKey`) はヘルパー引数として一度渡すのみ、関数内で保持しない（既存 `lib/judge.ts:generateJudgeMessage` と同一パターン）。
-- `console.error` ログにはユーザー入力 / API キー / PII を載せていない（プレフィックス `[judge] closing:` と例外オブジェクトのみ）。
-- ヘルパーは認可判定を行わない（既に認可済みコードパスからのみ呼ばれる前提）。
+- **RLS 境界**: `laws_select_public` は `is_public = true` のみ・`TO authenticated` 限定で OR 追加。既存 `laws_select_member_or_invitee` は未変更。`law_members` / `law_invitations` / `law_proposals` / `law_proposal_votes` の SELECT ポリシーも未変更（メンバーのみ）。→ 非メンバーは非公開法律を読めず、公開法律でもメンバー/招待/提案/投票は観測不能。
+- **認可（API 層）**: visibility はオーナー照合（`owner_id !== user.id` → 403）、import は元法律 `is_public !== true` → 403 / 行なし → 404。いずれも `createAdminClient()` で読み取り判定後に書き込み。
+- **情報漏洩**: Hub API レスポンスは `PublicLawListItem`（`owner_id` 無し）。`fetchPublicLaws` が `owner_id` を整形時に破棄、`owner_display_name` のみ返す。
+- **純クローン / 元法律不変**: import は元 `laws` 行を `is_public` 読み取りにしか使わず UPDATE/DELETE しない。`name`+`article` のみ複製、出自リンク無し、`is_public=false` で INSERT。E2E `FEAT-004-E01` が元法律不変（`toEqual`）を検証。
+- **migration 冪等性**: `ADD COLUMN IF NOT EXISTS` / `DROP POLICY IF EXISTS → CREATE` / `CREATE INDEX IF NOT EXISTS`、`BEGIN`/`COMMIT`。`schema.sql` は未編集（OPS-002 冷凍庫）。
+- **詳細ページ・ガード未緩和**: `/laws/[id]/page.tsx` の非メンバー redirect は変更していない（`VisibilityToggle` はオーナー分岐内にのみ追加）。公開法律でも非メンバーは詳細ページに入れず、Hub プレビューで完結。
 
 ---
 
-## 未実装・スコープ外にしたこと
+## 未実装・スコープ外（task.md / design.md「スコープ外」に準拠）
 
-- `lib/judge.ts:49-55` の closing プロンプト本体（変更なし、既存プロンプトをそのまま流用）。
-- `lib/greetings.ts:insertClosingGreetingsForCase` のシグネチャ・挙動（変更なし）。
-- 過去の `judge_messages.trigger_type='closing'` レコード（旧経路で挿入されたもの）。マイグレーションでの遡及修正は実施しない（task.md L88-90 / design.md L2470 に従う）。
-- `extension_voting` フェーズ中の UI（バナー・モーダル・サイドアイコン）変更。
-- CaseRoom 内の「閉廷しました」システム表示ラベルの調査・修正（task.md L100 でスコープ外明示）。本 PR 着手中に CaseRoom 側で該当ラベルは確認していない。発見時は backlog 派生タスクへ。
-- E2E spec の追加（テスタ担当）。本 PR では `tests/e2e/bug005-closing-trigger.spec.ts` を新規作成していない。
-- 動作確認（ローカル）: `npm run dev` ベースの実機確認は実施せず、型・lint のみで判断。テスタが E2E spec で実環境動作を担保する前提。
-
----
-
-## 残課題・引き継ぎ事項
-
-1. **テスタ**: `tests/e2e/bug005-closing-trigger.spec.ts` を新規作成し、上記「必須シナリオ」#1〜#5 を全て assert する。`arguments.created_at < judge_messages.created_at` の順序確認は polling ベースで（AI 生成完了を待つ）。
-2. **オーディ**: 上記「grep 確認」を実行し、`trigger_type='closing'` の INSERT 箇所が `lib/case-closing.ts` の 1 箇所のみであることを確認する。
-3. **未確定論点**（design.md L2564-2566 より、本 PR では未対応）:
-   - `lastSpeakerRole` 解決のために `arguments` SELECT を 1 ラウンドトリップ追加した。`phase=judging` 遷移経路は頻度が低いため許容と判断したが、polling 中の負荷で問題が出たら後追いで `cases.current_turn` 反転値による fallback 最適化を検討。
-   - `api_key_encrypted` NULL ケースで AI 閉廷宣告がスキップされる際の挙動: closing greeting だけ挿入される。verdict 生成自体も同じ API キーを使うため、未登録状態では verdict 画面側で別途エラー処理が走る既存挙動に乗る（本タスクで verdict 側は変えない）。
-
----
-
-## 確認済み
-
-- 型エラー: `npx tsc --noEmit` で 0 件。
-- lint エラー: `npx eslint` で 0 件（変更 4 ファイル）。
-- grep 確認: `trigger_type.*closing` が `app/` 配下から消え、`lib/case-closing.ts` の 1 箇所のみに収束。
+- `visibility` enum 化・限定公開、import 出自リンク・元作者クレジット、`anon` 公開・SEO・OGP、いいね/タグ/カテゴリ、コメント/モデレーション、非メンバーの詳細ページ閲覧、Hub ページネーション（50 件固定）、書き込み系レートリミット。
+- `applied.txt` は未更新（本 migration はまだテスト DB へ適用されていない＝リードが適用する。適用済み一覧の真実を保つため意図的に触れていない）。
