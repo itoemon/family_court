@@ -8,6 +8,7 @@ create table if not exists public.judge_messages (
 
 alter table public.judge_messages enable row level security;
 
+drop policy if exists "誰でも裁判官メッセージを参照可" on public.judge_messages;
 create policy "誰でも裁判官メッセージを参照可"
   on public.judge_messages for select
   using (true);

@@ -21,26 +21,26 @@ delete from public.cases;
 --   ゲスト被告対応のため uuid ではなく text + check で値を絞る (design.md 参照)。
 -- extension_vote_*: 延長投票の確定値。NULL=未投票。両者揃ったら集計後に NULL に戻す。
 alter table public.cases
-  add column end_proposed_by text null
+  add column if not exists end_proposed_by text null
     check (end_proposed_by is null or end_proposed_by in ('plaintiff','defendant','guest')),
-  add column extension_vote_plaintiff text null
+  add column if not exists extension_vote_plaintiff text null
     check (extension_vote_plaintiff is null or extension_vote_plaintiff in ('continue','finish')),
-  add column extension_vote_defendant text null
+  add column if not exists extension_vote_defendant text null
     check (extension_vote_defendant is null or extension_vote_defendant in ('continue','finish'));
 
 -- ============ 3. profiles に挨拶カラム追加 ============
 -- NULL=未設定 → サーバ側既定文 (lib/greetings.ts) を採用。
 -- 空文字は check 制約と API バリデーションの二重で拒否。
 alter table public.profiles
-  add column opening_greeting text null
+  add column if not exists opening_greeting text null
     check (opening_greeting is null or (char_length(opening_greeting) between 1 and 125)),
-  add column closing_greeting text null
+  add column if not exists closing_greeting text null
     check (closing_greeting is null or (char_length(closing_greeting) between 1 and 125));
 
 -- ============ 4. arguments.is_greeting ============
 -- 固定挨拶 row の識別。挨拶は round = 0 で INSERT、ラウンドカウントから除外。
 alter table public.arguments
-  add column is_greeting boolean not null default false;
+  add column if not exists is_greeting boolean not null default false;
 
 -- ============ 5. cases.phase check 制約更新 ============
 -- 'extension_voting' を追加。ENUM ではなく text + check のため DROP/ADD で安全に切替。
