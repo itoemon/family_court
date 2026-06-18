@@ -34,23 +34,7 @@
 
 ### 運用・テスト基盤（OPS）
 
-#### [OPS-002] テスト DB スキーマソースの整合性回復（schema.sql / migrations / docs 不整合）
-
-- **背景**: OPS-001 Part 2 のセットアップ自走時（2026-06-10）に、`supabase/schema.sql` と `supabase/migrations/*.sql` の重複が原因で「schema.sql → migrations 全実行」を docs 通りに素直にやると最初の migration で停止することが判明。
-- **症状**:
-  - `supabase/schema.sql` が「初期スキーマ」ではなく **本番 DB の現スナップショット**になっており、`profiles.avatar_url` / `profiles.defense_custom_instruction` 列と `judge_messages` テーブルが既に含まれている
-  - 一方 `supabase/migrations/20260524000000_create_judge_messages.sql` と `supabase/migrations/20260526000001_feat002_phase1_profiles.sql` の前半（ALTER TABLE profiles ADD COLUMN）は schema.sql と重複
-  - `docs/operations/e2e-test-db.md` 通りに「schema.sql → migrations 全実行」を素直にやると 1 件目で `42710: policy "誰でも裁判官メッセージを参照可" for table "judge_messages" already exists` で停止する
-  - 2026-06-10 のセットアップはサージカル対応（`20260524000000` 全スキップ、`20260526000001` は `sed -n '10,$p'` で storage 部分のみ流す）で完走させたが、再現性のある手順ではない
-- **対応案**:
-  - **A) schema.sql を初期スキーマ（migration 0 番目）に戻す**: 本番に流した履歴を後から書き換える形になるので OPS リスク要確認。ただし「migrations が完全な履歴」になり最も筋がいい
-  - **B) migrations を冪等化**: `CREATE TABLE IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS` / `DROP POLICY IF EXISTS ... → CREATE POLICY` 等で重複実行を許容する。実装は軽いが「履歴の純度」は犠牲
-  - **C) docs を分離**: `schema.sql` は「冷凍庫」と明示し、新規セットアップ向けに `supabase/setup.sql`（schema + migrations の合成版）を別途用意。docs を「冷凍庫運用」前提に整理
-- **副作用 / 設計上の論点**:
-  - 本番 DB の `supabase_migrations.schema_migrations` テーブルに既適用の migration ID が記録されているか確認が必要（記録あれば履歴改変のリスク）
-  - 採用方針によって `scripts/setup-test-db.sh` 化（前セッションで構想）の難易度が変わる
-- **優先度**: 中（テスト DB セットアップはサージカル手順で済む状態だが、`scripts/setup-test-db.sh` 化や次回プロジェクト立ち上げ時に再現性が壊れる）
-- **由来**: 2026-06-10 OPS-001 Part 2 セットアップ自走中に発見
+（現在、未対応の OPS タスクはない。OPS-002 は PR #53 で対応済み。過去の対応は「対応済み」セクション参照。）
 
 ---
 
@@ -156,3 +140,4 @@
 | PR #49 (BUG-005) | AI 生成「閉廷宣告」（`judge_messages.trigger_type='closing'`）の発火位置を「全ラウンド完了 → `phase=extension_voting` 遷移時」から「ユーザーが終了確定 = `phase=judging` 遷移時」へ移動（新規ヘルパー `lib/case-closing.ts:insertClosingJudgeMessage` を closing INSERT 専用に切り出し、`end-proposal` / `extension-vote` の `phase=judging` 遷移成功直後に呼ぶ。closing greeting → AI 閉廷宣告の `created_at` 順序を呼び出し側で固定。複雑な状態遷移 spec は admin client + REST API 直叩きの fast-path で記述、由来: 2026-06-13 ダイチ手動確認） |
 | PR #50 (BUG-008) | `useSearchParams()` を使う Client Component を Suspense 境界で包む予防的修正（`app/auth/login/page.tsx` を Server Component 化し新規 `LoginForm.tsx` を `<Suspense>` でラップ、`app/case/[id]/page.tsx` で既存 `CaseRoom` を `<Suspense>` でラップ。Skeleton に `role="status"` / `aria-busy` / `aria-live` を付与。Next.js 16 App Router 公式ガイダンス遵守と将来の静的最適化への備え、由来: 2026-06-15 BUG-007 オーディ最終 LOW） |
 | PR #51 (BUG-006) | 相手の「終了を提案」を受けた側へ視覚（amber 配色 + `animate-pulse` + `role="alert"` バナー強調）と聴覚（Web Audio API 880Hz/0.15s sine wave、音源ファイル不要）の二系統で通知（`computeEndProposalState` 純関数で render と useEffect の判定ロジック重複を解消。初回マウント時の ref 初期化による誤発火をコパが catch、PR 内消化、由来: 2026-06-13 ダイチ手動確認） |
+| PR #53 (OPS-002) | `schema.sql` と二重定義になる 3 migration（`20260524000000` judge_messages policy / `20260526000001` profiles 列 + storage policy / `20260612164035` cases・profiles・arguments の FEAT-006 列）を冪等化し（`DROP POLICY IF EXISTS` 前置 / `ADD COLUMN IF NOT EXISTS`）、「schema.sql → migrations 全実行」が 42710・duplicate column で停止する問題を解消。approach B（冪等化）採用。全オブジェクト適用済みの test DB（fresh setup 最悪ケース等価）への再適用でエラーゼロ・policy 正常再作成・cases データ無傷を実証。`scripts/setup-test-db.sh` 化の障壁を除去、由来: 2026-06-10 OPS-001 Part 2 セットアップ中に発見） |
