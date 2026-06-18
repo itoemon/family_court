@@ -29,6 +29,8 @@ Supabase ダッシュボード → **SQL Editor** に以下の順で流す:
    - 開発の進捗で増えているので、ローカルで `ls -1 supabase/migrations/*.sql | sort` して順序を確認
    - applied.txt は本番運用用の管理ファイル。テスト DB では使わない（毎回スキーマを最新に揃え直す前提）
 
+`schema.sql` は本番の現スナップショットであり、`judge_messages`・`profiles` の追加列（`avatar_url` / `defense_custom_instruction` / `opening_greeting` / `closing_greeting`）・`cases` の FEAT-006 列・`arguments.is_greeting` を既に含む。一方これらを作る migration（`20260524000000` / `20260526000001` / `20260612164035`）も同じオブジェクトを定義するため、両者を素直に流すと二重定義になる。これを避けるため当該 migration は冪等化済み（policy は `DROP POLICY IF EXISTS` 前置、列追加は `ADD COLUMN IF NOT EXISTS`）であり、`schema.sql` → migrations 全実行はエラーなく完走する。手動スキップは不要（OPS-002 で対応）。
+
 ### 3. Storage バケットを確認
 
 `feat002_phase1_profiles` の migration で `avatars` バケットが自動作成されるはず。**Storage → Buckets** で `avatars` の存在を確認。
@@ -131,6 +133,6 @@ set -a && source .env.test && set +a
 
 ## 残課題
 
-- マイグレーション適用の半自動化（applied.txt の同等物をテスト DB 用に持つ、または migrate コマンド化）
+- マイグレーション適用の半自動化（applied.txt の同等物をテスト DB 用に持つ、または migrate コマンド化）。なお migration が冪等化された（OPS-002）ことで `schema.sql` → migrations 全実行を機械的に流す `scripts/setup-test-db.sh` 化の障壁は解消済み
 - ratelimit spec のためのテスト用 Redis 切り替え（現状 `.env.test` の `UPSTASH_REDIS_*` が本番と共有なら衝突しないが、別インスタンスがあるほうがクリーン）
 - テスト DB の定期リセット（テストが書き残したデータの蓄積防止）

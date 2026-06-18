@@ -1,10 +1,10 @@
 -- G-1: アバター URL
 ALTER TABLE profiles
-  ADD COLUMN avatar_url text;
+  ADD COLUMN IF NOT EXISTS avatar_url text;
 
 -- G-2: 弁護人カスタム指示（DB CHECK 制約で 200 文字を強制）
 ALTER TABLE profiles
-  ADD COLUMN defense_custom_instruction text
+  ADD COLUMN IF NOT EXISTS defense_custom_instruction text
   CHECK (defense_custom_instruction IS NULL OR char_length(defense_custom_instruction) <= 200);
 
 -- avatars バケット（public = true: 公開 URL で直接参照可能）
@@ -13,6 +13,7 @@ VALUES ('avatars', 'avatars', true, 2097152, ARRAY['image/jpeg', 'image/png', 'i
 ON CONFLICT (id) DO NOTHING;
 
 -- 認証済みユーザーが自分の {user_id}/ 配下にのみアップロード可
+DROP POLICY IF EXISTS "Users can upload own avatar" ON storage.objects;
 CREATE POLICY "Users can upload own avatar"
   ON storage.objects FOR INSERT TO authenticated
   WITH CHECK (
@@ -20,6 +21,7 @@ CREATE POLICY "Users can upload own avatar"
     AND (storage.foldername(name))[1] = auth.uid()::text
   );
 
+DROP POLICY IF EXISTS "Users can update own avatar" ON storage.objects;
 CREATE POLICY "Users can update own avatar"
   ON storage.objects FOR UPDATE TO authenticated
   USING (
@@ -27,6 +29,7 @@ CREATE POLICY "Users can update own avatar"
     AND (storage.foldername(name))[1] = auth.uid()::text
   );
 
+DROP POLICY IF EXISTS "Users can delete own avatar" ON storage.objects;
 CREATE POLICY "Users can delete own avatar"
   ON storage.objects FOR DELETE TO authenticated
   USING (
@@ -35,6 +38,7 @@ CREATE POLICY "Users can delete own avatar"
   );
 
 -- 読み取りは全員可（公開 URL で直接参照するため）
+DROP POLICY IF EXISTS "Anyone can read avatars" ON storage.objects;
 CREATE POLICY "Anyone can read avatars"
   ON storage.objects FOR SELECT TO public
   USING (bucket_id = 'avatars');
