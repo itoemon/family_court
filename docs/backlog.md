@@ -62,13 +62,7 @@
 
 ### バグ修正（BUG）
 
-
-#### [BUG-006] 「終了を提案」時に相手側へ通知する
-
-- **症状**: 現状、相手が「終了を提案」したことは polling 経由でバナー（`isOpponentEndProposal` 分岐）が表示されるが、相手画面が active でないと気づけない。
-- **期待挙動**: 終了提案を受けた側に明示的な通知を出す（音、トースト、ブラウザ通知 API、もしくはバナーの強調アニメーション等、設計時に方式を整理）。
-- **優先度**: 低（既存 polling バナーで最低限の伝達は機能）
-- **由来**: 2026-06-13 ダイチ手動確認
+（現在、未対応の BUG はない。過去の修正は「対応済み」セクション参照。）
 
 ---
 
@@ -159,3 +153,6 @@
 | PR #45 (BUG-004) | ゲスト/アカウント参加直後に弁護人 AI タブが表示されない問題を修正（`handleJoinAsAccount` / `handleJoinAsGuest` の参加成功直後に `await fetchDefenseMessages()` を明示呼び出し。`useEffect([fetchDefenseMessages])` の初回 fetch が参加前の 401/403 で `showDefenseTab=false` に倒れていた根本原因に対処、両経路同時修正、由来: 2026-06-13 ダイチ手動確認） |
 | PR #46 (BUG-004 補修) | PR #45 で add し忘れた `tests/e2e/bug004-defense-tab.spec.ts` と audit-log / test-log を補修コミット（コミット忘れ事故 2 回連続の教訓を `feedback_commit_check.md` に運用化、由来: PR #45 マージ後の漏れ検知） |
 | PR #47 (middleware) | 保護パスのリダイレクトに `?next=` を付与（`middleware.ts` で `/auth/login` リダイレクト時に `loginUrl.searchParams.set("next", pathname + request.nextUrl.search)` を追加。login ページ側は PR #44 で既に URL パーサベースの open redirect ガードを持つため、これだけで「保護パス → ログイン → 元のページに戻る」フローが完成、由来: BUG-007 の意図的スコープ外残宿題） |
+| PR #49 (BUG-005) | AI 生成「閉廷宣告」（`judge_messages.trigger_type='closing'`）の発火位置を「全ラウンド完了 → `phase=extension_voting` 遷移時」から「ユーザーが終了確定 = `phase=judging` 遷移時」へ移動（新規ヘルパー `lib/case-closing.ts:insertClosingJudgeMessage` を closing INSERT 専用に切り出し、`end-proposal` / `extension-vote` の `phase=judging` 遷移成功直後に呼ぶ。closing greeting → AI 閉廷宣告の `created_at` 順序を呼び出し側で固定。複雑な状態遷移 spec は admin client + REST API 直叩きの fast-path で記述、由来: 2026-06-13 ダイチ手動確認） |
+| PR #50 (BUG-008) | `useSearchParams()` を使う Client Component を Suspense 境界で包む予防的修正（`app/auth/login/page.tsx` を Server Component 化し新規 `LoginForm.tsx` を `<Suspense>` でラップ、`app/case/[id]/page.tsx` で既存 `CaseRoom` を `<Suspense>` でラップ。Skeleton に `role="status"` / `aria-busy` / `aria-live` を付与。Next.js 16 App Router 公式ガイダンス遵守と将来の静的最適化への備え、由来: 2026-06-15 BUG-007 オーディ最終 LOW） |
+| PR #51 (BUG-006) | 相手の「終了を提案」を受けた側へ視覚（amber 配色 + `animate-pulse` + `role="alert"` バナー強調）と聴覚（Web Audio API 880Hz/0.15s sine wave、音源ファイル不要）の二系統で通知（`computeEndProposalState` 純関数で render と useEffect の判定ロジック重複を解消。初回マウント時の ref 初期化による誤発火をコパが catch、PR 内消化、由来: 2026-06-13 ダイチ手動確認） |
