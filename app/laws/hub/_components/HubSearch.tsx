@@ -15,11 +15,15 @@ export default function HubSearch({ initialLaws, initialQuery }: Props) {
   const [query, setQuery] = useState(initialQuery);
   const [laws, setLaws] = useState<PublicLawListItem[]>(initialLaws);
   const [error, setError] = useState<string | null>(null);
-  // 初回マウント時は SSR 結果をそのまま使い、無駄な再取得をしない。
-  const initialQueryRef = useRef(initialQuery);
+  // 初回マウント時のみ SSR 結果をそのまま使い再取得をスキップする。以降は値に
+  // 関わらず debounce fetch する（空文字復帰時も再取得して一覧を全件へ戻すため）。
+  const mountedRef = useRef(false);
 
   useEffect(() => {
-    if (query === initialQueryRef.current) return;
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      return;
+    }
 
     const handle = setTimeout(async () => {
       setError(null);

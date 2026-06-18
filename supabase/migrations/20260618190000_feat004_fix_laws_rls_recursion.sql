@@ -14,9 +14,15 @@
 BEGIN;
 
 -- ── 判定ヘルパー（SECURITY DEFINER = 所有者権限で実行し RLS を適用しない）──
+-- 非公開スキーマ private に置く。PostgREST は公開スキーマ（既定 public）の関数のみ
+-- RPC として露出するため、private の関数は /rest/v1/rpc 経由で呼べない。これにより
+-- 「メンバー/オーナー関係の boolean オラクル」化を防ぐ（Supabase 定石・MEDIUM-001 対応）。
+-- RLS ポリシーからの呼び出しには authenticated への USAGE/EXECUTE 付与が必要。
 -- search_path='' で検索パス汚染を防ぎ、全参照をスキーマ修飾する。
+CREATE SCHEMA IF NOT EXISTS private;
+GRANT USAGE ON SCHEMA private TO authenticated;
 
-CREATE OR REPLACE FUNCTION public.is_law_member(p_law_id uuid, p_user_id uuid)
+CREATE OR REPLACE FUNCTION private.is_law_member(p_law_id uuid, p_user_id uuid)
 RETURNS boolean
 LANGUAGE sql
 SECURITY DEFINER
@@ -29,7 +35,7 @@ AS $$
   );
 $$;
 
-CREATE OR REPLACE FUNCTION public.is_law_owner(p_law_id uuid, p_user_id uuid)
+CREATE OR REPLACE FUNCTION private.is_law_owner(p_law_id uuid, p_user_id uuid)
 RETURNS boolean
 LANGUAGE sql
 SECURITY DEFINER
@@ -42,28 +48,28 @@ AS $$
   );
 $$;
 
-GRANT EXECUTE ON FUNCTION public.is_law_member(uuid, uuid) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.is_law_owner(uuid, uuid) TO authenticated;
+GRANT EXECUTE ON FUNCTION private.is_law_member(uuid, uuid) TO authenticated;
+GRANT EXECUTE ON FUNCTION private.is_law_owner(uuid, uuid) TO authenticated;
 
 -- ── ポリシー張り替え（セマンティクス不変・再帰を排除）──
 
 -- law_members: 同じ法律のメンバーなら閲覧可（自己参照を SD 関数経由に）
 DROP POLICY IF EXISTS law_members_select ON public.law_members;
 CREATE POLICY law_members_select ON public.law_members FOR SELECT
-  USING (public.is_law_member(law_id, auth.uid()));
+  USING (private.is_law_member(law_id, auth.uid()));
 
 -- law_invitations: invitee 本人 OR 法律オーナー（laws 参照を SD 関数経由に）
 DROP POLICY IF EXISTS law_invitations_select ON public.law_invitations;
 CREATE POLICY law_invitations_select ON public.law_invitations FOR SELECT
   USING (
     invitee_id = auth.uid()
-    OR public.is_law_owner(law_id, auth.uid())
+    OR private.is_law_owner(law_id, auth.uid())
   );
 
 -- law_proposals: メンバーのみ（law_members 参照を SD 関数経由に）
 DROP POLICY IF EXISTS law_proposals_select ON public.law_proposals;
 CREATE POLICY law_proposals_select ON public.law_proposals FOR SELECT
-  USING (public.is_law_member(law_id, auth.uid()));
+  USING (private.is_law_member(law_id, auth.uid()));
 
 -- law_proposal_votes: 提案の属する法律のメンバーのみ
 -- （law_proposals 経由で is_law_member を呼ぶ。law_proposals のサブクエリは
@@ -74,7 +80,7 @@ CREATE POLICY law_proposal_votes_select ON public.law_proposal_votes FOR SELECT
     EXISTS (
       SELECT 1 FROM public.law_proposals lp
       WHERE lp.id = law_proposal_votes.proposal_id
-        AND public.is_law_member(lp.law_id, auth.uid())
+        AND private.is_law_member(lp.law_id, auth.uid())
     )
   );
 
@@ -85,7 +91,7 @@ DROP POLICY IF EXISTS laws_select_member_or_invitee ON public.laws;
 CREATE POLICY laws_select_member_or_invitee ON public.laws FOR SELECT
   USING (
     owner_id = auth.uid()
-    OR public.is_law_member(id, auth.uid())
+    OR private.is_law_member(id, auth.uid())
     OR EXISTS (
       SELECT 1 FROM public.law_invitations i
       WHERE i.law_id = laws.id
@@ -93,6 +99,12 @@ CREATE POLICY laws_select_member_or_invitee ON public.laws FOR SELECT
         AND i.status = 'pending'
     )
   );
+
+-- 旧版（public スキーマに作ってしまった判定関数）が存在すれば撤去する。
+-- ポリシーは上で private.* へ張り替え済みのため依存は残っていない。
+-- 新規 DB では未作成のため no-op（冪等）。
+DROP FUNCTION IF EXISTS public.is_law_member(uuid, uuid);
+DROP FUNCTION IF EXISTS public.is_law_owner(uuid, uuid);
 
 COMMIT;
 
