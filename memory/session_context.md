@@ -12,13 +12,34 @@ metadata:
 
 ---
 
-## 最終更新: 2026-06-17（PR #51 BUG-006 終了提案通知マージ。これまでに PR #41-#51 + memory 直 commit 3 本）
+## 最終更新: 2026-06-18（OPS-002 migration 冪等化 PR #53 マージ + backlog 整理 PR #52/#54。これまでに PR #41-#54）
 
 ### 現在のブランチ・PR 状態
 
-- 現ブランチ: `main`（クリーン、HEAD `8f233aa` = PR #51 マージ後）
+- 現ブランチ: `main`（クリーン、HEAD `1a18586` = PR #54 マージ後）
 - オープン PR: なし
-- 本連続セッション (2026-06-13〜2026-06-17) でマージした PR: #41, #42, #43, #44, #45, #46, #47, #48, #49, #50, #51
+- 本連続セッション (2026-06-13〜2026-06-18) でマージした PR: #41〜#54（#48 と #52/#54 は backlog 整理）
+
+### このセッション (2026-06-18) でやったこと
+
+#### A. PR #52 マージ: backlog ドリフト整理（BUG-006 削除 + PR #49/#50/#51 を対応済みへ）
+
+- BUG-006 は PR #51 で対応済みなのに「未対応」に残っていたため削除（バグ修正セクションはプレースホルダ化）
+- 対応済みテーブルに PR #49/#50/#51 の 3 行を追記（#48 は backlog 整理のみのため従来慣例どおりテーブル外）
+- docs のみ。コパ COMMENTED 0 件でマージ
+
+#### B. PR #53 マージ: OPS-002 テスト DB スキーマ整合性回復（approach B 冪等化）
+
+- **方針判断**: ダイチが A/B/C から **B（冪等化）** を選択。理由は本番 introspection 不要・低リスク・差分小・docs フロー維持
+- **調査で判明した正体**: `schema.sql`（170 行）は **本番の現スナップショット**で、feat006 適用後の状態（profiles の挨拶列・cases の `end_proposed_by`/`extension_vote_*`・arguments の `is_greeting` まで含む）。`cases`/`profiles` の**ベーステーブルを作る migration は存在しない**（migrations は judge_messages から始まる）ため schema.sql はベース必須。一方 judge_messages policy・profiles 列・feat006 列を migration も定義するため二重定義 → docs どおり「schema.sql → migrations 全実行」で 42710 / duplicate column 停止
+- **修正**: 二重定義の 3 ファイルのみ冪等化。`20260524000000`（judge_messages policy に `DROP POLICY IF EXISTS` 前置）/ `20260526000001`（profiles 列 `ADD COLUMN IF NOT EXISTS` + storage policy 4 件 drop 前置）/ `20260612164035`（cases・profiles・arguments の feat006 列 `ADD COLUMN IF NOT EXISTS`）。schema.sql に無いテーブル（contradiction_warnings/defense_messages/guest_tokens/friends/laws）は fresh setup で 1 回作られ衝突しないため対象外
+- **検証手法（恒久知識）**: 全オブジェクト適用済みの test DB (`eckrccrfnblzdbflnssf`) は **fresh setup で「schema.sql 適用後に migration が当たる」最悪ケースと等価**。Management API (`POST /v1/projects/{ref}/database/query`) で 3 ファイルを再適用 → 42710/duplicate column ゼロ、judge_messages policy 1 件・avatars policy 4 件が正常再作成、`delete from cases` を除外したため cases データ無傷(99行)を確認。`.env.test` を `set -a; source` して test token/ref を使用
+- **applied.txt は独自管理**: Supabase ネイティブ移行履歴 (`supabase_migrations.schema_migrations`) は不使用。run_migrations (agents.sh) が applied.txt で skip 制御するだけなので、approach A の「本番履歴改変リスク」は実質ゼロだった
+- アプリコード差分なし → パイプライン未経由、検証は test DB 直接適用で実施
+
+#### C. PR #54 マージ: backlog の OPS-002 を対応済みへ移管
+
+- PR #53 マージ反映。OPS セクションをプレースホルダ化、対応済みテーブルに PR #53 行追記。docs のみコパ 0 件マージ
 
 ### このセッション (2026-06-13〜06-15) でやったこと
 
@@ -121,12 +142,12 @@ metadata:
 - **コパレビュー学び**: コパは 1 PR 1 review。修正 push しても再レビューしない (古いコメントが「修正前の位置」を指したまま残り続ける)。push 後の 4.5 分待機で「新規ゼロ」を確認するルール ([[feedback-copilot-review]]) は引き続き有効だが、push 後の追加レビューは期待しない方が良い
 - **オーディ取りこぼし学び**: コパが catch した LOW-001 再発 (`prev === null` チェックの不完全実装) をオーディは見逃した。「初回マウントで `ref = false` に書き込まれる → polling で誤発火」の論理を見抜くにはオーディの抽象度が足りなかった可能性
 
-### 未対応の残項目（PR #51 マージ後）
+### 未対応の残項目（PR #54 マージ後）
 
 - **FEAT**: FEAT-004 法案 Hub
-- **OPS**: OPS-002 スキーマ整合性
 - **MON**: MON-001 課金 / MON-002 広告
 - **LOW-001-BUG005**: AI キー SET 経路の E2E 動的検証が現状環境で実行されない (テスト Supabase ユーザー A の `api_key_encrypted=NULL`)
+- （OPS-002 は PR #53 で対応済み。`scripts/setup-test-db.sh` 化は障壁解消済みの任意フォローアップ）
 
 ### コミット忘れ事故 2 回連続の教訓 → 即実証
 
@@ -134,8 +155,8 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 
 ### 次セッション開始時の next アクション（優先順）
 
-1. **backlog 未対応の中から**: BUG-005（閉廷アナウンス条件）/ BUG-006（終了提案通知）/ BUG-008（useSearchParams Suspense 境界）/ OPS-002（test DB スキーマ整合性）/ FEAT-004（法案 Hub）/ MON-001/002（マネタイズ、保留）
-2. **本番動作確認** の任意フォローアップ: BUG-004 / BUG-007 の修正が本番でも動くこと（preview は通過済み）
+1. **backlog 未対応の中から**: FEAT-004（法案 Hub、規模大・FEAT-003/002 依存）/ LOW-001-BUG005（AI キー SET 経路の E2E、小粒）/ MON-001/002（マネタイズ、保留）
+2. **任意フォローアップ**: `scripts/setup-test-db.sh` 化（OPS-002 で障壁解消済み、migration 冪等化により schema.sql→migrations を機械実行できる）/ 本番動作確認（BUG-004/007 の修正が本番でも動くか、preview は通過済み）
 
 ### 今セッションで学習した運用パターン（恒久知識）
 
@@ -170,6 +191,9 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 - **PR #49** (2026-06-15): BUG-005 AI 閉廷宣告の発火位置を `phase=judging` 遷移時へ移動。実装 + spec + design.md で `+1548 -538`、パイプライン 3 巡 + LOW 消化 2 回、コパ待たずマージ (実害ゼロ → [[feedback-copilot-review]] 化)
 - **PR #50** (2026-06-15): BUG-008 useSearchParams を Suspense 境界で包む。リード先行実装 + テスタ 14/14 + オーディ LOW 1 (aria 属性、PR 内消化) + コパ 4.5 分待機ゼロ件マージ。backlog から BUG-005/008/LOW-001 を削除し未対応 6 件に整理
 - **PR #51** (2026-06-17): BUG-006 終了提案にバナー強調 + ビープ音通知。Web Audio API で音源ファイル追加なし。`computeEndProposalState` で render/effect 重複解消 (LOW-002 消化)。コパが初回 LOW-001 消化の不完全 (ref 初期 false 書き込みでの誤発火) を catch、PR 内消化
+- **PR #52** (2026-06-18): backlog ドリフト整理。BUG-006 を未対応から削除 + PR #49/#50/#51 を対応済みテーブルへ追記。docs のみコパ 0 件マージ
+- **PR #53** (2026-06-18): OPS-002 migration 冪等化。schema.sql と二重定義の 3 ファイルを `DROP POLICY IF EXISTS` / `ADD COLUMN IF NOT EXISTS` 化。populated test DB への再適用で冪等性実証 (`+16 -9`)。approach B 採用、本番 introspection 不要
+- **PR #54** (2026-06-18): backlog の OPS-002 を対応済みへ移管 (PR #53 反映)。docs のみコパ 0 件マージ
 
 ### 環境・ツール状態（2026-06-15 時点）
 
@@ -233,3 +257,4 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 - PR #30-#34 (2026-06-02): volta 痕跡撤去 / FEAT-RESP-HEADER / FEAT-005 マイページ / LOW-001-002 移管 / BUG-002-003 追加
 - PR #35-#40 (2026-06-03〜06-12): BUG-003 説得力スコア / BUG-002 過去ケース判決画面 / OPS-001 Part 2 env スイッチ / chore lint / chore spec hard assertion / feat ui error.tsx
 - PR #41-#51 (2026-06-13〜06-17): FEAT-006 / OPS-003 / BUG-007 backlog / BUG-007 修正 / BUG-004 修正 / BUG-004 補修 / middleware ?next= / backlog 整理 / BUG-005 閉廷アナウンス / BUG-008 Suspense 境界 / BUG-006 終了提案通知
+- PR #52-#54 (2026-06-18): backlog 整理（BUG-006 削除 + #49-51 反映）/ OPS-002 migration 冪等化 / backlog OPS-002 移管
