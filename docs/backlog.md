@@ -13,15 +13,7 @@
 
 ### 機能（FEAT）
 
-#### [FEAT-004] 法案 Hub（公開・インポート機能）
-
-- **内容**:
-  - 他ユーザーが作った法律を閲覧できる公開 Hub を設ける
-  - オーナーは自分の法律を Hub に公開できる
-  - 他ユーザーは公開法案を「自分がオーナーの新しい法律」としてインポートでき、自分のフレンド間で利用できる
-- **優先度**: 低（FEAT-003 完成後）
-- **依存**: FEAT-003, FEAT-002
-
+（現在、未対応の FEAT タスクはない。FEAT-004 は PR #57 で対応済み。過去の対応は「対応済み」セクション参照。）
 
 ### 運用・テスト基盤（OPS）
 
@@ -134,3 +126,4 @@
 | PR #53 (OPS-002) | `schema.sql` と二重定義になる 3 migration（`20260524000000` judge_messages policy / `20260526000001` profiles 列 + storage policy / `20260612164035` cases・profiles・arguments の FEAT-006 列）を冪等化し（`DROP POLICY IF EXISTS` 前置 / `ADD COLUMN IF NOT EXISTS`）、「schema.sql → migrations 全実行」が 42710・duplicate column で停止する問題を解消。approach B（冪等化）採用。全オブジェクト適用済みの test DB（fresh setup 最悪ケース等価）への再適用でエラーゼロ・policy 正常再作成・cases データ無傷を実証。`scripts/setup-test-db.sh` 化の障壁を除去、由来: 2026-06-10 OPS-001 Part 2 セットアップ中に発見） |
 | PR #55 (OPS) | `scripts/setup-test-db.sh` でテスト DB セットアップを自動化（OPS-002 の冪等化を前提に、Supabase Management API 経由で `schema.sql` → `migrations/*.sql` を昇順一括適用）。本番 ref ブロック + 既初期化 preflight + `--dry-run` の安全装置。コパ LOW 4 件（`ls`→nullglob / `curl -sS`+die / `--help` shebang 除外 / docs に前提コマンド明記）を PR 内消化、由来: e2e-test-db.md 残課題「マイグレーション適用の半自動化」 |
 | PR #56 (LOW-001-BUG005) | api_key SET 経路の closing 宣告を E2E で動的検証。`lib/judge.ts:generateJudgeMessage` に `TEST_MODE=1` のモック分岐を追加（実 Anthropic 呼び出し回避、本番は通常経路）、spec に BUG-005-4 を追加（専用 plaintiff を admin で作成し `api_key_encrypted` を SET、AI(モック) 閉廷宣告が `judge_messages` へ 1 行 INSERT され greeting → AI 順序が守られることを検証、後始末で case→user 削除）。bug005 spec 4/4 通過・cleanup 残骸 0・e2e_user_a 汚染なしを確認、由来: 2026-06-15 BUG-005 オーディ 2 巡目 LOW-003 |
+| PR #57 (FEAT-004) | 法案 Hub（公開・インポート）。`laws.is_public` トグル + `laws_select_public` RLS（既存ポリシー無変更で OR 評価）、`/api/laws/[id]/visibility`（オーナーのみ）・`/api/laws/public`（Hub 一覧・`owner_id` 非返却・`PublicLawListItem` 型遮断）・`/api/laws/[id]/import`（純クローン・元法律不変）、`/laws/hub` ページ（SSR + debounce 検索 + AbortController）・公開トグル UI。**付随で FEAT-003 由来の laws RLS 無限再帰（42P17）を恒久修正**（`private.is_law_member`/`is_law_owner` の SECURITY DEFINER 関数化で再帰遮断、PUBLIC EXECUTE は REVOKE、`NOTIFY pgrst` でキャッシュ再読込）。アーキ→ビルド→テスタ→オーディのフルパイプライン、テスタ通過・オーディ HIGH0/MEDIUM1/LOW2 を PR 内消化、コパ 5 件消化。feat004 spec 3/3 + laws spec 4/4 通過。本番 DB へ 2 migration 適用済み（is_public 列・RPC 封鎖・PostgREST 反映を検証）、由来: backlog FEAT-004 |
