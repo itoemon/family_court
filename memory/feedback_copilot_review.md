@@ -12,6 +12,7 @@ PR を作成したあと、CI 通過だけでなく **コパ (`copilot-pull-requ
 **How to apply:**
 
 - `git push -u origin <branch>` → `gh pr create` の後、**PR 作成から最低 3〜5 分待ってからコパのレビューを取得する**。コパは PR 作成時に自動レビューする bot で、通常は数分以内にコメント / レビューを残す
+- **コパは 1 PR 1 review** (2026-06-17 PR #51 で実証): 初回コパレビューを消化して push しても、コパは新規 review を残さない。古いインラインコメントは「修正前の行位置」を指したまま残り続ける。push 後の再レビュー待ちは期待しない。修正の妥当性はリードが自身で判定する
 - 確認コマンド:
   ```
   gh api repos/itoemon/family_court/pulls/N/comments  # インラインコメント

@@ -12,13 +12,13 @@ metadata:
 
 ---
 
-## 最終更新: 2026-06-15（FEAT-006 + OPS-003 + BUG-007/004 + middleware ?next= で PR 7 本マージ + memory main 直 commit + backlog 整理 PR #48 + BUG-005 PR #49 + BUG-008 PR #50）
+## 最終更新: 2026-06-17（PR #51 BUG-006 終了提案通知マージ。これまでに PR #41-#51 + memory 直 commit 3 本）
 
 ### 現在のブランチ・PR 状態
 
-- 現ブランチ: `main`（クリーン、HEAD `9149a7a` = PR #50 マージ後）
+- 現ブランチ: `main`（クリーン、HEAD `8f233aa` = PR #51 マージ後）
 - オープン PR: なし
-- 本セッションでマージした PR: #41, #42, #43, #44, #45, #46, #47, #48, #49, #50
+- 本連続セッション (2026-06-13〜2026-06-17) でマージした PR: #41, #42, #43, #44, #45, #46, #47, #48, #49, #50, #51
 
 ### このセッション (2026-06-13〜06-15) でやったこと
 
@@ -112,11 +112,19 @@ metadata:
 - **コパレビュー**: 4.5 分待機して 0 件確認 ([[feedback-copilot-review]] 適用、PR #49 でのミスを今回は避けて規範遵守)
 - backlog 整理: PR #49 で消化済みだが削除し忘れていた BUG-005 + 本タスク BUG-008 + LOW-001 を削除
 
-### 未対応の残項目（PR #50 マージ後）
+#### 10. PR #51 マージ (2026-06-17): BUG-006 相手の終了提案にバナー強調 + ビープ音で通知
+
+- 視覚 (amber 配色 + animate-pulse + role="alert") と聴覚 (Web Audio API 880Hz/0.15s sine wave、音源ファイル不要) の二系統で通知
+- 通知方式 (2026-06-17 ダイチ確認): バナー強調 + 音のシンプル組み合わせ。ブラウザ通知 API / タブタイトル点滅は別タスク
+- `computeEndProposalState` 純関数で render と useEffect の判定ロジック重複を解消 (オーディ LOW-002 消化)
+- **パイプライン**: リード先行実装 → テスタ初回 10/10 (BUG-007 spec 9 件を task.md 指示にもかかわらず実行漏れ) → リード補完で BUG-007 spec 直接実行 9/9 通過 (合計 19/19) → オーディ LOW 2 → 初回消化試行 → コパが LOW-001 再発を catch
+- **コパレビュー学び**: コパは 1 PR 1 review。修正 push しても再レビューしない (古いコメントが「修正前の位置」を指したまま残り続ける)。push 後の 4.5 分待機で「新規ゼロ」を確認するルール ([[feedback-copilot-review]]) は引き続き有効だが、push 後の追加レビューは期待しない方が良い
+- **オーディ取りこぼし学び**: コパが catch した LOW-001 再発 (`prev === null` チェックの不完全実装) をオーディは見逃した。「初回マウントで `ref = false` に書き込まれる → polling で誤発火」の論理を見抜くにはオーディの抽象度が足りなかった可能性
+
+### 未対応の残項目（PR #51 マージ後）
 
 - **FEAT**: FEAT-004 法案 Hub
 - **OPS**: OPS-002 スキーマ整合性
-- **BUG**: BUG-006 終了提案通知
 - **MON**: MON-001 課金 / MON-002 広告
 - **LOW-001-BUG005**: AI キー SET 経路の E2E 動的検証が現状環境で実行されない (テスト Supabase ユーザー A の `api_key_encrypted=NULL`)
 
@@ -131,6 +139,9 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 
 ### 今セッションで学習した運用パターン（恒久知識）
 
+- **コパは 1 PR 1 review、push 後の再レビューはしない**: PR #51 で発覚。初回 push 時にコパが残したインライン指摘を消化して push しても、コパは新規 review を残さない (CI は再実行される)。古いインラインコメントは「修正前の行位置」を指したまま残り続ける。push 後の 4.5 分待機ルール ([[feedback-copilot-review]]) は新規 PR の初回レビュー確認用と理解する
+- **オーディは「初回マウント時の ref 初期化」のような状態遷移バグを取り逃すことがある**: BUG-006 PR #51 で `prevIsOpponentEndProposalRef = useRef(false)` の初回 false 書き込みで polling 取得時に誤発火するバグをオーディは見抜けず、コパが catch。状態遷移系のバグは「複数 render の連鎖」を頭でシミュレートしないと見えない場合がある
+- **テスタは task.md の必須項目を見落とすことがある (BUG-007 spec パターン)**: BUG-005 PR #49 / BUG-006 PR #51 で 2 度連続、task.md L88-89 で「BUG-007 spec の実行」を明記したのに 9 件を実行から落とした。リードが補完で `npx playwright test tests/e2e/auth-login.spec.ts tests/e2e/middleware-next.spec.ts` を直接実行して 9/9 確認するパターンが定着
 - **コパレビュー待ちは明示確認すべき**: CI 通過だけでマージするのは規範違反。`gh api repos/.../pulls/N/{comments,reviews}` でコパ反応をチェック、最低 3-5 分待つ。BUG-005 PR #49 で待たずマージして実害なしだったが規範違反 → [[feedback-copilot-review]] で運用化
 - **パイプライン中の `tsconfig.json` 自動書き換え**: Next.js dev サーバ起動時に `tsconfig.json` の `include` に `.next/dev/dev/types/**/*.ts` が自動追記される。BUG-005 セッションで毎回再現したため、テスタ後の commit 前に `git restore tsconfig.json` で都度 revert する運用が定着
 - **テスタの能力限界 (UI ターン制御)**: 複数ラウンド消化を `page.reload()` + `waitForSelector` ループで再現すると 60s+ タイムアウトに陥りやすい。BUG-005 でテスタが 2 回連続失敗 → リードが admin client (DB 直接 INSERT) + REST API 直叩き (`page.context().request.post`) の fast-path に書き直して 4-5s で完走。今後の複雑な状態遷移 spec は最初から fast-path で書く方針
@@ -158,6 +169,7 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 - **PR #48** (2026-06-15): backlog 11 PR 分の対応済み整理 + OPS-001 完了反映 (`-107 +12`)
 - **PR #49** (2026-06-15): BUG-005 AI 閉廷宣告の発火位置を `phase=judging` 遷移時へ移動。実装 + spec + design.md で `+1548 -538`、パイプライン 3 巡 + LOW 消化 2 回、コパ待たずマージ (実害ゼロ → [[feedback-copilot-review]] 化)
 - **PR #50** (2026-06-15): BUG-008 useSearchParams を Suspense 境界で包む。リード先行実装 + テスタ 14/14 + オーディ LOW 1 (aria 属性、PR 内消化) + コパ 4.5 分待機ゼロ件マージ。backlog から BUG-005/008/LOW-001 を削除し未対応 6 件に整理
+- **PR #51** (2026-06-17): BUG-006 終了提案にバナー強調 + ビープ音通知。Web Audio API で音源ファイル追加なし。`computeEndProposalState` で render/effect 重複解消 (LOW-002 消化)。コパが初回 LOW-001 消化の不完全 (ref 初期 false 書き込みでの誤発火) を catch、PR 内消化
 
 ### 環境・ツール状態（2026-06-15 時点）
 
@@ -220,4 +232,4 @@ PR #44 → PR #46 で 2 回連続「テスタ追加 spec + パイプラインロ
 - PR #29: OPS-001 Part1 パイプライン tester node20 化
 - PR #30-#34 (2026-06-02): volta 痕跡撤去 / FEAT-RESP-HEADER / FEAT-005 マイページ / LOW-001-002 移管 / BUG-002-003 追加
 - PR #35-#40 (2026-06-03〜06-12): BUG-003 説得力スコア / BUG-002 過去ケース判決画面 / OPS-001 Part 2 env スイッチ / chore lint / chore spec hard assertion / feat ui error.tsx
-- PR #41-#50 (2026-06-13〜06-15): FEAT-006 / OPS-003 / BUG-007 backlog / BUG-007 修正 / BUG-004 修正 / BUG-004 補修 / middleware ?next= / backlog 整理 / BUG-005 閉廷アナウンス / BUG-008 Suspense 境界
+- PR #41-#51 (2026-06-13〜06-17): FEAT-006 / OPS-003 / BUG-007 backlog / BUG-007 修正 / BUG-004 修正 / BUG-004 補修 / middleware ?next= / backlog 整理 / BUG-005 閉廷アナウンス / BUG-008 Suspense 境界 / BUG-006 終了提案通知
