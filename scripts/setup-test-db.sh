@@ -35,7 +35,7 @@ die() { echo "[setup-test-db.sh] ERROR: $*" >&2; exit 1; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
-    -h|--help) grep '^#' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,/^[^#]/{/^#/s/^# \?//p}' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) die "不明な引数: $1（--dry-run / --help のみ対応）" ;;
   esac
 done
@@ -56,9 +56,13 @@ PROJECT_REF="${SUPABASE_PROJECT_REF:-}"
 [[ -f "$SCHEMA_SQL" ]]     || die "schema.sql が見つかりません: $SCHEMA_SQL"
 [[ -d "$MIGRATIONS_DIR" ]] || die "migrations ディレクトリが見つかりません: $MIGRATIONS_DIR"
 
-# 適用順（applied.txt は .sql ではないため自然に除外される）
-mapfile -t MIGRATION_FILES < <(ls -1 "$MIGRATIONS_DIR"/*.sql | sort)
-[[ "${#MIGRATION_FILES[@]}" -gt 0 ]] || die "適用対象の migration が見つかりません。"
+# 適用順（applied.txt は .sql ではないため自然に除外される）。
+# glob 展開はロケール順にソート済みで、ファイル名に空白等が入っても安全。
+# nullglob により 0 件マッチ時はリテラル "*.sql" ではなく空配列になる。
+shopt -s nullglob
+MIGRATION_FILES=("$MIGRATIONS_DIR"/*.sql)
+shopt -u nullglob
+[[ "${#MIGRATION_FILES[@]}" -gt 0 ]] || die "適用対象の migration が見つかりません: $MIGRATIONS_DIR/*.sql"
 
 # ── Management API 経由で SQL を実行 ───────────────────────────────────────────
 # 標準出力に応答 body を返す。HTTP 非 2xx もしくは応答に error message があれば die。
@@ -66,11 +70,13 @@ supabase_execute() {
   local sql="$1" label="$2"
   local payload resp http_code body msg
   payload="$(jq -n --arg q "$sql" '{query: $q}')"
-  resp="$(curl -s -w $'\n%{http_code}' -X POST \
+  # -sS: 進捗は隠すがエラーは表示。curl 自体が非 0 終了（ネットワークエラー等）した
+  # 場合は set -e に任せず明示的に die して原因を分かりやすくする。
+  resp="$(curl -sS -w $'\n%{http_code}' -X POST \
     "https://api.supabase.com/v1/projects/${PROJECT_REF}/database/query" \
     -H "Authorization: Bearer ${TOKEN}" \
     -H "Content-Type: application/json" \
-    -d "$payload")"
+    -d "$payload")" || die "[$label] API リクエストに失敗しました（ネットワーク到達性 / トークンを確認してください）。"
   http_code="$(tail -n1 <<<"$resp")"
   body="$(sed '$d' <<<"$resp")"
   if [[ "$http_code" != 2* ]] || echo "$body" | jq -e 'type=="object" and has("message")' >/dev/null 2>&1; then
