@@ -14,6 +14,14 @@ export async function generateJudgeMessage(
   params: JudgeParams,
   apiKey: string
 ): Promise<string> {
+  // テスト環境 (TEST_MODE=1) では実 Anthropic 呼び出しを避け、決定的なモック応答を返す。
+  // E2E から「原告の API キー SET 経路」(judge_messages への closing INSERT など) を
+  // 実キー・課金なしで検証するために設ける。本番では TEST_MODE は未設定のため、
+  // 以降の通常の生成経路を通る。(由来: LOW-001-BUG005)
+  if (process.env.TEST_MODE === "1") {
+    return buildMockJudgeMessage(params);
+  }
+
   const client = new Anthropic({ apiKey });
 
   const prompt = buildPrompt(params);
@@ -25,6 +33,12 @@ export async function generateJudgeMessage(
   });
 
   return message.content[0].type === "text" ? message.content[0].text : "";
+}
+
+// TEST_MODE 用のモック応答。trigger 別に決定的な非空文字列を返す。
+// 実生成と同じく「非空文字列を返す」契約だけを満たせばよい（内容の検証は行わない）。
+function buildMockJudgeMessage(params: JudgeParams): string {
+  return `[TEST] 裁判官メッセージ (${params.trigger})`;
 }
 
 function buildPrompt(params: JudgeParams): string {
