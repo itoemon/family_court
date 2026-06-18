@@ -16,10 +16,17 @@ export async function generateJudgeMessage(
 ): Promise<string> {
   // テスト環境 (TEST_MODE=1) では実 Anthropic 呼び出しを避け、決定的なモック応答を返す。
   // E2E から「原告の API キー SET 経路」(judge_messages への closing INSERT など) を
-  // 実キー・課金なしで検証するために設ける。本番では TEST_MODE は未設定のため、
-  // 以降の通常の生成経路を通る。(由来: LOW-001-BUG005)
+  // 実キー・課金なしで検証するために設ける。(由来: LOW-001-BUG005)
+  // 安全策: 万一 production で TEST_MODE=1 が誤設定されてもモックが暴発しないよう、
+  // production では TEST_MODE を無視して通常経路へフォールバックし警告のみ出す。
   if (process.env.TEST_MODE === "1") {
-    return buildMockJudgeMessage(params);
+    if (process.env.NODE_ENV === "production") {
+      console.warn(
+        "[judge] TEST_MODE=1 は production では無視されます（モック応答は使いません）"
+      );
+    } else {
+      return buildMockJudgeMessage(params);
+    }
   }
 
   const client = new Anthropic({ apiKey });

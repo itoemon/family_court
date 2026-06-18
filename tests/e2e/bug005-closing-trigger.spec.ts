@@ -76,6 +76,11 @@ function extractCaseId(url: string): string {
 function encryptApiKeyForTest(apiKey: string): string {
   const hex = process.env.ENCRYPTION_KEY;
   if (!hex) throw new Error('ENCRYPTION_KEY が未設定です');
+  // aes-256-gcm の鍵は 32 バイト = hex 64 桁。形式不正は createCipheriv で分かりづらい
+  // 例外になるため、ここで明示チェックして原因を分かりやすくする。
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
+    throw new Error('ENCRYPTION_KEY は 32 バイト hex (64 桁) である必要があります');
+  }
   const key = Buffer.from(hex, 'hex');
   const iv = randomBytes(16);
   const cipher = createCipheriv('aes-256-gcm', key, iv);
@@ -446,6 +451,11 @@ test('BUG-005-3: 早期終了 (end-proposal) 両者合意 → closing greeting +
 // ────────────────────────────────────────────────────────────
 
 test('BUG-005-4: api_key SET 経路 → AI(モック) 閉廷宣告が judge_messages へ 1 行 INSERT され greeting → AI の順序が守られる', async ({ browser }) => {
+  // この spec はサーバ側 TEST_MODE=1 のモック生成を前提とする。未設定だと dummy key で
+  // 実 Anthropic 呼び出しが走り closing が insert されずタイムアウト/フレークするため skip。
+  // (spec と dev:test サーバは同じ .env.test / 同一シェルの export を共有する)
+  test.skip(process.env.TEST_MODE !== '1', 'TEST_MODE=1 が必要 (サーバ側モック生成前提)');
+
   const emailB = process.env.E2E_TEST_EMAIL_B!;
   const passB = process.env.E2E_TEST_PASSWORD_B!;
 
@@ -453,7 +463,8 @@ test('BUG-005-4: api_key SET 経路 → AI(モック) 閉廷宣告が judge_mess
 
   // 専用 plaintiff を作成 (handle_new_user トリガが profile を自動生成)。
   // 共有 e2e_user_a に api_key を立てると他 spec へ波及するため隔離する。
-  const plaintiffEmail = `e2e_closing_set_${Date.now()}@example.com`;
+  // Date.now() + randomBytes で一意化 (リトライ / 前回 cleanup 失敗時のメール衝突を回避)。
+  const plaintiffEmail = `e2e_closing_set_${Date.now()}_${randomBytes(4).toString('hex')}@example.com`;
   const plaintiffPass = 'E2eClosingSet123!';
   const { data: createdUser, error: createErr } = await admin.auth.admin.createUser({
     email: plaintiffEmail,
@@ -537,9 +548,15 @@ test('BUG-005-4: api_key SET 経路 → AI(モック) 閉廷宣告が judge_mess
     expect(greetingMaxCreatedAt).toBeLessThanOrEqual(judgementCreatedAt);
   } finally {
     // case を先に削除して plaintiff の FK を解放してから user を削除
-    // (user 削除は profiles を on delete cascade で巻き取る)
-    if (caseId) await admin.from('cases').delete().eq('id', caseId);
-    await admin.auth.admin.deleteUser(plaintiffId);
+    // (user 削除は profiles を on delete cascade で巻き取る)。
+    // delete 失敗はテスト DB に残骸を残すため warn で気付けるようにする
+    // (finally 内なので throw してテスト結果をマスクしない)。
+    if (caseId) {
+      const { error: caseDelErr } = await admin.from('cases').delete().eq('id', caseId);
+      if (caseDelErr) console.warn(`[BUG-005-4 cleanup] case 削除失敗 (${caseId}): ${caseDelErr.message}`);
+    }
+    const { error: userDelErr } = await admin.auth.admin.deleteUser(plaintiffId);
+    if (userDelErr) console.warn(`[BUG-005-4 cleanup] user 削除失敗 (${plaintiffId}): ${userDelErr.message}`);
     await ctxA.close();
     await ctxB.close();
   }
