@@ -30,12 +30,16 @@ export async function PATCH(
 
   const admin = createAdminClient();
 
-  const { data: law } = await admin
+  const { data: law, error: lawError } = await admin
     .from("laws")
     .select("owner_id")
     .eq("id", lawId)
     .maybeSingle();
 
+  if (lawError) {
+    console.error("[PATCH /api/laws/[id]/visibility] law SELECT failed:", lawError);
+    return NextResponse.json({ error: "公開設定の変更に失敗しました" }, { status: 500 });
+  }
   if (!law) return NextResponse.json({ error: "法律が見つかりません" }, { status: 404 });
   if (law.owner_id !== user.id) {
     return NextResponse.json({ error: "オーナーのみ公開設定を変更できます" }, { status: 403 });

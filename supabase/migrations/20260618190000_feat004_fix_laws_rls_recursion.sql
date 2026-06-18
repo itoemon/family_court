@@ -48,6 +48,11 @@ AS $$
   );
 $$;
 
+-- SECURITY DEFINER 関数は既定で PUBLIC に EXECUTE が付くため、明示的に剥奪して
+-- authenticated にのみ付与する（多層防御。feat002 の search_users と同パターン。
+-- 将来 private スキーマを公開設定に含めてしまった場合の事故も防ぐ）。
+REVOKE EXECUTE ON FUNCTION private.is_law_member(uuid, uuid) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION private.is_law_owner(uuid, uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION private.is_law_member(uuid, uuid) TO authenticated;
 GRANT EXECUTE ON FUNCTION private.is_law_owner(uuid, uuid) TO authenticated;
 

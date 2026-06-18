@@ -19,12 +19,16 @@ export async function POST(
 
   const admin = createAdminClient();
 
-  const { data: source } = await admin
+  const { data: source, error: sourceError } = await admin
     .from("laws")
     .select("id, name, article, is_public")
     .eq("id", lawId)
     .maybeSingle();
 
+  if (sourceError) {
+    console.error("[POST /api/laws/[id]/import] source SELECT failed:", sourceError);
+    return NextResponse.json({ error: "インポートに失敗しました" }, { status: 500 });
+  }
   if (!source) return NextResponse.json({ error: "法律が見つかりません" }, { status: 404 });
   if (source.is_public !== true) {
     return NextResponse.json({ error: "公開されていない法律はインポートできません" }, { status: 403 });

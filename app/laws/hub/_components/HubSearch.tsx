@@ -25,22 +25,32 @@ export default function HubSearch({ initialLaws, initialQuery }: Props) {
       return;
     }
 
+    // AbortController で前のリクエストを中断し、古いクエリのレスポンスが
+    // 後から返って最新の結果を上書きする競合（stale response）を防ぐ。
+    const controller = new AbortController();
     const handle = setTimeout(async () => {
       setError(null);
       try {
-        const res = await fetch(`/api/laws/public?q=${encodeURIComponent(query)}`);
-        const data = await res.json();
+        const res = await fetch(
+          `/api/laws/public?q=${encodeURIComponent(query)}`,
+          { signal: controller.signal }
+        );
+        const data = await res.json().catch(() => null);
         if (!res.ok) {
-          setError(data.error ?? "検索に失敗しました");
+          setError(data?.error ?? "検索に失敗しました");
           return;
         }
-        setLaws(data);
-      } catch {
+        setLaws(data ?? []);
+      } catch (e) {
+        if ((e as { name?: string }).name === "AbortError") return; // 中断は無視
         setError("検索に失敗しました");
       }
     }, 300);
 
-    return () => clearTimeout(handle);
+    return () => {
+      clearTimeout(handle);
+      controller.abort();
+    };
   }, [query]);
 
   return (

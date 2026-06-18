@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { createSessionClient, createAdminClient } from "@/lib/supabase/server";
-import { fetchPublicLaws, normalizeQuery } from "@/lib/laws-public";
+import { fetchPublicLaws, normalizeQuery, PUBLIC_LAWS_LIMIT } from "@/lib/laws-public";
 import HubSearch from "./_components/HubSearch";
 
 export default async function LawsHubPage({
@@ -29,7 +29,7 @@ export default async function LawsHubPage({
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-stone-800">法律 Hub</h1>
-            <p className="text-stone-500 text-sm mt-1">公開されている法律を探してインポートできます（新着 {50} 件）</p>
+            <p className="text-stone-500 text-sm mt-1">公開されている法律を探してインポートできます（新着 {PUBLIC_LAWS_LIMIT} 件）</p>
           </div>
           <Link
             href="/laws"
