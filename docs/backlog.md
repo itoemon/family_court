@@ -23,15 +23,6 @@
 - **依存**: FEAT-003, FEAT-002
 
 
-#### [LOW-001-BUG005] AI キー SET 経路の E2E 動的検証が現状環境で実行されない
-
-- **背景**: `tests/e2e/bug005-closing-trigger.spec.ts` の BUG-005-2/3 は API キー SET / NULL の両分岐に対応する条件分岐 hard assertion を備えているが、E2E ユーザー A (`e2e_user_a@example.com`) の `profiles.api_key_encrypted` が現状 NULL のため、毎回必ず NULL 経路（`judge_messages.trigger_type='closing'` 0 件）の assertion しか実行されない。
-- **影響**: 本タスク (BUG-005) の主要価値「`phase=judging` 遷移直後に AI 閉廷宣告が `judge_messages` へ 1 行 INSERT される」「`arguments`（closing greeting）→ `judge_messages`（AI）の `created_at` 順序が守られる」が CI 実行時に一度も動的に踏まれない。リグレッション検知能力に空白が残る。
-- **対応案**: テスト Supabase の `e2e_user_a` プロフィールに有効な `api_key_encrypted` をセットアップする。実 Claude API キーを使うとコストが発生するため、`TEST_MODE=1` 下で `generateJudgeMessage` をモック差し替えする仕組みを設けて spec から動的に切り替える運用が現実的。
-- **優先度**: 低（実装本体の静的レビューと grep 検証は通過済み、NULL 経路の hard assertion は機能している）
-- **由来**: 2026-06-15 BUG-005 オーディ 2 巡目 (`audit_20260615_192508.md` LOW-003)
-
-
 ### 運用・テスト基盤（OPS）
 
 （現在、未対応の OPS タスクはない。OPS-002 は PR #53 で対応済み。過去の対応は「対応済み」セクション参照。）
@@ -141,3 +132,5 @@
 | PR #50 (BUG-008) | `useSearchParams()` を使う Client Component を Suspense 境界で包む予防的修正（`app/auth/login/page.tsx` を Server Component 化し新規 `LoginForm.tsx` を `<Suspense>` でラップ、`app/case/[id]/page.tsx` で既存 `CaseRoom` を `<Suspense>` でラップ。Skeleton に `role="status"` / `aria-busy` / `aria-live` を付与。Next.js 16 App Router 公式ガイダンス遵守と将来の静的最適化への備え、由来: 2026-06-15 BUG-007 オーディ最終 LOW） |
 | PR #51 (BUG-006) | 相手の「終了を提案」を受けた側へ視覚（amber 配色 + `animate-pulse` + `role="alert"` バナー強調）と聴覚（Web Audio API 880Hz/0.15s sine wave、音源ファイル不要）の二系統で通知（`computeEndProposalState` 純関数で render と useEffect の判定ロジック重複を解消。初回マウント時の ref 初期化による誤発火をコパが catch、PR 内消化、由来: 2026-06-13 ダイチ手動確認） |
 | PR #53 (OPS-002) | `schema.sql` と二重定義になる 3 migration（`20260524000000` judge_messages policy / `20260526000001` profiles 列 + storage policy / `20260612164035` cases・profiles・arguments の FEAT-006 列）を冪等化し（`DROP POLICY IF EXISTS` 前置 / `ADD COLUMN IF NOT EXISTS`）、「schema.sql → migrations 全実行」が 42710・duplicate column で停止する問題を解消。approach B（冪等化）採用。全オブジェクト適用済みの test DB（fresh setup 最悪ケース等価）への再適用でエラーゼロ・policy 正常再作成・cases データ無傷を実証。`scripts/setup-test-db.sh` 化の障壁を除去、由来: 2026-06-10 OPS-001 Part 2 セットアップ中に発見） |
+| PR #55 (OPS) | `scripts/setup-test-db.sh` でテスト DB セットアップを自動化（OPS-002 の冪等化を前提に、Supabase Management API 経由で `schema.sql` → `migrations/*.sql` を昇順一括適用）。本番 ref ブロック + 既初期化 preflight + `--dry-run` の安全装置。コパ LOW 4 件（`ls`→nullglob / `curl -sS`+die / `--help` shebang 除外 / docs に前提コマンド明記）を PR 内消化、由来: e2e-test-db.md 残課題「マイグレーション適用の半自動化」 |
+| PR #56 (LOW-001-BUG005) | api_key SET 経路の closing 宣告を E2E で動的検証。`lib/judge.ts:generateJudgeMessage` に `TEST_MODE=1` のモック分岐を追加（実 Anthropic 呼び出し回避、本番は通常経路）、spec に BUG-005-4 を追加（専用 plaintiff を admin で作成し `api_key_encrypted` を SET、AI(モック) 閉廷宣告が `judge_messages` へ 1 行 INSERT され greeting → AI 順序が守られることを検証、後始末で case→user 削除）。bug005 spec 4/4 通過・cleanup 残骸 0・e2e_user_a 汚染なしを確認、由来: 2026-06-15 BUG-005 オーディ 2 巡目 LOW-003 |
