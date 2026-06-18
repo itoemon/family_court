@@ -2957,3 +2957,30 @@ app/laws/[id]/_components/
 - **`owner_display_name` 欠落時の表示**: `profiles.display_name` が空/未取得のオーナーがいた場合のフォールバック文言（空文字 or 「（名前未設定）」）は実装段階で `MeHeader` 等の既存フォールバックに揃える。
 - **`law_members` INSERT 失敗時の孤児 `laws` 行**: FEAT-003 `POST /api/laws` と同一の既存挙動に従う（本タスクで整合性機構を新規導入しない）。FEAT-003 の実装手順をビルドが確認し再現すること。
 - **件数上限到達の UI 表現**: 50 件上限に達した場合の「新着 50 件のみ表示中」の注記有無は実装段階で判断（最小実装では省略可）。
+
+### 実装中に発見・修正した RLS 無限再帰（FEAT-003 由来）
+
+FEAT-004 で公開法律を session client（ユーザー JWT）で読む経路を追加したことで、FEAT-003 / MEDIUM-001 由来の RLS 設計に潜んでいた**無限再帰（`42P17: infinite recursion detected in policy`）**が顕在化した。本タスクの一部として恒久修正する（migration `20260618190000_feat004_fix_laws_rls_recursion.sql`）。
+
+**症状**: 認証ユーザーが `laws` を RLS 下で SELECT すると 42P17 で失敗し、`/laws`・`/laws/[id]` が notFound になる。owner 自身の法律でも planner がポリシーのサブクエリを展開する過程で再帰検出に至る。
+
+**根本原因**: SELECT ポリシーが RLS 下のサブクエリで自テーブル・相互参照テーブルを参照していた。
+- `law_members_select` が `EXISTS(SELECT FROM law_members ...)` で**自テーブルを自己参照**。
+- `laws_select_member_or_invitee`（`EXISTS(law_invitations)`）と `law_invitations_select`（`EXISTS(laws)`）が **laws ↔ law_invitations の相互参照**。
+
+ポリシーのサブクエリにも RLS は適用されるため、これらは評価時に自分自身のポリシーを無限に再帰展開する。FEAT-003 出荷時から潜在していたが、`laws` を session client で読む経路が薄かったため未発覚だった（FEAT-004 で露見）。
+
+**修正方針（Supabase 定石）**: 判定を **SECURITY DEFINER 関数**（所有者権限で実行し RLS を適用しない）に切り出し、各ポリシーからそれを呼ぶことで RLS 再帰の連鎖を断つ。可視性のセマンティクスは完全に不変。
+- `public.is_law_member(p_law_id, p_user_id)`: `law_members` のメンバー判定。
+- `public.is_law_owner(p_law_id, p_user_id)`: `laws` のオーナー判定。
+- いずれも `SECURITY DEFINER` / `STABLE` / `SET search_path = ''`、参照はスキーマ修飾、`GRANT EXECUTE ... TO authenticated`。
+- 張り替え対象ポリシー（セマンティクス不変）: `law_members_select` / `law_invitations_select` / `law_proposals_select` / `law_proposal_votes_select` / `laws_select_member_or_invitee`。
+- migration 末尾で `NOTIFY pgrst, 'reload schema'` を発行（後述の PostgREST キャッシュ問題への対応）。
+
+**検証**: A のユーザー JWT で `laws` / `law_members` を REST 直叩きして 42P17 が消えたことを確認。E2E は `tests/e2e/laws.spec.ts`（CRITICAL-L01〜L04: 作成・招待・改定合意・オーナー移譲）が 4/4 通過し、メンバー/招待/提案/移譲のセマンティクスが保たれていることを確認した。
+
+### 運用上の知見: Management API 直 SQL 適用と PostgREST スキーマキャッシュ
+
+migration を Supabase Management API（`/v1/projects/{ref}/database/query`）の直 SQL で適用すると、アプリが使う **PostgREST のスキーマキャッシュが自動更新されない**。このため新カラム（例: `laws.is_public`）を含む `select()` が REST 経由で「column does not exist」扱いになり、`maybeSingle()` が `{data:null}` を返して画面が notFound に倒れる、という形で顕在化する。
+
+**対応**: スキーマを変更する migration の末尾に `NOTIFY pgrst, 'reload schema';` を発行してキャッシュを即時リロードする（本 FEAT-004 の 2 migration はいずれも発行する）。テスト DB へ手動適用した場合も同様にリロードが必要。`scripts/setup-test-db.sh` / `scripts/agents.sh:run_migrations` でも将来このリロードを組み込む余地がある（別タスク）。

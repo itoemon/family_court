@@ -16,3 +16,8 @@ CREATE INDEX IF NOT EXISTS idx_laws_public_created
   WHERE is_public = true;
 
 COMMIT;
+
+-- PostgREST のスキーマキャッシュを再読込（Management API 直 SQL 適用では
+-- 自動反映されず、新列 is_public を含む select が REST 経由で
+-- "column does not exist" 扱いになるため明示的にリロードする）。
+NOTIFY pgrst, 'reload schema';
