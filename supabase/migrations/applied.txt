@@ -10,3 +10,5 @@
 20260526000003_feat003_laws.sql
 20260528000000_medium001_laws_select_invitee.sql
 20260612164035_feat006_chat_rounds_and_greetings.sql
+20260618181925_feat004_laws_is_public.sql
+20260618190000_feat004_fix_laws_rls_recursion.sql
