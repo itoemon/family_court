@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: set -a && source .env.test && set +a && ./scripts/setup-test-db.sh [--dry-run]
+# Usage: set -a && source .env.test && set +a && ./scripts/setup-test-db.sh [--clean-cases] [--dry-run]
 #
 # テスト用 Supabase プロジェクトに supabase/schema.sql → supabase/migrations/*.sql を
 # ファイル名昇順で一括適用する。OPS-002 で対象 migration を冪等化したため、
@@ -15,8 +15,12 @@
 # 安全装置: 本番プロジェクト ref に対しては実行を拒否する。
 #
 # Options:
-#   --dry-run   適用対象と順序を表示するだけで実行しない
-#   -h, --help  このヘルプを表示
+#   --clean-cases  初期化済みテスト DB の public.cases を全削除する（子テーブルは
+#                  ON DELETE CASCADE で連鎖削除、profiles 等のユーザーデータは保持）。
+#                  schema.sql / migrations の適用は行わない。E2E が書き残した cases の
+#                  蓄積を掃除する用途。--dry-run と併用すると件数表示のみで削除しない。
+#   --dry-run      適用対象と順序を表示するだけで実行しない
+#   -h, --help     このヘルプを表示
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -27,6 +31,7 @@ MIGRATIONS_DIR="$REPO_ROOT/supabase/migrations"
 PROD_PROJECT_REF="nhcsshqcyprbitfctyio"
 
 DRY_RUN=0
+CLEAN_CASES=0
 
 log() { echo "[setup-test-db.sh] $*"; }
 die() { echo "[setup-test-db.sh] ERROR: $*" >&2; exit 1; }
@@ -34,9 +39,10 @@ die() { echo "[setup-test-db.sh] ERROR: $*" >&2; exit 1; }
 # ── 引数 ──────────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --clean-cases) CLEAN_CASES=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) sed -n '2,/^[^#]/{/^#/s/^# \?//p}' "${BASH_SOURCE[0]}"; exit 0 ;;
-    *) die "不明な引数: $1（--dry-run / --help のみ対応）" ;;
+    *) die "不明な引数: $1（--clean-cases / --dry-run / -h, --help のみ対応）" ;;
   esac
 done
 
@@ -85,6 +91,33 @@ supabase_execute() {
   fi
   echo "$body"
 }
+
+# ── --clean-cases: 初期化済みテスト DB の cases を全削除して早期終了 ─────────────
+# schema.sql / migrations は当てない。子テーブル（arguments / verdicts / judge_messages
+# / defense_messages / contradiction_warnings / guest_tokens）はすべて
+# `cases(id) ON DELETE CASCADE` 参照のため、cases 削除で連鎖削除される。
+# profiles（E2E ユーザー）は cases から参照される側なので無傷。
+if [[ "$CLEAN_CASES" == 1 ]]; then
+  # 初期化済み（cases テーブル存在）であることを確認。未初期化への誤爆を防ぐ。
+  init="$(supabase_execute "select (to_regclass('public.cases') is not null) as ok;" "clean preflight")"
+  [[ "$(echo "$init" | jq -r '.[0].ok // false')" == "true" ]] || \
+    die "public.cases が存在しません。--clean-cases は初期化済みテスト DB 専用です（先に schema.sql 適用が必要）。"
+
+  before="$(supabase_execute "select count(*)::int as n from public.cases;" "count cases")"
+  n="$(echo "$before" | jq -r '.[0].n')"
+
+  if [[ "$DRY_RUN" == 1 ]]; then
+    log "対象プロジェクト: $PROJECT_REF"
+    log "--dry-run: cases ${n} 件 + 連鎖する子レコードを削除します（実行はしません）。"
+    exit 0
+  fi
+
+  log "対象プロジェクト: $PROJECT_REF"
+  log "cases ${n} 件を削除中（子テーブルは ON DELETE CASCADE で連鎖削除）…"
+  supabase_execute "delete from public.cases;" "delete cases" >/dev/null
+  log "完了。cases ${n} 件 + 連鎖する子レコードを削除しました（profiles 等のユーザーデータは保持）。"
+  exit 0
+fi
 
 # ── 適用計画の表示 ─────────────────────────────────────────────────────────────
 log "対象プロジェクト: $PROJECT_REF"
