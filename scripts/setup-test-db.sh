@@ -116,5 +116,12 @@ for f in "${MIGRATION_FILES[@]}"; do
   log "  ✓ $name"
 done
 
+# Management API 直 SQL で適用したスキーマ変更は PostgREST のスキーマキャッシュに
+# 即時反映されない。新カラムを含む REST 経由の select が「column does not exist」と
+# なるのを防ぐため、適用後にスキーマ再読込を明示通知する。
+log "PostgREST スキーマキャッシュを再読込中（NOTIFY pgrst）…"
+supabase_execute "NOTIFY pgrst, 'reload schema';" "reload schema" >/dev/null
+log "  ✓ reload schema"
+
 log "完了。schema.sql + ${#MIGRATION_FILES[@]} 件の migration を適用しました。"
 log "後続手順（Storage バケット確認 / E2E ユーザー作成 / シークレット生成）は docs/operations/e2e-test-db.md を参照。"
