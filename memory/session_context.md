@@ -12,13 +12,38 @@ metadata:
 
 ---
 
-## 最終更新: 2026-06-18（FEAT-004 法案 Hub #57 + laws RLS 再帰修正 + 本番 migration 適用。これまでに PR #41-#58）
+## 最終更新: 2026-06-23（FEAT-004 本番バックエンド検証 + OPS NOTIFY pgrst 組込 PR #59。これまでに PR #41-#59）
 
 ### 現在のブランチ・PR 状態
 
-- 現ブランチ: `main`（クリーン、HEAD `331b536` = PR #58 マージ後）
+- 現ブランチ: `main`（クリーン、HEAD `261fecd` = PR #59 マージ後）
 - オープン PR: なし
-- 本連続セッション (2026-06-13〜2026-06-18) でマージした PR: #41〜#58（#48/#52/#54/#58 は backlog/bookkeeping）
+- マージ済み最新: PR #59（NOTIFY pgrst 組込）
+
+### このセッション (2026-06-23) でやったこと
+
+#### FEAT-004 本番バックエンド検証（ブラウザ UI フローはダイチが手動確認中）
+
+- 本番デプロイ確認: `https://family-court.vercel.app`（`git-main` エイリアス）が 6/18 デプロイ = PR #57/#58 反映済み
+- 本番 DB (`nhcsshqcyprbitfctyio`) を Management API + REST で検証（`.env.local` source + 本番 ref ガード、読むだけ）:
+  - `laws.is_public` 列存在（boolean/default false）✅
+  - **PostgREST が is_public を認識**（REST select で HTTP 200・値返却。前回の半日ハマり = キャッシュ未反映は本番では解消済み）✅
+  - `private.is_law_member` RPC は PostgREST 非露出（POST /rpc/... が 404）✅
+  - RLS 再帰修正が本番に乗っている: `laws_select_member_or_invitee` が `private.is_law_member(id, auth.uid())` 経由、`laws_select_public` = `is_public = true` 存在 ✅
+  - 本番 laws データ: 56 件、公開 0 件（ブラウザ手動確認では先に 1 件公開が必要）
+- 残: ブラウザでの公開→Hub 表示→検索→インポート→元法律不変の UI フロー手動確認（ダイチ担当、不具合あれば報告予定）
+
+#### PR #59 マージ: OPS NOTIFY pgrst をマイグレーション基盤に組込（半日ハマりの恒久対策）
+
+- 背景: Management API 直 SQL で migration を当てると PostgREST スキーマキャッシュが古いまま → 新カラムの REST select が「column does not exist」→ 画面 notFound（FEAT-004 で `is_public` 追加時の主因）。session_context の「任意フォロー」負債を回収
+- 変更: `scripts/agents.sh:run_migrations`（`applied_count>0` 時）と `scripts/setup-test-db.sh`（全 migration 適用後）の末尾に `NOTIFY pgrst, 'reload schema';` を追加。shell のみ +15 -1
+- 検証: `bash -n` 両 OK / env 未設定 fail-safe 維持 / **テスト DB に Management API 経由で NOTIFY 実行 → HTTP 201 で機構実証**
+- リード自走で PR → CI Vercel pass → **コパ 2 ファイルレビューで指摘 0 件** → squash マージ（[[feedback-copilot-review]] 遵守、4.5 分待たずとも初回レビュー取得済みを確認してマージ）
+- **ヒヤリ**: マージ手順中に `pkill -f "sleep 280"` で待機ジョブを消そうとして **Claude シェルを巻き込み exit 144**（[[MEMORY]] の既知事項を踏んだ）。`pkill -f` は使わない、を再確認。バックグラウンドジョブ停止は TaskStop か放置で
+
+#### 旧ヘッダー（2026-06-18 セッション分）
+
+- 旧 HEAD: `331b536` = PR #58 マージ後 / 本連続セッション (2026-06-13〜2026-06-18) でマージした PR: #41〜#58（#48/#52/#54/#58 は backlog/bookkeeping）
 
 ### このセッション (2026-06-18 後半) でやったこと: FEAT-004 法案 Hub
 
