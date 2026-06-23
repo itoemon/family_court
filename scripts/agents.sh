@@ -67,7 +67,14 @@ run_migrations() {
     ((applied_count++)) || true
   done
 
-  [[ "$applied_count" -gt 0 ]] && log "マイグレーション完了（${applied_count}件）" || true
+  if [[ "$applied_count" -gt 0 ]]; then
+    # Management API 直 SQL で migration を当てると PostgREST のスキーマキャッシュが
+    # 古いままになり、新カラムを含む REST 経由の select が「column does not exist」と
+    # なって画面が notFound に倒れる。適用後にスキーマ再読込を明示通知して防ぐ。
+    log "PostgREST スキーマキャッシュを再読込します（NOTIFY pgrst）"
+    supabase_execute "NOTIFY pgrst, 'reload schema';" > /dev/null
+    log "マイグレーション完了（${applied_count}件）"
+  fi
 }
 
 # プロンプトファイルを読み込み、環境変数を展開して返す
