@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: set -a && source .env.test && set +a && ./scripts/setup-test-db.sh [--dry-run]
+# Usage: set -a && source .env.test && set +a && ./scripts/setup-test-db.sh [--clean-cases] [--dry-run]
 #
 # テスト用 Supabase プロジェクトに supabase/schema.sql → supabase/migrations/*.sql を
 # ファイル名昇順で一括適用する。OPS-002 で対象 migration を冪等化したため、
@@ -42,7 +42,7 @@ while [[ $# -gt 0 ]]; do
     --clean-cases) CLEAN_CASES=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) sed -n '2,/^[^#]/{/^#/s/^# \?//p}' "${BASH_SOURCE[0]}"; exit 0 ;;
-    *) die "不明な引数: $1（--clean-cases / --dry-run / --help のみ対応）" ;;
+    *) die "不明な引数: $1（--clean-cases / --dry-run / -h, --help のみ対応）" ;;
   esac
 done
 
