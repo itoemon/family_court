@@ -12,13 +12,21 @@ metadata:
 
 ---
 
-## 最終更新: 2026-06-23（FEAT-004 本番バックエンド検証 + OPS NOTIFY pgrst 組込 PR #59。これまでに PR #41-#59）
+## 最終更新: 2026-06-23（FEAT-004 本番検証 + NOTIFY pgrst #59 + cases 掃除 #60。これまでに PR #41-#60）
 
 ### 現在のブランチ・PR 状態
 
-- 現ブランチ: `main`（クリーン、HEAD `261fecd` = PR #59 マージ後）
+- 現ブランチ: `main`（クリーン、HEAD `3d7d7fa` = PR #60 マージ後）
 - オープン PR: なし
-- マージ済み最新: PR #59（NOTIFY pgrst 組込）
+- マージ済み最新: PR #60（setup-test-db.sh --clean-cases）
+
+#### PR #60 マージ: setup-test-db.sh に --clean-cases（テスト DB の cases 蓄積掃除）
+
+- 背景: E2E が書き残す `public.cases` が蓄積（実測 cases 128 / arguments 568 / guest_tokens 40）。e2e-test-db.md 残課題「定期リセット」の回収
+- 変更: `--clean-cases` フラグ追加。schema.sql/migrations は当てず `delete from public.cases;` の早期分岐。子テーブル（arguments/verdicts/judge_messages/defense_messages/contradiction_warnings/guest_tokens）は `cases(id) ON DELETE CASCADE` で連鎖削除、profiles は参照される側で無傷。本番 ref ブロック・env fail-safe 共通、未初期化（cases 不在）は die、`--dry-run` で件数のみ
+- 実機掃除: cases 128→0 / arguments 568→0 / guest_tokens 40→0 / **profiles 3→3 保持**を確認。spec は全て実行時生成 caseId 使用で事前 cases 非依存（grep 確認）
+- リード自走 PR → CI pass → **コパ 2 件（Usage 行に --clean-cases 抜け / エラー一覧に -h 抜け、どちらも LOW polish）を PR 内自己修正** → squash マージ。コパは push 後再レビューしないため CI 緑確認でマージ（[[feedback-copilot-review]] 理解どおり）
+- 残: public スキーマ丸ごとのフルリセット（drop/recreate + grant 復元）は grant 復元検証が重く別タスクとして残置
 
 ### このセッション (2026-06-23) でやったこと
 
