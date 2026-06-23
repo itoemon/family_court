@@ -34,7 +34,23 @@ set -a && source .env.test && set +a
 
 - 対象 ref は `.env.test` の `SUPABASE_PROJECT_REF` から読む。Supabase Management API（`POST /v1/projects/{ref}/database/query`）経由で適用する
 - **安全装置**: 本番プロジェクト ref に対しては実行を拒否する。また `public.profiles` が既に存在する DB（初期化済み）には `schema.sql` の `CREATE TABLE` が衝突するため preflight で拒否する。空プロジェクト専用と考える
+- 適用後に `NOTIFY pgrst, 'reload schema';` を 1 回送り、PostgREST のスキーマキャッシュを再読込する（新カラムを含む REST select が「column does not exist」になるのを防ぐ）
 - `applied.txt` はテスト DB では使わない（本番運用用の管理ファイル）
+
+#### cases 蓄積の掃除: `--clean-cases`
+
+E2E が書き残した `public.cases` は実行のたびに蓄積する（子テーブル `arguments` 等も連動して肥大化する）。初期化済みテスト DB に対して以下を実行すると、`cases` を全削除して掃除できる。
+
+```bash
+set -a && source .env.test && set +a
+./scripts/setup-test-db.sh --clean-cases --dry-run   # 削除対象件数の確認のみ（削除しない）
+./scripts/setup-test-db.sh --clean-cases             # 実際に削除
+```
+
+- `schema.sql` / migrations の適用は行わない（cases 削除のみの早期分岐）
+- 子テーブル（`arguments` / `verdicts` / `judge_messages` / `defense_messages` / `contradiction_warnings` / `guest_tokens`）はすべて `cases(id) ON DELETE CASCADE` 参照のため連鎖削除される
+- `profiles`（E2E ユーザー）は `cases` から参照される側なので **無傷**。フレンド関係（`friend_requests`）・法律（`laws` 系）も対象外
+- **安全装置**: 本番 ref ブロック・env 未設定での fail-safe は通常実行と共通。`public.cases` が存在しない（未初期化）DB に対しては die する
 
 #### 手動: Supabase SQL Editor
 
@@ -161,4 +177,4 @@ set -a && source .env.test && set +a
 
 - ~~マイグレーション適用の半自動化~~ → `scripts/setup-test-db.sh` で対応済み（空プロジェクトへの `schema.sql` → migrations 一括適用。OPS-002 の冪等化が前提）
 - ratelimit spec のためのテスト用 Redis 切り替え（現状 `.env.test` の `UPSTASH_REDIS_*` が本番と共有なら衝突しないが、別インスタンスがあるほうがクリーン）
-- テスト DB の定期リセット（テストが書き残したデータの蓄積防止）
+- ~~テスト DB の定期リセット（テストが書き残したデータの蓄積防止）~~ → `cases` 蓄積は `scripts/setup-test-db.sh --clean-cases` で掃除できる。public スキーマ丸ごとのフルリセット（drop/recreate + grant 復元）は破壊的かつ grant 復元の検証が重いため別タスクとして残す
