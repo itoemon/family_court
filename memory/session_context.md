@@ -12,13 +12,46 @@ metadata:
 
 ---
 
-## 最終更新: 2026-06-23（FEAT-004 本番検証 + NOTIFY pgrst #59 + cases 掃除 #60。これまでに PR #41-#60）
+## 最終更新: 2026-07-05（MON-001 PR-A クレジット基盤 #61 マージ。これまでに PR #41-#61）
 
 ### 現在のブランチ・PR 状態
 
-- 現ブランチ: `main`（クリーン、HEAD `3d7d7fa` = PR #60 マージ後）
+- 現ブランチ: `main`（クリーン、HEAD `bf45a80` = PR #61 マージ後）
 - オープン PR: なし
-- マージ済み最新: PR #60（setup-test-db.sh --clean-cases）
+- マージ済み最新: PR #61（MON-001 PR-A クレジット基盤）
+
+### このセッション (2026-07-05) でやったこと: MON-001 PR-A（クレジット制課金の基盤）
+
+#### PR #61 マージ: クレジット制課金の第 1 段階
+
+- **課金モデル**: 原告が BYOK あり→消費なし / BYOK なし&クレジット≥1→ケース作成時 1 消費・サービスキー使用 / BYOK なし&0→402。新規ユーザー無料 3（`profiles.credits` default 3、`handle_new_user` は credits 未指定なので default が効くのを確認済み）
+- **DB (migration `20260705190001_mon001_credits.sql`・冪等)**: `profiles.credits`（default 3 + 名前付き check `profiles_credits_non_negative`）/ `cases.uses_service_key` / `consume_credit(uuid)`（原子的減算・`public` 配置 + EXECUTE を service_role のみ）/ `refund_credit(uuid)`（補償用原子的 +1・コパ指摘で追加）/ **`profiles` UPDATE 権限を authenticated,anon から REVOKE**（改ざん防止）/ `NOTIFY pgrst`。schema.sql にも反映
+- **コード**: `lib/case-ai-key.ts`（新規・`resolveCaseAiKey` でサービスキー/BYOK 復号を一元解決・`import "server-only"`）/ `POST /api/cases`（BYOK判定→consume→402/補償→INSERT）/ **AI 実行 8 ルート張り替え**（verdict/argument/opening/end-proposal/case-closing/**defense/defense-draft**/**extension-vote**）/ 残高表示 UI(/profile) + 作成ガード UI
+- **スコープ**: PR-A は Stripe 無し。**Stripe Checkout・購入 UI・価格は PR-B**
+- **検証**: tsc/eslint クリーン。E2E 16/16（mon001 4/4 + bug005 4/4 + critical 4/4）。**アドバサリアル: 認証ユーザーの credits 直 PATCH→403 permission denied、consume_credit RPC 直叩き→403**（改ざん防止実証）
+- **コパ 4 件消化**（全部お金の堅牢性・正当）: ① schema.sql の CHECK 無名→名前付き統一（二重 CHECK 防止）② profile SELECT エラー握り→500 で消費前停止 ③ 補償を read-then-write→`refund_credit` RPC で原子的加算（競合排除）④ `server-only` 導入
+
+#### ⚠️ 本番デプロイの重要注意（次にやる時の必読）
+
+- **PR-A の migration を本番に適用するのは `SERVICE_ANTHROPIC_API_KEY` を本番(Vercel Production)に設定してから**。未設定で本番適用すると、非 BYOK ユーザーがケース作成でクレジットを消費するのに AI が 500（サービスキー未設定）になり「クレジット損して AI 使えない」状態。**PR-A は main マージ + Preview/テスト DB 動作まで。本番適用は SERVICE キー設定後（実質 PR-B 期）**。テスト DB には適用済み
+
+#### PR-B（次タスク・Stripe）に向けてダイチが用意するもの
+
+- **Stripe サンドボックスキー**（`STRIPE_SECRET_KEY` / `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` は `.env.local`/`.env.test`+Vercel Preview、本番キーは Vercel Production のみ。webhook secret は endpoint 作成時発行）。ダイチは Stripe アカウント作成済み
+- **サービス側 Anthropic キー**（`SERVICE_ANTHROPIC_API_KEY`）: 個人アカウントの**専用キー + Console で月次 Spend Limit 必須**（青天井課金防止）。できれば専用 Workspace
+- **クレジット価格（リード提案・要ダイチ最終確認）**: 10個¥500 / 30個¥1,200 / 100個¥3,500（単価¥35〜50、原価≈¥8〜23/ケースに対し粗利40-60%）。無料お試し 3 個は実装済み
+- モデル料金参照（claude-api skill・2026-06-04）: haiku-4-5 = $1/$5、sonnet-4-6 = $3/$15 per 1M
+
+#### テスト DB フィクスチャ変更（記録）
+
+- **E2E User A / B に BYOK（`api_key_encrypted`）を設定**（有効な AES-256-GCM 暗号化ダミー）。理由: 課金ゲート導入で既存 spec（critical/bug005 が `はじめる` ボタンからケース作成）が非 BYOK・credits=0 で作成ガードに引っかかるため。BYOK は消費なし・AI は TEST_MODE モックで通る。詳細は `docs/operations/e2e-test-db.md`。mon001-credits spec は専用 ephemeral ユーザーで独立
+
+#### 今セッションで学んだパイプライン運用（恒久知識・重要）
+
+- **agents.sh の `claude -p` は headless で stdin 待ちして静かに死ぬ** → 全 4 箇所（architect/engineer/tester/auditor）に **`< /dev/null` を組込済み**（PR #61 に相乗り）。兆候は `no stdin data received in 3s` 警告。手動起動時も `./scripts/agents.sh <role> < /dev/null` 推奨
+- **重いビルドタスクは headless `claude -p`（agents.sh engineer）が時間内に完了せず無出力で落ちることがある**（今回 architect は 2 回死、engineer は 1 ファイルも書かず死）。**代替: ハーネスの Agent（general-purpose サブエージェント）に design.md+task.md を仕様として渡して実装させる**方が確実（今回これで完走・128k tokens/72 tool uses で全実装）。品質も高く、設計に無かった 8 ルート目 extension-vote も自発発見した
+- **`PORT=8801` が env に leak してる**（ダイチの別アプリ claude-chat が `node server.js` で 8801 使用、~8h 常駐、pid 変動）。放置すると family_court の `next dev` が 3000 でなく 8801 を掴もうとして EADDRINUSE で起動失敗 → E2E が localhost:3000 に繋がらず全滅。**E2E 起動時は `PORT=3000 npm run dev:test` で明示上書き必須**。8801 の占有プロセスはダイチの別アプリなので殺さない
+- **リード自身で E2E を回す fast-path が有効**（tester 段の agents.sh も不安定なため）。作法: `for p in $(lsof -ti:3000); do kill $p; done` で掃除 → `export TEST_MODE=1; PORT=3000 setsid bash -c 'npm run dev:test ...' &` → curl で ready 待ち → playwright → 掃除 → `git checkout tsconfig.json`（dev サーバが include を書き換えるため）
 
 #### PR #60 マージ: setup-test-db.sh に --clean-cases（テスト DB の cases 蓄積掃除）
 
