@@ -50,6 +50,29 @@ $$;
 revoke execute on function public.consume_credit(uuid) from public, anon, authenticated;
 grant  execute on function public.consume_credit(uuid) to service_role;
 
+-- 3b. refund_credit(uuid): 消費後のケース INSERT 失敗時の補償用に原子的 +1 加算する関数。
+--    アプリ側の SELECT→+1→UPDATE（read-then-write）は並行更新で上書き競合を起こすため、
+--    credits = credits + 1 の SQL 式更新をサーバ専用 RPC に閉じる。EXECUTE も service_role のみ。
+create or replace function public.refund_credit(p_user_id uuid)
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_remaining integer;
+begin
+  update public.profiles
+     set credits = credits + 1
+   where id = p_user_id
+  returning credits into v_remaining;
+  return v_remaining;
+end;
+$$;
+
+revoke execute on function public.refund_credit(uuid) from public, anon, authenticated;
+grant  execute on function public.refund_credit(uuid) to service_role;
+
 -- 4. クレジット改ざん防止: authenticated / anon から profiles のテーブル UPDATE 権限を
 --    REVOKE する。正当なプロフィール更新は全て createAdminClient()(service_role) 経由
 --    (app/api/profile/route.ts) で行われるため authenticated の直接 UPDATE は本来不要。

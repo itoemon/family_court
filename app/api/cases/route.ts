@@ -18,13 +18,20 @@ export async function POST(req: NextRequest) {
   const admin = createAdminClient();
 
   // 原告の表示名と BYOK（api_key_encrypted）の有無を取得。
-  const { data: profile } = await admin
+  // 取得失敗を握りつぶすと BYOK ユーザーでも hasByok=false と誤判定して
+  // クレジットを消費し得るため、失敗時はクレジット消費前に 500 で停止する。
+  const { data: profile, error: profileError } = await admin
     .from("profiles")
     .select("display_name, api_key_encrypted")
     .eq("id", user.id)
     .single();
 
-  const hasByok = !!profile?.api_key_encrypted;
+  if (profileError || !profile) {
+    console.error("[cases] profile fetch failed:", profileError);
+    return NextResponse.json({ error: "プロフィールの取得に失敗しました" }, { status: 500 });
+  }
+
+  const hasByok = !!profile.api_key_encrypted;
 
   // MON-001: クレジット判定。
   // - BYOK あり → 消費なし・uses_service_key=false。
@@ -65,20 +72,13 @@ export async function POST(req: NextRequest) {
 
   if (error) {
     // 消費済みだが INSERT に失敗した場合は補償でクレジットを 1 戻す（安全側に倒す）。
+    // read-then-write は並行更新で上書き競合するため、原子的加算の refund_credit RPC を使う。
     if (usesServiceKey) {
-      const { data: current } = await admin
-        .from("profiles")
-        .select("credits")
-        .eq("id", user.id)
-        .single();
-      if (current) {
-        const { error: refundError } = await admin
-          .from("profiles")
-          .update({ credits: current.credits + 1 })
-          .eq("id", user.id);
-        if (refundError) {
-          console.error("[cases] credit refund failed after insert error:", refundError);
-        }
+      const { error: refundError } = await admin.rpc("refund_credit", {
+        p_user_id: user.id,
+      });
+      if (refundError) {
+        console.error("[cases] credit refund failed after insert error:", refundError);
       }
     }
     return NextResponse.json({ error: error.message }, { status: 500 });

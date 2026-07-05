@@ -1,3 +1,4 @@
+import "server-only";
 import { decryptApiKey } from "@/lib/crypto";
 
 // MON-001: このケースの AI 実行にどの API キー（平文）を使うかを一元決定する唯一の場所。

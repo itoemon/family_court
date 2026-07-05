@@ -16,7 +16,7 @@ create table public.profiles (
   closing_greeting text             -- 終了時の固定挨拶（NULL=サーバ既定文を使用、1〜125文字）
     check (closing_greeting is null or (char_length(closing_greeting) between 1 and 125)),
   credits       integer not null default 3   -- MON-001: クレジット残高（無料お試し 3 個）
-    check (credits >= 0),
+    constraint profiles_credits_non_negative check (credits >= 0),
   created_at    timestamptz default now() not null,
   updated_at    timestamptz default now() not null
 );
@@ -200,3 +200,26 @@ $$;
 
 revoke execute on function public.consume_credit(uuid) from public, anon, authenticated;
 grant  execute on function public.consume_credit(uuid) to service_role;
+
+-- MON-001: クレジットを原子的に 1 加算する関数（消費後にケース INSERT が失敗した際の
+-- 補償用）。SELECT→+1 の read-then-write は並行更新で上書き競合を起こすため、
+-- credits = credits + 1 の SQL 式更新をサーバ専用 RPC に閉じる。
+create or replace function public.refund_credit(p_user_id uuid)
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_remaining integer;
+begin
+  update public.profiles
+     set credits = credits + 1
+   where id = p_user_id
+  returning credits into v_remaining;
+  return v_remaining;
+end;
+$$;
+
+revoke execute on function public.refund_credit(uuid) from public, anon, authenticated;
+grant  execute on function public.refund_credit(uuid) to service_role;
