@@ -166,6 +166,22 @@ set -a && source .env.test && set +a
 - メール認証 ON のままユーザーを作っている可能性 → ダッシュボードで「Auto Confirm User」相当の状態にする
 - パスワードに記号が含まれて bash 展開を受けている可能性 → `.env.test` 上ではダブルクォートで囲む
 
+## MON-001（クレジット制）導入後の E2E ユーザー前提
+
+MON-001 PR-A でケース作成にクレジット消費（非 BYOK ユーザー）と作成ガード UI を導入したため、**永続 E2E ユーザー（E2E User A / B）には BYOK（`api_key_encrypted`）を設定してある**。理由と運用:
+
+- BYOK ユーザーはクレジットを**消費しない**（自分のキー扱い）ため、`critical.spec.ts` / `bug005-*.spec.ts` 等が `はじめる` ボタンからケースを何度作っても作成ガード（非 BYOK かつ `credits=0` で無効化）に引っかからない。
+- AI 実行は `TEST_MODE=1` の `generateJudgeMessage` モックが復号キーより手前で応答するため、BYOK キーは**復号可能な有効値であれば中身は何でもよい**（実 Anthropic は呼ばれない）。
+- 設定方法（`.env.test` の `ENCRYPTION_KEY` で AES-256-GCM 暗号化した値を投入）:
+  ```bash
+  set -a && source .env.test && set +a
+  ENC=$(node -e 'const c=require("crypto");const k=Buffer.from(process.env.ENCRYPTION_KEY,"hex");const iv=c.randomBytes(16);const ci=c.createCipheriv("aes-256-gcm",k,iv);const e=Buffer.concat([ci.update("sk-ant-e2e-byok-dummy","utf8"),ci.final()]);console.log(iv.toString("hex")+":"+ci.getAuthTag().toString("hex")+":"+e.toString("hex"))')
+  # Management API で public.profiles を UPDATE: api_key_encrypted=$ENC, credits=3
+  #   where display_name in ('E2E User A','E2E User B')
+  ```
+- **非 BYOK / クレジット枯渇の挙動**を検証する `mon001-credits.spec.ts` は、専用の ephemeral ユーザーを毎回生成して検証するため、A/B の BYOK 化とは独立している（A/B を汚染しない）。
+- migration `20260705190001_mon001_credits.sql`（`profiles.credits` / `cases.uses_service_key` / `consume_credit` / `profiles` UPDATE 権限 REVOKE）はテスト DB へ適用済み。
+
 ## マイグレーション同期の運用
 
 スキーマ変更を本番 DB に適用したら、テスト DB にも同じ migration を適用すること。**運用ルール**:

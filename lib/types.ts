@@ -59,6 +59,8 @@ export interface Case {
   endProposedBy: EndProposalActor | null;
   extensionVotePlaintiff: ExtensionVote | null;
   extensionVoteDefendant: ExtensionVote | null;
+  // MON-001: このケースの AI 実行にサービスキーを使うか（作成時に確定）。DB 列 uses_service_key。
+  usesServiceKey: boolean;
   verdict: Verdict | null;
   createdAt: string;
   updatedAt: string;
@@ -104,6 +106,8 @@ export interface DefenseMessage {
 export interface Profile {
   id: string;
   display_name: string;
+  // MON-001: クレジット残高（無料お試し 3 個、非負）。
+  credits: number;
   api_key_encrypted: string | null;
   avatar_url: string | null;
   defense_custom_instruction: string | null;

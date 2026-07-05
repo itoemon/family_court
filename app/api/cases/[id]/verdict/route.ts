@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/server";
 import { requestVerdict } from "@/lib/claude";
-import { decryptApiKey } from "@/lib/crypto";
+import { resolveCaseAiKey } from "@/lib/case-ai-key";
 import { Case } from "@/lib/types";
 import { isUuid } from "@/lib/text-utils";
 
@@ -21,18 +21,18 @@ export async function POST(
     return NextResponse.json({ error: "まだ判決を下せるフェーズではありません" }, { status: 409 });
   }
 
-  // 原告のAPIキーを取得・復号
+  // 原告 profile を取得し、ケースの課金モードに応じて AI 実行キーを解決。
   const { data: profile } = await admin
     .from("profiles")
     .select("display_name, api_key_encrypted")
     .eq("id", c.plaintiff_id)
     .single();
 
-  if (!profile?.api_key_encrypted) {
-    return NextResponse.json({ error: "APIキーが登録されていません。プロフィールから登録してください。" }, { status: 400 });
+  const keyResult = resolveCaseAiKey(c, profile);
+  if (!keyResult.ok) {
+    return NextResponse.json({ error: keyResult.error }, { status: keyResult.status });
   }
-
-  const apiKey = decryptApiKey(profile.api_key_encrypted);
+  const apiKey = keyResult.apiKey;
 
   const { data: args } = await admin.from("arguments").select("*").eq("case_id", id).order("created_at");
 
@@ -47,7 +47,7 @@ export async function POST(
   const caseForClaude: Case = {
     id: c.id,
     topic: c.topic,
-    plaintiff: { name: profile.display_name, joinedAt: c.created_at },
+    plaintiff: { name: profile?.display_name ?? "提案者", joinedAt: c.created_at },
     defendant,
     arguments: (args ?? []).map((a) => ({
       id: a.id,
@@ -67,6 +67,7 @@ export async function POST(
     endProposedBy: c.end_proposed_by ?? null,
     extensionVotePlaintiff: c.extension_vote_plaintiff ?? null,
     extensionVoteDefendant: c.extension_vote_defendant ?? null,
+    usesServiceKey: c.uses_service_key ?? false,
     verdict: null,
     createdAt: c.created_at,
     updatedAt: c.updated_at,

@@ -5,7 +5,7 @@ import { buildCaseResponse } from "@/lib/case-response";
 import { isUuid } from "@/lib/text-utils";
 import { insertClosingGreetingsForCase } from "@/lib/greetings";
 import { insertClosingJudgeMessage } from "@/lib/case-closing";
-import { decryptApiKey } from "@/lib/crypto";
+import { resolveCaseAiKey } from "@/lib/case-ai-key";
 
 type Actor = "plaintiff" | "defendant" | "guest";
 
@@ -185,9 +185,10 @@ export async function POST(
           .select("api_key_encrypted")
           .eq("id", refreshed.plaintiff_id)
           .single();
-        const plaintiffApiKey = plaintiffProfile?.api_key_encrypted
-          ? decryptApiKey(plaintiffProfile.api_key_encrypted)
-          : null;
+        // MON-001: ケースの課金モードに応じて closing 用 AI キーを解決。付随処理のため
+        // 解決失敗時は null を渡してヘルパー側で warn + skip。
+        const closingKeyResult = resolveCaseAiKey(refreshed, plaintiffProfile);
+        const plaintiffApiKey = closingKeyResult.ok ? closingKeyResult.apiKey : null;
 
         await insertClosingJudgeMessage(admin, plaintiffApiKey, {
           caseId: id,

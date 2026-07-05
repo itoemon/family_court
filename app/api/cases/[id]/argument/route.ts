@@ -4,7 +4,7 @@ import { verifyGuestToken } from "@/lib/guest-token";
 import { AddArgumentRequest, Role } from "@/lib/types";
 import { buildCaseResponse } from "@/lib/case-response";
 import { generateJudgeMessage } from "@/lib/judge";
-import { decryptApiKey } from "@/lib/crypto";
+import { resolveCaseAiKey } from "@/lib/case-ai-key";
 import { checkContradiction } from "@/lib/contradiction";
 import { isUuid } from "@/lib/text-utils";
 
@@ -123,9 +123,11 @@ export async function POST(
     .select("display_name, api_key_encrypted")
     .eq("id", c.plaintiff_id)
     .single();
-  const plaintiffApiKey = plaintiffProfile?.api_key_encrypted
-    ? decryptApiKey(plaintiffProfile.api_key_encrypted)
-    : null;
+  // MON-001: ケースの課金モードに応じて AI 実行キーを解決。judge / 矛盾チェックは
+  // 失敗しても本処理を止めない付随処理のため、キー解決に失敗したら null 扱いで skip する
+  // （サービスキー未設定・BYOK NULL のいずれも従来どおり警告してスキップ）。
+  const keyResult = resolveCaseAiKey(c, plaintiffProfile);
+  const plaintiffApiKey = keyResult.ok ? keyResult.apiKey : null;
 
   // BUG-005: argument フェーズを離れる場合 (extension_voting 遷移) は judge_message を一切生成しない。
   // 旧設計では trigger='closing' を出していたが、AI 閉廷宣告は phase=judging 遷移時に

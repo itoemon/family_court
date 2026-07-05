@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient, createSessionClient } from "@/lib/supabase/server";
 import { verifyGuestToken } from "@/lib/guest-token";
-import { decryptApiKey } from "@/lib/crypto";
+import { resolveCaseAiKey } from "@/lib/case-ai-key";
 import { generateDefenseResponse } from "@/lib/defense";
 import { DefenseMessage } from "@/lib/types";
 import { isUuid } from "@/lib/text-utils";
@@ -45,27 +45,27 @@ async function resolveAuth(req: NextRequest, id: string) {
   return { error: "認証が必要です", status: 401 } as const;
 }
 
-async function resolveApiKey(plaintiffId: string, admin: ReturnType<typeof createAdminClient>) {
+async function resolveApiKey(
+  caseRow: { plaintiff_id: string; uses_service_key: boolean },
+  admin: ReturnType<typeof createAdminClient>
+) {
   const { data: plaintiffProfile } = await admin
     .from("profiles")
     .select("api_key_encrypted, defense_custom_instruction")
-    .eq("id", plaintiffId)
+    .eq("id", caseRow.plaintiff_id)
     .single();
 
-  if (!plaintiffProfile?.api_key_encrypted) {
-    console.error(`[defense] plaintiff ${plaintiffId} has no api_key_encrypted`);
-    return { error: "APIキーが設定されていません", status: 500 } as const;
+  // MON-001: ケースの課金モードに応じてキーを解決（サービスキー or 原告 BYOK）。
+  const keyResult = resolveCaseAiKey(caseRow, plaintiffProfile);
+  if (!keyResult.ok) {
+    console.error(`[defense] key unresolved for case (plaintiff=${caseRow.plaintiff_id}): ${keyResult.error}`);
+    return { error: keyResult.error, status: keyResult.status } as const;
   }
 
-  try {
-    return {
-      apiKey: decryptApiKey(plaintiffProfile.api_key_encrypted),
-      customInstruction: (plaintiffProfile.defense_custom_instruction as string | null) ?? null,
-    } as const;
-  } catch (err) {
-    console.error("[defense] api key decryption failed:", err);
-    return { error: "APIキーの復号に失敗しました", status: 500 } as const;
-  }
+  return {
+    apiKey: keyResult.apiKey,
+    customInstruction: (plaintiffProfile?.defense_custom_instruction as string | null) ?? null,
+  } as const;
 }
 
 function toDefenseMessage(row: {
@@ -126,7 +126,7 @@ export async function POST(
 
   const { userId, c, userRole, admin } = auth;
 
-  const keyResult = await resolveApiKey(c.plaintiff_id, admin);
+  const keyResult = await resolveApiKey(c, admin);
   if ("error" in keyResult) {
     return NextResponse.json({ error: keyResult.error }, { status: keyResult.status });
   }

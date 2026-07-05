@@ -19,6 +19,7 @@ export default function ProfilePage() {
   const [displayName, setDisplayName] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [hasApiKey, setHasApiKey] = useState(false);
+  const [credits, setCredits] = useState<number | null>(null);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [customInstruction, setCustomInstruction] = useState("");
   const [loading, setLoading] = useState(true);
@@ -44,13 +45,14 @@ export default function ProfilePage() {
 
       const { data: profile } = await supabase
         .from("profiles")
-        .select("display_name, api_key_encrypted, avatar_url, defense_custom_instruction, opening_greeting, closing_greeting")
+        .select("display_name, api_key_encrypted, avatar_url, defense_custom_instruction, opening_greeting, closing_greeting, credits")
         .eq("id", user.id)
         .single();
 
       if (profile) {
         setDisplayName(profile.display_name);
         setHasApiKey(!!profile.api_key_encrypted);
+        setCredits(profile.credits ?? null);
         setAvatarUrl(profile.avatar_url ?? null);
         setCustomInstruction(profile.defense_custom_instruction ?? "");
         setOpeningGreeting(profile.opening_greeting ?? null);
@@ -285,6 +287,27 @@ export default function ProfilePage() {
                 登録時はキーの有効性確認のため、軽微なテストリクエストを送信します。
               </p>
             </div>
+
+            {/* MON-001: クレジット残高。BYOK 登録済みなら消費なしを案内する。 */}
+            {credits !== null && (
+              <div className="bg-stone-50 border border-stone-200 rounded-xl px-4 py-3">
+                <div className="flex items-baseline justify-between">
+                  <span className="text-xs font-semibold text-stone-400 uppercase tracking-wider">
+                    残りクレジット
+                  </span>
+                  <span
+                    className={`text-lg font-bold ${credits === 0 && !hasApiKey ? "text-rose-500" : "text-brand-800"}`}
+                  >
+                    {credits}
+                  </span>
+                </div>
+                <p className="text-xs text-stone-400 mt-1">
+                  {hasApiKey
+                    ? "APIキー登録済みのため、話し合いの作成でクレジットは消費されません。"
+                    : "APIキー未登録の場合、話し合いを1件作成するごとに1クレジット消費します。"}
+                </p>
+              </div>
+            )}
 
             {message && (
               <p className={`text-sm rounded-xl px-4 py-2 ${isError ? "text-rose-500 bg-rose-50 border border-rose-100" : "text-emerald-600 bg-emerald-50 border border-emerald-100"}`}>

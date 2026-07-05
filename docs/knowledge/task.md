@@ -2,174 +2,180 @@
 
 > **優先順位**: このファイルの内容は最優先。設計書・handoff メモと矛盾する場合は必ずこちらを優先すること。
 >
-> **重要 1（design.md 取り扱い）**: `docs/knowledge/design.md` は約 180KB の**永続累積資料**である。FEAT-003 等の既存設計を **絶対に削除・短縮・全面書き換えしないこと**。アーキは design.md を **必ず Read で全体を把握してから、末尾に新規セクション `## FEAT-004 法案 Hub（公開・インポート）` を追記**する。プロンプトの「# 詳細設計書」テンプレートは追記する**セクションの構造**であり、ファイル全体を置換する指示ではない。既存セクションは 1 行も消さない。
+> **重要 1（design.md 取り扱い）**: `docs/knowledge/design.md` は永続累積資料である。FEAT-003 / FEAT-004 等の既存設計を **絶対に削除・短縮・全面書き換えしないこと**。アーキは design.md を **必ず Read で全体を把握してから、末尾に新規セクション `## MON-001 PR-A クレジット基盤（消費・サービスキー・無料付与）` を追記**する。プロンプトの「# 詳細設計書」テンプレートは追記する**セクションの構造**であり、ファイル全体を置換する指示ではない。既存セクションは 1 行も消さない。
 >
-> **重要 2（フルパイプライン）**: 本タスクは新サブシステムの追加であり、アーキ → ビルド → テスタ → オーディの**フルパイプライン**で進める（リード先行実装ではない）。
+> **重要 2（フルパイプライン）**: 本タスクは課金サブシステムの追加であり、アーキ → ビルド → テスタ → オーディの**フルパイプライン**で進める（リード先行実装ではない）。
 >
-> **重要 3（migration の冪等化）**: 新規 migration は OPS-002 の方針に従い冪等に書く（`ADD COLUMN IF NOT EXISTS` / `DROP POLICY IF EXISTS ... → CREATE POLICY`）。理由は `supabase/schema.sql`（本番スナップショット）と二重適用しても停止しないようにするため。
+> **重要 3（migration の冪等化）**: 新規 migration は OPS-002 の方針に従い冪等に書く（`ADD COLUMN IF NOT EXISTS` / `DROP POLICY IF EXISTS ... → CREATE POLICY` / `CREATE OR REPLACE FUNCTION`）。理由は `supabase/schema.sql`（本番スナップショット）と二重適用しても停止しないようにするため。
+>
+> **重要 4（スキーマキャッシュ）**: 新カラム（`profiles.credits` 等）を migration で追加した後、PostgREST のスキーマキャッシュ再読込が必要。`run_migrations`（agents.sh）と `setup-test-db.sh` は PR #59 で適用後に `NOTIFY pgrst, 'reload schema';` を自動実行するようになっているので、パイプライン経由なら追加対応は不要。手動適用時のみ注意。
 
 ## 今回のタスク
 
-法律（FEAT-003）に **公開 Hub とインポート機能**を追加する。
+ケース作成に **クレジット制課金の基盤**を導入する（MON-001 の第 1 段階 = PR-A）。
 
-**バックログ ID**: FEAT-004
+**バックログ ID**: MON-001（クレジット制課金）
 **ブランチ**: ビルドが `feature/<timestamp>` 形式で新規作成する（`scripts/agents.sh` のハードコード命名に従う）
 
 ---
 
-### スコープ確定事項（2026-06-18 ダイチ確認）
+### スコープ確定事項（2026-06-24 ダイチ確認）
 
-3 つの方針はダイチが確定済み。設計・実装はこの前提で行う:
+MON-001 全体の最終ゴールは「Stripe Checkout でクレジットを購入できる」状態（スコープ②）だが、**本 PR-A は Stripe を含まないクレジット基盤のみ**を実装する。Stripe 決済・購入 UI は後続の **PR-B** で扱う（本 PR ではスコープ外）。理由: PR-A は Stripe キー無しで実装・検証でき（`TEST_MODE` モックで AI 呼び出しを回避できる）、PR-B のキー準備と並行できるため。
 
-1. **公開モデル = `is_public` トグル**: `laws` に `is_public` (boolean) を 1 つ追加し、オーナーが ON/OFF で Hub 公開を切り替える最小モデル。`visibility` enum 等の拡張はしない。
-2. **インポート = 純クローン**: 公開法案の `name` + `article` をコピーしてインポーターがオーナーの**新規法律**を作る。出自リンク（imported_from 等）は**持たない**。
-3. **Hub の可視範囲 = 認証ユーザーのみ**: 既存 `laws` が `authenticated` 限定 GRANT なのと一貫させる。anon 公開はしない。`/laws/hub` は middleware の `/laws` プレフィックス保護に既に含まれる（middleware 変更不要、要確認）。
+ダイチが確定済みの方針:
+
+1. **課金モデル**: 原告（ケース作成者）が
+   - **BYOK（`profiles.api_key_encrypted` あり）→ クレジット消費なし**、自分のキーで全 AI 実行（現行どおり）
+   - **BYOK なし & クレジット ≥ 1 → ケース作成時に 1 消費**し、そのケースの全 AI 実行は**サービス側 API キー**を使う
+   - **BYOK なし & クレジット 0 → ケース作成を 402 でブロック**（クレジット不足。購入導線は PR-B、本 PR では「不足」メッセージ + プロフィール等への案内で可）
+2. **消費単位**: 1 クレジット = 1 ケース。**ケース作成時（`POST /api/cases`）に 1 消費**する。1 ケース内の AI 実行（opening / 各ターン / closing / 判決）は何回呼んでも追加消費しない（作成時のモードに従う）。
+3. **無料お試しクレジット**: 新規ユーザーに **3 個**付与する。
 
 ---
 
 ### 背景
 
-FEAT-003 で「オーナー + 招待メンバーのみ閲覧可」の法律機能を実装済み。`laws` には公開フラグが無く、フレンド外のユーザーが他人の良い法律を再利用する手段がない。FEAT-004 は「オーナーが任意で法律を公開 → 他ユーザーが Hub で閲覧 → 自分の新規法律としてインポート」という流れを追加する。
+現状、裁判官 AI・弁護人 AI・判決生成はすべて**原告の BYOK（`profiles.api_key_encrypted`）必須**である。キー未登録ユーザーは各 AI ルートで「APIキーが登録されていません」(400) になり、AI 機能を一切使えない（`app/api/cases/[id]/verdict/route.ts:31` 等）。MON-001 はこの「非 BYOK ユーザーが**クレジットを消費してサービスのキーで AI を使える**」道を新設し、サービス側が負担する API 料金を将来課金で賄う基盤を作る。
 
-backlog [FEAT-004]、依存: FEAT-003 / FEAT-002。
+AI 生成関数（`lib/judge.ts:generateJudgeMessage(params, apiKey)` / `lib/defense.ts` / `lib/claude.ts`）はいずれも **API キーを引数で受け取る**設計なので、サービスキーへの差し替えは「呼び出し側でどのキーを使うか決める」だけで済む。
+
+backlog [MON-001]、依存: FEAT-006（cases フェーズ）/ 既存 BYOK 実装。
 
 ---
 
 ### スコープ（IN / OUT）
 
-**IN（本タスクで実装する）**:
-- `laws.is_public` カラム追加（migration、冪等）
-- 公開法律を全認証ユーザーが SELECT できる RLS ポリシー追加
-- 公開トグル API（オーナーのみ）
-- 公開法律一覧 API（Hub 用、認証ユーザー、name 部分一致検索 + 件数上限）
-- インポート API（公開法律を純クローンして新規法律を作成）
-- Hub ページ（`/laws/hub`）: 公開法律の一覧・検索・条文プレビュー・インポートボタン
-- `/laws/[id]` のオーナー向け公開トグル UI（現在の公開状態表示 + 切替）
-- `/laws` または Hub への導線（ナビリンク）
-- E2E spec（公開トグル → Hub 出現 → 別ユーザーがインポート → 新規法律所有 → 元法律不変、非公開は Hub 非出現、非公開化で Hub から消える）
+**IN（本 PR-A で実装する）**:
+- `profiles.credits` カラム追加（integer、デフォルト 3、非負制約。migration、冪等）
+- `cases` に課金モードを記録するカラム追加（例 `uses_service_key boolean not null default false`。migration、冪等）
+- クレジットを原子的に 1 減算する Postgres 関数 `consume_credit(uuid)`（SECURITY DEFINER、`UPDATE ... WHERE credits > 0 RETURNING`。同時実行で二重消費しない）
+- 無料お試し 3 個の付与（`profiles.credits` のカラムデフォルトを 3 にすることで、既存の `handle_new_user` トリガの insert で自動付与される設計を基本とする。設計書で「デフォルト値による付与」か「トリガ明示付与」かを判断し根拠を書く）
+- `POST /api/cases` のクレジット判定: BYOK 有無 → 消費要否を決め、不足時 402 ブロック、`cases.uses_service_key` をセット
+- AI 実行時のキー解決の一元化: 「`cases.uses_service_key=true` なら `process.env.SERVICE_ANTHROPIC_API_KEY`、false なら原告の BYOK 復号キー」を返すヘルパー（例 `lib/case-ai-key.ts`）を作り、現在 `api_key_encrypted` を直接読んでいる全 AI ルートを張り替える
+- クレジット残高の表示 UI（プロフィール `/profile` か `/me`、またはヘッダー。既存パターンに合わせて設計書で選択）
+- ケース作成画面（`/case/new` 等）で、非 BYOK かつ残高 0 のとき作成を抑止し残高不足を伝える UI（購入リンクは PR-B のプレースホルダで可）
+- `SERVICE_ANTHROPIC_API_KEY` を `.env.test.example` / 環境定義に追記（値は入れない。PR-A の E2E は `TEST_MODE=1` モックで実 AI を回避するため実キー不要）
+- E2E spec（下記「テスト観点」）
 
-**OUT（本タスクでは実装しない・スコープ外として設計書に明記）**:
-- `visibility` enum 化 / 限定公開
-- インポート出自リンク・元作者クレジット表示
-- anon（未認証）への Hub 公開・SEO
-- いいね / 人気度 / タグ / カテゴリ
-- 公開法律へのコメント・モデレーション・通報
-- 非メンバーによる公開法律の `/laws/[id]` 詳細ページ閲覧（Hub 内プレビューで完結させる）
-- インポート時の重複検知（同じ法律を何度でもインポート可で良い）
+**OUT（本 PR-A では実装しない・設計書に明記）**:
+- Stripe 連携全般（Checkout / webhook / 購入 UI / 価格設定）→ **PR-B**
+- サブスクリプション月額プラン（MON-001 のスコープ③、将来）
+- クレジットの返金・有効期限・履歴台帳（消費ログテーブル）
+- 管理者用のクレジット手動付与 UI（必要なら SQL 直叩きで足りる）
+- 広告（MON-002）
 
 ---
 
 ### データモデル変更
 
-新規 migration（例: `supabase/migrations/<timestamp>_feat004_laws_is_public.sql`）を**冪等**に作成する:
+新規 migration（例: `supabase/migrations/<timestamp>_mon001_credits.sql`）を**冪等**に作成する:
 
-- `laws` に `is_public boolean not null default false` を `ADD COLUMN IF NOT EXISTS` で追加
-- 公開法律閲覧用の RLS ポリシーを追加（既存 `laws_select_member_or_invitee` は**変更しない**。OR 評価される別ポリシーを足す）:
-  - 例: `DROP POLICY IF EXISTS laws_select_public ON public.laws; CREATE POLICY laws_select_public ON public.laws FOR SELECT TO authenticated USING (is_public = true);`
-  - 効果: メンバーでなくても `is_public=true` の法律は認証ユーザーが SELECT できる
-- `law_members` / `law_invitations` 等の他テーブルは公開でも非メンバーに見せない（Hub では `laws` 本体だけ見せ、メンバー情報・提案・投票は出さない）
+- `profiles.credits integer not null default 3` を `ADD COLUMN IF NOT EXISTS` で追加。非負制約（`check (credits >= 0)`）も付ける。既存行はデフォルト 3 でバックフィルされる（既存ユーザーへの一度きりの無料付与として許容する旨を設計書に明記）
+- `cases.uses_service_key boolean not null default false` を `ADD COLUMN IF NOT EXISTS` で追加（このケースの AI 実行にサービスキーを使うか。作成時に確定）
+- `consume_credit(p_user_id uuid) returns integer`（または boolean）を `CREATE OR REPLACE FUNCTION` で定義。`SECURITY DEFINER`、`search_path = ''`。`UPDATE public.profiles SET credits = credits - 1 WHERE id = p_user_id AND credits > 0 RETURNING credits` で、成功時は残高、残高 0 で減算不可なら NULL/負値等の「消費できなかった」シグナルを返す。`PUBLIC` からの EXECUTE は REVOKE し、`authenticated` には付与しない（**サーバ（admin / service role）からのみ呼ぶ**。クライアントから直接 RPC で叩けないようにする。FEAT-004 の `private.is_law_member` と同じ「public スキーマに置かない or REVOKE」方針を踏襲し、RPC 露出を避ける）
+- RLS: `profiles` の既存ポリシーは「自分のみ参照/更新可」。`credits` 列もこれで読めるが、**クライアントが credits を直接 UPDATE して増やせない**ことが重要。現状 `profiles` の update ポリシーは `using (auth.uid() = id)` で自分の行を更新できてしまうため、クレジット増加の不正を防ぐ設計を検討し設計書に明記する（案: credits の変更はサーバ（admin）経由のみとし、必要なら列単位の防御や、消費は `consume_credit` 関数経由に限定する方針を記述）
 
-**注意**: 既存テスト DB は populated なので、ビルド/テスタ実行前にこの migration をテスト DB へ適用する必要がある（冪等なので再適用安全。リードが適用する）。`supabase/schema.sql` への反映方針も設計書に記載する（schema.sql は本番スナップショット = 冷凍庫。新カラムは migration が真実。OPS-002 参照）。
+**注意**: 既存テスト DB（`eckrccrfnblzdbflnssf`）は populated。ビルド/テスタ実行前にこの migration をテスト DB へ適用する必要がある（冪等なので再適用安全。リードが適用、または `run_migrations` が自動適用）。`supabase/schema.sql`（本番スナップショット = 冷凍庫）への反映方針も設計書に記載する（新カラム・関数は migration が真実。OPS-002 参照）。
 
 ---
 
-### API 仕様（追加）
+### API 仕様（変更・追加）
 
-すべて既存パターンに従う: `createSessionClient()` で認証確認 → 書き込みは `createAdminClient()` → パスパラメータは `isUuid()` で検証 → エラーは 400/401/403/404/409/500 体系。
+すべて既存パターンに従う: `createSessionClient()` で認証確認 → 書き込みは `createAdminClient()` → パスパラメータは `isUuid()` 検証 → エラーは 400/401/402/403/404/500 体系。
 
-1. **`PATCH /api/laws/[id]/visibility`**（公開トグル、オーナーのみ）
-   - body: `{ is_public: boolean }`
-   - 認可: `laws.owner_id === user.id`。違反は 403
-   - `laws.is_public` を更新。`updated_at` は触らない（公開状態変更は条文改定ではないため。設計書で根拠を明記）
-   - レスポンス: 更新後の `{ id, is_public }`
+1. **`POST /api/cases`（変更）** — ケース作成時のクレジット判定
+   - 認証必須（現行どおり 401）。`topic` 検証は現行維持
+   - 原告（= `user.id`）の `profiles.api_key_encrypted` を読む
+     - **BYOK あり**: `uses_service_key=false` でケース作成。クレジット消費なし
+     - **BYOK なし**: `consume_credit(user.id)` を admin 経由で呼ぶ
+       - 消費成功 → `uses_service_key=true` でケース作成
+       - 残高 0 で消費失敗 → **402** `{ error: "クレジットが不足しています。…" }` を返し、ケースは作成しない（INSERT しない）
+   - 消費とケース INSERT の整合: 「消費したのにケース作成に失敗」を避ける順序を設計書で明記（推奨: 先に consume_credit、INSERT 失敗時は補償的に +1 戻すか、INSERT を先に試みるか。トレードオフを書く）
+   - レスポンス: 現行どおり作成ケース。残高や課金モードを含めるかは設計書で判断
 
-2. **`GET /api/laws/public`**（Hub 一覧、認証ユーザー）
-   - クエリ: `?q=<name 部分一致>`（任意、trim + 長さ上限）
-   - `is_public = true` の法律を新しい順に返す。MVP の件数上限は 50（設計書で根拠明記）
-   - 各要素: `{ id, name, article, owner_display_name, created_at }`。**`owner_id` は返さない**（display_name のみ）。owner の display_name 取得方法（join/別クエリ）と admin 利用範囲を設計書で明示
-   - 認可: 認証必須。RLS（`laws_select_public`）と整合
+2. **クレジット残高の取得**: 専用 API を新設するか、既存の profile 読み取り（`/profile`・`/me`・`app/page.tsx` が既に `profiles` を select している）に `credits` を足すだけにするかを設計書で選ぶ。最小実装を優先
 
-3. **`POST /api/laws/[id]/import`**（純クローン）
-   - パス `[id]` = インポート元の公開法律
-   - 前提: インポート元が `is_public = true`（でなければ 403/404）。認証必須
-   - 動作: 新規 `laws` を作成（`name` はインポート元と同一、`article` コピー、`owner_id` = インポーター、`is_public = false`）+ `law_members` にインポーターを追加。FEAT-003 の法律作成 POST と同じ初期化（オーナー = メンバー）を踏襲
-   - レスポンス: `{ id }`（新規法律の ID）。UI はこれで `/laws/[id]` に遷移
-   - 既存の `name` / `article` の文字数制約（name 100 / article 2000）を流用
+3. **AI 実行ルート（変更・キー解決の張り替え）**: 現在 `api_key_encrypted` を直接読んで `decryptApiKey` しているすべての箇所を、新ヘルパー経由に統一する。対象:
+   - `app/api/cases/[id]/verdict/route.ts`
+   - `app/api/cases/[id]/argument/route.ts`
+   - `app/api/cases/[id]/route.ts`（opening）
+   - `app/api/cases/[id]/end-proposal/route.ts`
+   - `lib/case-closing.ts`（closing INSERT 経路）
+   - `app/api/cases/[id]/defense/route.ts`（弁護人 AI・**リード補足1で追加**）
+   - `app/api/cases/[id]/defense/draft/route.ts`（弁護人 AI ドラフト・**リード補足1で追加**）
+   - **注**: defense 2 ルートも原告の `api_key_encrypted` を復号して弁護人 AI を呼ぶため、張り替え必須（漏らすとサービスキーケースで弁護人 AI が 400 に倒れる）。詳細は design.md「リード補足（2026-06-24 設計レビュー指摘）」参照
+   - ヘルパー（例 `lib/case-ai-key.ts:resolveCaseAiKey(case, plaintiffProfile)`）が「`uses_service_key` なら `process.env.SERVICE_ANTHROPIC_API_KEY`、else 復号 BYOK キー」を返す。サービスキー未設定（env 欠落）時の挙動（500 + 明示エラー）も定義
+   - **注意**: 非 BYOK = サービスキーになったことで、従来「`api_key_encrypted` が NULL なら 400/警告」だった分岐の意味が変わる。サービスキーケースでは BYOK が NULL でも正常に AI を実行する。各ルートのガードを新ヘルパーの結果ベースに正しく書き換えること
 
 ---
 
 ### コンポーネント設計（UI）
 
-1. **`/laws/hub`（Server Component）+ Client 子**:
-   - 公開法律のデータ取得（Server で直接 supabase か API 経由かは設計書で選択。FEAT-003 の `/laws` ページが Server で直接 supabase を読むパターンに合わせる）
-   - 一覧表示: 各公開法律の `name` / オーナー表示名 / `article`（プレビュー、長文は省略 or 折りたたみ）/ インポートボタン
-   - 検索ボックス（name 部分一致、Client 側 or クエリ）
-   - インポートボタン → `POST /api/laws/[id]/import` → 成功で `/laws/<newid>` へ遷移
-   - 配色・トーンは既存 laws UI を踏襲
-
-2. **公開トグル UI（`/laws/[id]` のオーナー分岐）**:
-   - 現在の公開状態を表示し、ON/OFF 切替（`PATCH /api/laws/[id]/visibility`）
-   - オーナーのみ表示。非オーナーには出さない
-   - 既存 `MemberList` / `ProposalPanel` と同居する詳細画面に自然に収まる配置
-
-3. **導線**: `/laws` 一覧ページ（または共通ヘッダ）から `/laws/hub` へのリンク
+1. **クレジット残高表示**: 既存の `profiles` 読み取り箇所（`/profile`・`/me`・ヘッダーのいずれか）に「残りクレジット: N」を表示。配色・トーンは既存踏襲
+2. **ケース作成画面のガード**: `/case/new`（または作成フォーム）で、非 BYOK かつ残高 0 のときに作成ボタンを抑止し「クレジットが不足しています（BYOK なら無料）」を伝える。購入リンクは PR-B のプレースホルダ（`#` または準備中表示）で可
+3. BYOK ユーザーには「自分のキーを使うのでクレジット消費なし」が伝わると親切（任意、設計書で判断）
 
 ---
 
 ### セキュリティ設計
 
-- 公開トグルはオーナーのみ（`owner_id` 照合）。インポートは元法律が `is_public=true` の場合のみ
-- Hub 一覧・インポートは認証必須。anon には開放しない
-- 公開法律でも**メンバー情報・提案・投票は非メンバーに見せない**（`laws` 本体のみ公開）
-- `owner_display_name` 以外のオーナー個人情報（`owner_id`、メール等）を API レスポンスに含めない
-- `article` はテキストとして描画（既存 `ArticleSection` パターン）。HTML 注入を許さない
-- 入力検証: `is_public` は boolean、`q` は文字列 trim + 長さ上限、パス UUID 検証
-- レートリミット: 法律作成・インポートは書き込みなので既存の ratelimit 方針があれば踏襲（設計書で確認）
+- **クレジット改ざん防止**: クライアントが `profiles.credits` を直接増やせないこと。consume は `consume_credit`（サーバのみ呼べる）経由、付与はサーバ（admin）/トリガのみ。`profiles` の self-update ポリシーで credits を上書きできてしまう穴を塞ぐ方針を設計書に明記
+- **サービスキー秘匿**: `SERVICE_ANTHROPIC_API_KEY` はサーバ専用 env（`NEXT_PUBLIC_` を付けない）。クライアントに絶対渡さない。レスポンスにも含めない
+- **消費の原子性**: 同時に複数ケースを作成しても二重消費・マイナス残高にならないこと（`WHERE credits > 0` + RETURNING で担保）
+- 入力検証: 現行の `topic` 検証維持。パス UUID 検証維持
+- 402 ブロック時にクレジットを誤って消費しないこと（消費に失敗したら作成もしない）
 
 ---
 
 ### テスト観点（テスタ向け）
 
-E2E は既存 `tests/e2e/laws.spec.ts` の admin client fast-path・複数ユーザーコンテキストパターンを踏襲する。`TEST_MODE=1` 経由でテスト Supabase（`eckrccrfnblzdbflnssf`）に対して動作する。最低限:
+E2E は既存 `tests/e2e/bug005-closing-trigger.spec.ts` の **admin client fast-path + 専用 ephemeral ユーザー**パターンを踏襲する。`TEST_MODE=1` で実 Anthropic を回避（`generateJudgeMessage` のモック分岐が既存）。テスト Supabase（`eckrccrfnblzdbflnssf`）対象。最低限:
 
-- **公開トグル**: オーナー A が法律を公開 → `laws.is_public=true` を確認 → 別ユーザー B の Hub 一覧に出現
-- **インポート**: B が Hub から A の公開法律をインポート → B 所有の新規法律が作られ `name`/`article` が一致、`owner_id`=B、`is_public=false`。**元法律（A 所有）は不変**（行数・所有者変わらず）
-- **非公開は非出現**: 非公開法律は B の Hub 一覧に出ない
-- **非公開化**: A が公開を OFF → Hub 一覧から消える
-- **認可**: 非オーナーが visibility PATCH → 403。非公開法律を import → 403/404
-- 既存 laws spec（CRITICAL-L01〜L04）+ CRITICAL M01〜M04 がリグレッションしないこと
-- 新規 spec ファイル（例 `tests/e2e/feat004-laws-hub.spec.ts`）は untracked のままにせず commit に含める（[[feedback-commit-check]]）
+- **BYOK ユーザー**: `api_key_encrypted` をセットしたユーザーがケース作成 → クレジット**消費されない**（前後で `credits` 不変）、`cases.uses_service_key=false`
+- **非 BYOK ＆ 残高あり**: クレジット 3 のユーザーがケース作成 → `credits` が 2 に減る、`cases.uses_service_key=true`。AI 実行（TEST_MODE モック）が成功する
+- **非 BYOK ＆ 残高 0**: `credits=0` のユーザーがケース作成 → **402**、ケースが作られない、残高 0 のまま
+- **新規ユーザー無料付与**: 新規作成ユーザーの `credits` が **3**（カラムデフォルト / トリガ）
+- **原子性**（可能なら）: 残高 1 のユーザーが連続/並行で 2 ケース作成しようとして、1 件だけ成功し残高が負にならない
+- 既存の cases / bug005 等の AI 経路がリグレッションしないこと（BYOK 経路が従来どおり動く）
+- 後始末: ephemeral ユーザー・ケースを admin で削除（case → user の順、FK 順守）。`e2e_user_a` を汚染しない
+- 新規 spec ファイル（例 `tests/e2e/mon001-credits.spec.ts`）は untracked のままにせず commit に含める（[[feedback-commit-check]]）
 
 ---
 
 ### オーディに対する観点
 
-- RLS: `laws_select_public` 追加で「非メンバーが非公開法律を読めない」境界が壊れていないこと（公開のみ開放）
-- 認可: visibility はオーナーのみ、import は公開法律のみ、を API 層で確実に検証していること
-- 情報漏洩: Hub API が `owner_id` 等の個人情報を返していないこと、メンバー/提案/投票を非メンバーに出していないこと
-- インポートが純クローンであり元法律を変更しないこと（オーナー・行が不変）
-- migration が冪等であること（`ADD COLUMN IF NOT EXISTS` / `DROP POLICY IF EXISTS`）
+- クレジット改ざん防止が実効的か（クライアントが credits を直接 UPDATE して増やせないか、`consume_credit` がクライアント RPC から叩けないか）
+- サービスキーがクライアントに漏れていないか（`NEXT_PUBLIC_` 誤用なし、レスポンス非混入）
+- 消費とケース作成の整合（402 時に消費しない、消費したら必ず作成 or 補償）
+- 原子性（`WHERE credits > 0` + RETURNING、マイナス残高不可）
+- AI ルートのキー解決張り替えで、BYOK 経路（従来）が壊れていないこと・サービスキー経路で BYOK NULL でも 400 に倒れないこと
+- migration が冪等であること（`ADD COLUMN IF NOT EXISTS` / `CREATE OR REPLACE FUNCTION` / EXECUTE の REVOKE）
 - **git status 最終確認**: 新規 spec / migration / handoff ログの取りこぼしがないこと（[[feedback-commit-check]]）
 
 ---
 
 ### 関連ファイル（想定）
 
-- `supabase/migrations/<timestamp>_feat004_laws_is_public.sql`（新規）
-- `app/api/laws/[id]/visibility/route.ts`（新規）
-- `app/api/laws/public/route.ts`（新規）
-- `app/api/laws/[id]/import/route.ts`（新規）
-- `app/laws/hub/page.tsx` + `_components/`（新規）
-- `app/laws/[id]/` の公開トグル UI（既存に追記）
-- `tests/e2e/feat004-laws-hub.spec.ts`（新規）
-- `docs/knowledge/design.md`（**末尾に FEAT-004 セクションを追記**）
+- `supabase/migrations/<timestamp>_mon001_credits.sql`（新規）
+- `lib/case-ai-key.ts`（新規・キー解決ヘルパー）
+- `app/api/cases/route.ts`（変更・クレジット判定）
+- `app/api/cases/[id]/verdict/route.ts` / `argument/route.ts` / `route.ts` / `end-proposal/route.ts`（変更・キー解決張り替え）
+- `lib/case-closing.ts`（変更・キー解決張り替え）
+- `lib/types.ts`（`Profile` に `credits`、`Case` に `uses_service_key` 追記）
+- クレジット残高表示 UI（`app/profile/page.tsx` / `app/me/` / ヘッダーのいずれか）
+- ケース作成ガード UI（`/case/new` 周辺）
+- `.env.test.example`（`SERVICE_ANTHROPIC_API_KEY` 追記、値なし）
+- `tests/e2e/mon001-credits.spec.ts`（新規）
+- `docs/knowledge/design.md`（**末尾に MON-001 PR-A セクションを追記**）
 
 ---
 
 ### 既存資産の再利用指針（ビルド向け）
 
 - API 認可: `createSessionClient()` / `createAdminClient()` の分離、`isUuid()` 検証（`lib/text-utils.ts`）
-- フレンド連携は本タスクでは不要（Hub は全認証ユーザー対象）
-- UI: 既存 `app/laws/` のコンポーネント・配色トーンを踏襲。`ArticleSection` の条文描画パターンを再利用
-- 法律作成の初期化（オーナー = メンバー登録）は FEAT-003 の `POST /api/laws` 実装を参照してインポートでも踏襲
-- middleware は `/laws` プレフィックスで既に保護済み（`/laws/hub` も対象）。要確認、変更不要なら設計書にその旨記載
+- 暗号: `lib/crypto.ts:decryptApiKey` を BYOK 復号にそのまま使用
+- AI 呼び出し: `lib/judge.ts` / `lib/defense.ts` / `lib/claude.ts` は `apiKey` 引数を受け取る既存設計。差し替えは呼び出し側のキー解決のみ
+- TEST_MODE モック: `generateJudgeMessage` の既存モック分岐を E2E で活用（実 AI・実課金を踏まない）
+- SECURITY DEFINER + RPC 非露出: FEAT-004 の `private.is_law_member` 方針（`private` スキーマ or REVOKE EXECUTE）を `consume_credit` に踏襲
+- 新規ユーザー付与: 既存 `handle_new_user` トリガ（`supabase/schema.sql:37`）。カラムデフォルトで足りるなら関数改変不要

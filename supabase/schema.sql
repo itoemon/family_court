@@ -15,6 +15,8 @@ create table public.profiles (
     check (opening_greeting is null or (char_length(opening_greeting) between 1 and 125)),
   closing_greeting text             -- 終了時の固定挨拶（NULL=サーバ既定文を使用、1〜125文字）
     check (closing_greeting is null or (char_length(closing_greeting) between 1 and 125)),
+  credits       integer not null default 3   -- MON-001: クレジット残高（無料お試し 3 個）
+    check (credits >= 0),
   created_at    timestamptz default now() not null,
   updated_at    timestamptz default now() not null
 );
@@ -77,6 +79,8 @@ create table public.cases (
                          check (extension_vote_plaintiff is null or extension_vote_plaintiff in ('continue','finish')),
   extension_vote_defendant text
                          check (extension_vote_defendant is null or extension_vote_defendant in ('continue','finish')),
+  -- MON-001: このケースの AI 実行にサービスキーを使うか（作成時に確定）。
+  uses_service_key     boolean not null default false,
   created_at           timestamptz default now() not null,
   updated_at           timestamptz default now() not null,
   -- 被告は「認証済みアカウント」か「ゲスト名」のどちらか一方のみ
@@ -155,8 +159,10 @@ grant select on public.profiles  to anon;
 grant select on public.cases     to anon;
 grant select on public.arguments to anon;
 grant select on public.verdicts  to anon;
--- authenticated: プロフィール更新のみ追加（他テーブルへの書き込みは API Route 経由で service_role が担う）
-grant select, update on public.profiles  to authenticated;
+-- authenticated: 参照のみ（書き込みは API Route 経由で service_role が担う）。
+-- MON-001: profiles の直接 UPDATE 権限は付与しない（credits / api_key_encrypted の
+-- クライアント改ざんを防ぐ多層防御。正当な更新は createAdminClient()/service_role 経由）。
+grant select         on public.profiles  to authenticated;
 grant select         on public.cases     to authenticated;
 grant select         on public.arguments to authenticated;
 grant select         on public.verdicts  to authenticated;
@@ -168,3 +174,29 @@ grant all on public.verdicts  to service_role;
 grant select on public.judge_messages to anon;
 grant select on public.judge_messages to authenticated;
 grant all    on public.judge_messages to service_role;
+
+-- MON-001: クレジットを原子的に 1 減算する関数。
+-- UPDATE ... WHERE credits > 0 RETURNING により同時実行でも二重消費・マイナス残高が
+-- 起きない。減算できなければ NULL（消費失敗＝残高 0）を返す。
+-- public 配置だが anon/authenticated/PUBLIC から EXECUTE を REVOKE し service_role にのみ
+-- GRANT することで、admin(service_role) からのみ呼べる（RPC 非露出）。
+create or replace function public.consume_credit(p_user_id uuid)
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_remaining integer;
+begin
+  update public.profiles
+     set credits = credits - 1
+   where id = p_user_id
+     and credits > 0
+  returning credits into v_remaining;
+  return v_remaining;
+end;
+$$;
+
+revoke execute on function public.consume_credit(uuid) from public, anon, authenticated;
+grant  execute on function public.consume_credit(uuid) to service_role;
