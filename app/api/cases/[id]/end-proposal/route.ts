@@ -5,7 +5,7 @@ import { buildCaseResponse } from "@/lib/case-response";
 import { isUuid } from "@/lib/text-utils";
 import { insertClosingGreetingsForCase } from "@/lib/greetings";
 import { insertClosingJudgeMessage } from "@/lib/case-closing";
-import { decryptApiKey } from "@/lib/crypto";
+import { resolveCaseAiKey } from "@/lib/case-ai-key";
 
 type Actor = "plaintiff" | "defendant" | "guest";
 
@@ -158,9 +158,10 @@ export async function POST(
     .select("api_key_encrypted")
     .eq("id", c.plaintiff_id)
     .single();
-  const plaintiffApiKey = plaintiffProfile?.api_key_encrypted
-    ? decryptApiKey(plaintiffProfile.api_key_encrypted)
-    : null;
+  // MON-001: closing 宣告は付随処理。キー解決失敗（サービスキー未設定・BYOK NULL）時は
+  // null を渡してヘルパー側で warn + skip させる。
+  const closingKeyResult = resolveCaseAiKey(c, plaintiffProfile);
+  const plaintiffApiKey = closingKeyResult.ok ? closingKeyResult.apiKey : null;
 
   await insertClosingJudgeMessage(admin, plaintiffApiKey, {
     caseId: id,

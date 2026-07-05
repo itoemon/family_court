@@ -4,7 +4,7 @@ import { generateGuestToken, verifyGuestToken } from "@/lib/guest-token";
 import { JoinCaseRequest } from "@/lib/types";
 import { buildCaseResponse } from "@/lib/case-response";
 import { generateJudgeMessage } from "@/lib/judge";
-import { decryptApiKey } from "@/lib/crypto";
+import { resolveCaseAiKey } from "@/lib/case-ai-key";
 import { isUuid } from "@/lib/text-utils";
 import { insertOpeningGreetingsForCase } from "@/lib/greetings";
 
@@ -128,16 +128,16 @@ export async function PATCH(
         .select("display_name, api_key_encrypted")
         .eq("id", c.plaintiff_id)
         .single();
-      if (!plaintiffProfile?.api_key_encrypted) {
-        console.warn(`[judge] opening: plaintiff ${c.plaintiff_id} has no api_key_encrypted`);
+      const keyResult = resolveCaseAiKey(c, plaintiffProfile);
+      if (!keyResult.ok) {
+        console.warn(`[judge] opening: key unresolved for case ${id} (${keyResult.error})`);
       } else {
-        const apiKey = decryptApiKey(plaintiffProfile.api_key_encrypted);
         const content = await generateJudgeMessage({
           trigger: "opening",
           topic: c.topic,
-          plaintiffName: plaintiffProfile.display_name ?? "提案者",
+          plaintiffName: plaintiffProfile?.display_name ?? "提案者",
           defendantName: profile?.display_name ?? "反対者",
-        }, apiKey);
+        }, keyResult.apiKey);
         if (content) {
           await admin.from("judge_messages").insert({ case_id: id, content, trigger_type: "opening" });
         }
@@ -199,16 +199,16 @@ export async function PATCH(
       .select("display_name, api_key_encrypted")
       .eq("id", c.plaintiff_id)
       .single();
-    if (!plaintiffProfile?.api_key_encrypted) {
-      console.warn(`[judge] opening: plaintiff ${c.plaintiff_id} has no api_key_encrypted`);
+    const keyResult = resolveCaseAiKey(c, plaintiffProfile);
+    if (!keyResult.ok) {
+      console.warn(`[judge] opening: key unresolved for case ${id} (${keyResult.error})`);
     } else {
-      const apiKey = decryptApiKey(plaintiffProfile.api_key_encrypted);
       const content = await generateJudgeMessage({
         trigger: "opening",
         topic: c.topic,
-        plaintiffName: plaintiffProfile.display_name ?? "提案者",
+        plaintiffName: plaintiffProfile?.display_name ?? "提案者",
         defendantName: body.defendantName.trim(),
-      }, apiKey);
+      }, keyResult.apiKey);
       if (content) {
         await admin.from("judge_messages").insert({ case_id: id, content, trigger_type: "opening" });
       }

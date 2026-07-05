@@ -139,8 +139,11 @@ run_architect() {
 
   log "アーキを起動します..."
 
+  # stdin は /dev/null にリダイレクトする。バックグラウンド/detached 文脈で
+  # claude -p が stdin 入力を待って詰まり、無出力のまま静かに死ぬのを防ぐ（MON-001
+  # アーキ起動で 2 回発生。"no stdin data received in 3s" 警告が兆候）。
   claude -p "$(load_prompt architect OUT_FILE="$out_file")" \
-    --allowedTools "Write,Read,Glob"
+    --allowedTools "Write,Read,Glob" < /dev/null
 
   log "設計書を出力しました: $out_file"
 }
@@ -160,7 +163,7 @@ run_engineer() {
   log "ビルドを起動します（ブランチ: $branch）..."
 
   claude -p "$(load_prompt engineer)" \
-    --allowedTools "Edit,Write,Bash,Read,Glob,Grep"
+    --allowedTools "Edit,Write,Bash,Read,Glob,Grep" < /dev/null
 
   # supabase/migrations/ に新規 SQL があれば自動適用
   run_migrations
@@ -255,7 +258,7 @@ run_tester() {
 
   claude -p "$(load_prompt tester OUT_FILE="$out_file")" \
     --model claude-haiku-4-5-20251001 \
-    --allowedTools "Write,Read,Glob,Grep,Bash"
+    --allowedTools "Write,Read,Glob,Grep,Bash" < /dev/null
 
   stop_dev_server
   trap - EXIT
@@ -295,7 +298,7 @@ run_auditor() {
   log "オーディを起動します..."
 
   claude -p "$(load_prompt auditor OUT_FILE="$out_file")" \
-    --allowedTools "Write,Read,Glob,Grep,Bash"
+    --allowedTools "Write,Read,Glob,Grep,Bash" < /dev/null
 
   log "監査ログを出力しました: $out_file"
 

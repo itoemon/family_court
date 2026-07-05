@@ -2985,3 +2985,261 @@ FEAT-004 で公開法律を session client（ユーザー JWT）で読む経路�
 migration を Supabase Management API（`/v1/projects/{ref}/database/query`）の直 SQL で適用すると、アプリが使う **PostgREST のスキーマキャッシュが自動更新されない**。このため新カラム（例: `laws.is_public`）を含む `select()` が REST 経由で「column does not exist」扱いになり、`maybeSingle()` が `{data:null}` を返して画面が notFound に倒れる、という形で顕在化する。
 
 **対応**: スキーマを変更する migration の末尾に `NOTIFY pgrst, 'reload schema';` を発行してキャッシュを即時リロードする（本 FEAT-004 の 2 migration はいずれも発行する）。テスト DB へ手動適用した場合も同様にリロードが必要。`scripts/setup-test-db.sh` / `scripts/agents.sh:run_migrations` でも将来このリロードを組み込む余地がある（別タスク）。
+
+---
+
+## MON-001 PR-A クレジット基盤（消費・サービスキー・無料付与）
+
+### 概要（変更の目的・背景）
+
+MON-001（クレジット制課金、1 クレジット = 1 ケース）の第 1 段階として、**非 BYOK ユーザーがクレジットを消費してサービス側 API キーで AI を利用できる基盤**を導入する。現状、裁判官 AI・弁護人 AI・判決生成はすべて原告の BYOK（`profiles.api_key_encrypted`）必須であり、キー未登録ユーザーは各 AI ルートで 400（「APIキーが登録されていません」）に倒れ、AI 機能を一切使えない。本 PR-A はこの制約を、以下の課金モデルで置き換える基盤を作る。
+
+- **BYOK あり**（`api_key_encrypted` 登録済み）→ クレジット消費なし。自分のキーで全 AI 実行（現行どおり）。ADR-004（BYOK）の思想を維持。
+- **BYOK なし & クレジット ≥ 1** → ケース作成時に 1 消費し、そのケースの全 AI 実行は**サービス側 API キー**（`SERVICE_ANTHROPIC_API_KEY`）を使う。
+- **BYOK なし & クレジット 0** → ケース作成を **402** でブロック（購入導線は PR-B）。
+
+消費単位は **1 クレジット = 1 ケース**。消費点は**ケース作成時（`POST /api/cases`）**の 1 回のみで、そのケース内の AI 実行（opening / argument / closing / verdict / 閉廷宣告）は何回呼んでも追加消費しない（作成時に確定したモードに従う）。新規ユーザーには無料お試しクレジット **3 個**を付与する。
+
+**本 PR-A のスコープ外（設計として明記）**: Stripe 連携全般（Checkout / webhook / 購入 UI / 価格設定）は **PR-B**。サブスクリプション月額（スコープ③）・返金・有効期限・消費履歴台帳・管理者付与 UI・広告（MON-002）はいずれも本 PR では扱わない。管理者によるクレジット付与は当面 SQL 直叩きで足りる（付与経路の権限設計は後述のとおり superuser 直 SQL を通す）。
+
+AI 生成関数（`lib/judge.ts:generateJudgeMessage(params, apiKey)` / `lib/defense.ts` / `lib/claude.ts`）はいずれも **API キーを引数で受け取る**設計であるため、サービスキーへの差し替えは「呼び出し側でどのキーを渡すか決める」だけで済む（生成関数自体は無変更）。この一元化を新ヘルパー `lib/case-ai-key.ts` に集約する。
+
+依存: FEAT-006（cases フェーズ／PR #41）、既存 BYOK 実装、OPS-002（migration 冪等化）、FEAT-004（SECURITY DEFINER + RPC 非露出の定石）。
+
+---
+
+### データモデル（DB スキーマ・型定義の変更）
+
+新規 migration `supabase/migrations/<timestamp>_mon001_credits.sql` を **OPS-002 方針で冪等**に作成する（`ADD COLUMN IF NOT EXISTS` / `CREATE OR REPLACE FUNCTION` / `DROP POLICY IF EXISTS → CREATE POLICY`）。本番スナップショット `supabase/schema.sql` と二重適用しても停止しないこと（setup-test-db.sh は schema.sql → migrations の順で全適用する）。
+
+#### 1. `profiles.credits`
+
+```sql
+alter table public.profiles
+  add column if not exists credits integer not null default 3;
+
+-- 非負制約（冪等: 既存なら握りつぶす）
+do $$
+begin
+  alter table public.profiles add constraint profiles_credits_non_negative check (credits >= 0);
+exception when duplicate_object then null;
+end $$;
+```
+
+- `not null default 3`。**非負制約 `check (credits >= 0)`** を付与し、原子的減算の `WHERE credits > 0` と二重で残高マイナスを防ぐ。
+- 既存行は `default 3` でバックフィルされる。**既存ユーザーへの一度きりの無料 3 付与**として許容する（task.md 確定事項）。この副作用は下記「無料付与の設計判断」で意図として明記する。
+
+#### 2. `cases.uses_service_key`
+
+```sql
+alter table public.cases
+  add column if not exists uses_service_key boolean not null default false;
+```
+
+- そのケースの AI 実行にサービスキーを使うか否かを**作成時に確定**して保持する列。既存ケースは `false`（＝ BYOK 前提の従来挙動）でバックフィルされ、リグレッションしない。
+
+#### 3. `consume_credit(uuid)` — 原子的減算関数
+
+```sql
+create or replace function public.consume_credit(p_user_id uuid)
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_remaining integer;
+begin
+  update public.profiles
+     set credits = credits - 1
+   where id = p_user_id
+     and credits > 0
+  returning credits into v_remaining;
+  return v_remaining;   -- 減算できなければ NULL（更新行なし）
+end;
+$$;
+
+revoke execute on function public.consume_credit(uuid) from public, anon, authenticated;
+grant  execute on function public.consume_credit(uuid) to service_role;
+```
+
+- **原子性**: `UPDATE ... WHERE credits > 0 RETURNING` により、同時実行でも 1 行に対する減算は直列化され、二重消費・マイナス残高が起きない。返り値は成功時に減算後残高、**残高 0 で減算不可なら `NULL`**（`RETURNING` が行を返さない）。呼び出し側は `NULL` を「消費失敗（不足）」シグナルとして扱う。
+- `SECURITY DEFINER` + `set search_path = ''`（全参照をスキーマ修飾）。FEAT-004 の SECURITY DEFINER 関数と同じ堅牢化。
+- **配置スキーマは `public`（`private` ではない）が正解**。理由（FEAT-004 の `private.is_law_member` との差）: `is_law_member` は RLS ポリシー内の SQL から呼ばれるため `private` に隠せたが、`consume_credit` は**アプリの admin クライアントから `adminClient.rpc('consume_credit', …)` で呼ぶ**。PostgREST の `/rest/v1/rpc/*` は公開スキーマ（既定 `public`）の関数しか露出しないため、`private` に置くと admin の `.rpc()` からも到達不能になる。したがって `public` に置き、**`anon` / `authenticated` / `PUBLIC` から EXECUTE を REVOKE し `service_role` にのみ GRANT** することで「アプリ（admin/service_role）からは呼べるが、一般認証ユーザーは `/rest/v1/rpc/consume_credit` を叩けない」状態にする。これで RPC 露出を避けつつ呼び出し可能性を確保する。
+
+#### 4. クレジット改ざん防止（RLS / 列権限）
+
+現状 `profiles` の self-update ポリシー（`using (auth.uid() = id)`）のままだと、悪意ある認証ユーザーが anon キー + 自分の JWT で PostgREST に `PATCH /rest/v1/profiles?id=eq.<self> {"credits":999}` を直接投げて残高を増やせる（RLS は自分の行の UPDATE を許すため）。これを塞ぐ。
+
+**推奨（採用）**: `authenticated` / `anon` から `profiles` の **テーブル UPDATE 権限そのものを REVOKE** する。
+
+```sql
+revoke update on table public.profiles from authenticated, anon;
+```
+
+- 根拠: environment.md の規則「**API Routes での書き込みは必ず `createAdminClient()`（service_role）を使う**」により、正当なプロフィール更新（表示名・API キー・アイコン・挨拶）はすべて admin 経由で行われる前提であり、`authenticated` ロールに `profiles` の直接 UPDATE 権限は本来不要。REVOKE により credits だけでなく `api_key_encrypted` 等の直接改ざん面も一括で塞げる（多層防御）。`service_role`（admin）と superuser（Management API 直 SQL）は grant/RLS をバイパスするため、正規の付与・消費・手動 SQL 付与はすべて従来どおり動く。
+- 列単位 REVOKE（`revoke update (credits)`）を選ばない理由: PostgreSQL では列単位で絞るにはテーブル UPDATE を revoke した上で許可列を列挙 grant する必要があり、`profiles` に列が増えるたび grant 追加が要る**壊れやすい**運用になる。テーブル UPDATE 一括 revoke の方が保守的で漏れがない。
+- BEFORE UPDATE トリガで `credits` 変更を拒否する案は不採用: (a) 管理者の SQL 直叩き付与（superuser、`auth.role()` が null）まで巻き込んで拒否してしまい OUT スコープの「SQL 直叩きで付与」と衝突する、(b) SECURITY DEFINER 関数の UPDATE との相互作用が微妙、という理由。REVOKE 方式は superuser を素通りさせられる点で管理運用と整合する。
+- **注意（ビルドへの検証依頼）**: REVOKE により壊れるのは「session/browser クライアントで `profiles` を直接 UPDATE している箇所」だが、規則上そのような箇所は存在しないはず。ビルドは `.from("profiles").update(` をセッション/ブラウザクライアント経由で呼ぶ箇所が無いことを grep で確認し、もし在れば規則違反として報告すること（引き継ぎメモ参照）。
+- **既存 self-update ポリシーの扱い**: ポリシー自体は残してよい（GRANT と RLS は AND 評価なので、GRANT を外せばポリシーが許可しても UPDATE は通らない）。ポリシー削除は他機能への影響が読めないため本 PR では触らない。
+
+#### 5. `NOTIFY pgrst` / schema.sql（冷凍庫）反映
+
+- migration 末尾で `NOTIFY pgrst, 'reload schema';` を発行する（FEAT-004 と同様、手動適用時の PostgREST スキーマキャッシュ未更新対策。パイプライン経由なら PR #59 で `run_migrations` / setup-test-db.sh も自動発行するが、belt-and-suspenders として migration にも入れる）。新カラム `profiles.credits` / `cases.uses_service_key` を `select()` する箇所がキャッシュ未更新で「column does not exist」に倒れるのを防ぐ。
+- **schema.sql 反映方針**: **migration が真実**（OPS-002）。ただしスナップショットの正直さのため、`supabase/schema.sql` にも `credits` 列・`uses_service_key` 列・`consume_credit` 関数・GRANT/REVOKE・`profiles` UPDATE の REVOKE を反映する（FEAT-004 が本番反映済みなのと同じ運用）。setup-test-db.sh は schema.sql → migrations の順に適用し migration は冪等なので、schema.sql 未反映でも最終状態は正しくなるが、スナップショット乖離を避けるため反映を推奨する。
+
+#### 6. 型定義（`lib/types.ts`）
+
+- `Profile` に `credits: number` を追加。
+- `Case` に `uses_service_key: boolean` を追加（DB 列名と一致。既存の型が snake_case か camelCase かは既存 `Case` 型の慣習に合わせ、マッピング層があるならそちらに合わせる。BUG-003 の「snake_case のまま返す取りこぼし」教訓を踏襲し、レスポンス整形で確実にマップすること）。
+
+---
+
+### API 仕様（変更・追加するエンドポイントのリクエスト/レスポンス定義）
+
+共通方針（既存踏襲）: `createSessionClient()` で認証確認 → 書き込みは `createAdminClient()` → パスパラメータは `isUuid()` 検証 → エラーは 400/401/402/403/404/500 体系。
+
+#### 1. `POST /api/cases`（変更） — ケース作成時のクレジット判定
+
+**リクエスト**: 現行どおり（`{ topic }`、必須・最大 200 文字検証を維持）。
+**認証**: 必須（未認証 401）。
+
+**処理フロー**（消費とケース作成の整合が本 API の要）:
+
+1. 認証で `user.id`（＝原告）を確定。`topic` 検証。
+2. 原告の `profiles.api_key_encrypted` の**存在有無のみ**を admin で読む（この段階で復号はしない）。
+3. 分岐:
+   - **BYOK あり**（`api_key_encrypted` が非 NULL）→ `consume_credit` を呼ばず、`uses_service_key = false` でケースを INSERT。
+   - **BYOK なし** → `adminClient.rpc('consume_credit', { p_user_id: user.id })`。
+     - 返り値が **`NULL`（消費失敗＝残高 0）** → **402** `{ error: "クレジットが不足しています。ご自分の Claude API キーを登録（BYOK）すると無料でご利用いただけます。" }` を返し、**ケースは INSERT しない**。
+     - 返り値が整数（消費成功、残高 = その値）→ `uses_service_key = true` でケースを INSERT。
+
+**消費とケース INSERT の整合（設計判断・トレードオフ）**:
+
+- **採用: 「consume_credit 先 → INSERT、INSERT 失敗時に補償で +1 戻す」**。
+  - 理由: 402 の主経路（残高 0）で無駄な INSERT/DELETE が発生せず、**孤児ケース（作成されたと誤認される中途半端な `cases` 行）を生まない**。consume 成功後の INSERT 失敗は稀（DB 接続断等）で、その場合のみ補償 UPDATE（`update public.profiles set credits = credits + 1 where id = user.id`、admin 経由）で残高を戻し 500 を返す。
+  - safe-fail の向き: 万一 補償 UPDATE まで失敗しても「ユーザーが 1 クレジット損する」だけで、**二重課金・マイナス残高・不整合ケースは生じない**（安全側に倒れる）。
+- 不採用: 「INSERT 先 → consume」。残高 0 ユーザーでも毎回 INSERT→DELETE が走り、DELETE 漏れで孤児ケースが残る UX/整合リスクがあるため。
+- 402 時にクレジットを消費しないこと（＝ `consume_credit` が `NULL` を返した時点で INSERT も補償もしない）を厳守する。
+
+**レスポンス**: 現行どおり作成ケースを返す。残高・課金モードをレスポンスに含めるかは任意（最小実装では現行フィールドのまま可）。含める場合も `SERVICE_ANTHROPIC_API_KEY` 等の秘密は絶対に含めない。
+
+#### 2. クレジット残高の取得（新規 API は作らない）
+
+- **専用 API は新設せず、既存の profile 読み取りに `credits` を足すだけ**とする（task.md「最小実装を優先」）。`/profile`・`/me`・`app/page.tsx` は既に `profiles` を `select` しているため、`select` に `credits` を加える（BUG-003 教訓でレスポンス整形時に camelCase マップ漏れが無いよう注意）。
+- ケース作成ガード UI 用にも、作成画面が読む profile に `credits` と `api_key_encrypted` の**存在有無**（キーそのものは返さない）を含める。
+
+#### 3. AI 実行ルート（変更） — キー解決の一元化・張り替え
+
+現在 `api_key_encrypted` を直接読んで `decryptApiKey` している**すべての箇所**を、新ヘルパー `lib/case-ai-key.ts` 経由に統一する。対象（task.md 記載）:
+
+- `app/api/cases/[id]/verdict/route.ts`
+- `app/api/cases/[id]/argument/route.ts`
+- `app/api/cases/[id]/route.ts`（opening）
+- `app/api/cases/[id]/end-proposal/route.ts`
+- `lib/case-closing.ts`（closing INSERT 経路）
+
+各ルートは (a) 対象ケース行（`uses_service_key` を含む）と (b) 原告 profile 行（`api_key_encrypted` を含む）を取得し、ヘルパーに渡してキーを解決した上で `generateJudgeMessage` 等へ渡す。
+
+**キー解決の意味変更に伴うガードの書き換え（重要）**: 従来「`api_key_encrypted` が NULL なら 400」だった分岐は、サービスキーケース（`uses_service_key = true`）では **BYOK が NULL でも正常に AI を実行する**ため意味が変わる。各ルートのガードは「`api_key_encrypted` の有無」ではなく**ヘルパーの解決結果**に基づいて書き換える。ヘルパーが失敗を返した場合のみエラー応答する。
+
+---
+
+### コンポーネント設計（新設・変更するファイルの責務と仕様）
+
+#### `lib/case-ai-key.ts`（新設） — ケース AI キー解決ヘルパー
+
+責務: 「このケースの AI 実行にどの API キー（平文）を使うか」を一元決定する唯一の場所。
+
+- シグネチャ（推奨）: `resolveCaseAiKey(caseRow, plaintiffProfile): CaseAiKeyResult`
+  - `caseRow`: 少なくとも `uses_service_key` を持つケース行。
+  - `plaintiffProfile`: 少なくとも `api_key_encrypted` を持つ原告 profile 行。
+- 返り値は**判別可能な結果オブジェクト**（例外送出でなく）を推奨し、各ルートが HTTP ステータスへ明示的にマップできるようにする（テスト容易性・400/500 の区別の明確化）:
+  - 成功: `{ ok: true, apiKey: string }`
+  - 失敗: `{ ok: false, status: number, error: string }`
+- ロジック:
+  - `caseRow.uses_service_key === true` の場合:
+    - `process.env.SERVICE_ANTHROPIC_API_KEY` を読む。**未設定（env 欠落）なら `{ ok: false, status: 500, error: "サービス用 API キーが未設定です" }`**（サーバ設定不備であり 500）。設定済みならその値を `apiKey` として返す。
+  - `caseRow.uses_service_key === false`（BYOK ケース）の場合:
+    - `plaintiffProfile.api_key_encrypted` が NULL/空なら `{ ok: false, status: 400, error: "APIキーが登録されていません" }`（従来の 400 と互換）。
+    - 存在すれば `decryptApiKey(plaintiffProfile.api_key_encrypted)`（`lib/crypto.ts` を再利用）を復号して `apiKey` として返す。
+- 秘匿: 返すのは平文キーのみ。`SERVICE_ANTHROPIC_API_KEY` はサーバ専用 env（`NEXT_PUBLIC_` を付けない）。ヘルパーはサーバ側モジュールからのみ import する（クライアントバンドルに載せない）。
+
+#### クレジット残高表示 UI
+
+- **配置は `/profile`（`app/profile/page.tsx`）を推奨**（採用）。理由: 残高は API キー登録状況と**同じ画面**に置くのが最も分かりやすい（「BYOK を登録すれば消費なし」という課金モデルが、キー登録 UI と残高表示が並ぶことで自然に伝わる）。既存の profile 読み取りに `credits` を足すだけで実装でき、新規データ取得も不要。
+- 表示: 「残りクレジット: N」を既存トーン（stone ベース、`brand-700/800`）で表示。警告色（`rose-*`）は残高 0 の注意喚起にのみ限定使用可。
+- 任意: `/me`（FEAT-005 のダイジェスト）にも 1 行残高を出すと導線がよいが、最小実装では `/profile` のみで可。BYOK ユーザーには「自分のキーを使うためクレジットは消費されません」の一文を添えると親切（任意）。
+
+#### ケース作成画面のガード UI（`/case/new` 周辺）
+
+- 作成フォームが読む profile 情報から「BYOK の有無」「`credits`」を判定し、**非 BYOK かつ `credits === 0` のとき作成ボタンを抑止**し、「クレジットが不足しています（自分の API キーを登録すれば無料）」を表示する。
+- 購入リンクは **PR-B のプレースホルダ**（`#` またはツールチップ「準備中」）で可。実際の Stripe 導線は PR-B。
+- サーバ側 402 が UI ガードの最終防波堤（クライアント抑止をすり抜けても API が 402 でブロック）。クライアント抑止は UX 向上、サーバ 402 は正当性担保、の二層。
+
+---
+
+### セキュリティ設計（認証・認可・入力検証の方針）
+
+- **クレジット改ざん防止（最重要）**:
+  - 増加経路は「新規付与（カラム default 3 / トリガ INSERT）」と「admin/superuser」に限定。クライアントからの直接増加を、`profiles` の `authenticated`/`anon` UPDATE 権限 REVOKE で塞ぐ（前述）。
+  - 減少（消費）は `consume_credit`（`public` 配置・`authenticated`/`anon` から EXECUTE REVOKE・`service_role` のみ GRANT）経由に限定。一般認証ユーザーは `/rest/v1/rpc/consume_credit` を叩けない。
+- **サービスキー秘匿**: `SERVICE_ANTHROPIC_API_KEY` はサーバ専用 env（`NEXT_PUBLIC_` 禁止）。クライアントへ渡さない・レスポンスに混入させない・クライアントバンドルへ import しない。
+- **消費の原子性**: `WHERE credits > 0` + `RETURNING` + `check (credits >= 0)` の三重で、並行作成でも二重消費・マイナス残高を防ぐ。
+- **402 とクレジットの整合**: `consume_credit` が `NULL`（不足）を返したらケースを作らずクレジットも減らさない。消費成功後の INSERT 失敗時のみ補償 +1。
+- **入力検証**: 現行の `topic` 検証（必須・最大 200 文字）を維持。パス `[id]` の `isUuid()` 検証を維持。不正値をレスポンス/ログにエコーしない。
+- **キー解決張り替えの回帰防止**: BYOK 経路（`uses_service_key = false`）が従来どおり復号・400 挙動を保つこと、サービスキー経路（`true`）が BYOK NULL でも 400 に倒れないことを、ヘルパーの分岐で厳密に担保する。
+
+---
+
+### 制約・前提条件
+
+#### 無料付与の設計判断（カラム default か トリガ明示か）
+
+- **採用: `profiles.credits` のカラム `default 3` による付与**。既存 `handle_new_user` トリガの `INSERT INTO public.profiles (...)` が `credits` を列挙していない限り、default が効いて新規ユーザーに自動で 3 が入る。
+  - 根拠（推奨理由）: (a) **トリガ関数（SECURITY DEFINER）を改変せず変更範囲が最小**、(b) migration 単体で完結し冪等、(c) 関数再デプロイ・`search_path` 再設定などの副作用がない。
+  - トレードオフ: default 方式は **既存行にも 3 をバックフィル**する（＝既存ユーザーへの一度きり無料付与）。task.md でこれは許容と確定済み。厳密に「新規のみ付与」したい場合はトリガ明示付与 + 既存行を除外する UPDATE が要り複雑化するため、本 PR では default 方式を選ぶ。
+  - **ビルドへの確認事項**: `handle_new_user` の INSERT 文が `credits` を明示的に値指定していないこと（していれば default が効かない）。明示している場合のみトリガ側で `3` を入れる調整を検討（設計の第 2 案）。まず default 方式で成立するかを確認すること。
+
+#### 環境変数
+
+- `SERVICE_ANTHROPIC_API_KEY`（新規・サーバ専用）を `.env.test.example` と環境定義（environment.md の環境変数表）に**キー名のみ**追記する（値は入れない）。PR-A の E2E は `TEST_MODE=1` の `generateJudgeMessage` モック分岐で実 Anthropic 呼び出しを回避するため、**実キーは不要**。本番/PR-B で実キーを投入する。
+
+#### 前提条件
+
+- FEAT-006（cases フェーズ／`max_rounds`・`end_proposed_by` 等、PR #41）稼働済み。
+- 既存 BYOK 実装（`profiles.api_key_encrypted`・`lib/crypto.ts:decryptApiKey`・`lib/judge.ts`/`lib/defense.ts`/`lib/claude.ts` の `apiKey` 引数設計）が稼働済み。
+- OPS-002（migration 冪等化）と PR #59（`run_migrations` の `NOTIFY pgrst` 自動発行）が適用済み。
+- テスト DB（`eckrccrfnblzdbflnssf`、populated）へ本 migration を適用済みであること（冪等なので再適用安全。リード適用 or `run_migrations` 自動適用）。
+
+#### スコープ外（本 PR-A で実装しない）
+
+- Stripe 連携全般（Checkout / webhook / 購入 UI / 価格設定）→ **PR-B**。
+- サブスクリプション月額プラン（スコープ③、将来）。
+- クレジットの返金・有効期限・消費履歴台帳（消費ログテーブル）。
+- 管理者用クレジット手動付与 UI（当面 SQL 直叩きで足りる）。
+- 広告（MON-002）。
+
+#### 注意事項（曖昧要件・実装段階で確定する論点。ビルドへ判断を丸投げしない）
+
+- **`handle_new_user` の INSERT が `credits` を明示指定しているか**: 明示していなければ default 3 で成立（第 1 案）。明示していればトリガ側で 3 を入れる（第 2 案）。まず現行 INSERT 文を確認して第 1 案の成立を判定すること。
+- **`profiles` UPDATE 権限 REVOKE の影響範囲**: セッション/ブラウザクライアントで `profiles` を直接 UPDATE する箇所が無いこと（規則上無いはず）を grep で確認。在れば規則違反として報告し、REVOKE を入れる前にリード判断を仰ぐ。
+- **`Case` 型の case 命名**: DB 列 `uses_service_key`（snake_case）をレスポンス/型でどう扱うかは既存 `Case` 型の慣習に合わせる。BUG-003（snake_case 取りこぼし）教訓に従い、整形層でのマップ漏れを起こさないこと。
+- **残高表示の副次配置（/me）**: 最小実装では `/profile` のみ。`/me` への 1 行追加は任意。
+
+### リード補足（2026-06-24 設計レビュー指摘）
+
+アーキ設計をリードがレビューし、以下 2 点を確定する。既存記述は削除せず本補足を優先する。
+
+#### 補足 1【必須修正】: 弁護人 AI（defense）の 2 ルートもキー解決の張り替え対象に含める
+
+上記「API 仕様 3. AI 実行ルート」の張り替え対象リスト（verdict / argument / route(opening) / end-proposal / case-closing の 5 つ）は **弁護人 AI の 2 ルートを取りこぼしている**。実装確認の結果、以下も**原告の `api_key_encrypted` を復号して弁護人 AI を呼んでおり**、`if (!plaintiffProfile?.api_key_encrypted)` で BYOK 無しなら失敗する:
+
+- `app/api/cases/[id]/defense/route.ts`（`generateDefenseResponse(params, apiKey)` を呼ぶ。50–62 行で原告 profile の `api_key_encrypted` を復号）
+- `app/api/cases/[id]/defense/draft/route.ts`（`generateDraft(params, apiKey)` を呼ぶ。66–78 行で同様）
+
+これらを張り替えないと、**サービスキーケース（非 BYOK 課金ユーザー）で弁護人 AI が 400 に倒れて使えない**（課金したのに弁護人 AI だけ壊れる不整合）。したがって上記 5 ルートに加え、**defense の 2 ルートも `lib/case-ai-key.ts` 経由へ張り替える**（合計 7 ルート）。`lib/defense.ts:generateDefenseResponse` / `generateDraft` はいずれも `apiKey` を引数で受け取る設計なので、生成関数は無変更で呼び出し側のキー解決のみ差し替える。E2E でもサービスキーケースの弁護人 AI（TEST_MODE モックがあれば活用、無ければ最低限ルートが 400 に倒れないことを確認）を観点に含める。
+
+#### 補足 2【検証済み・OK】: `profiles` UPDATE 権限 REVOKE は安全
+
+「注意事項」で挙げた REVOKE の影響範囲をリードが先行検証した。`profiles` への `.update()` はコードベース全体で **`app/api/profile/route.ts:69–72` の 1 箇所のみ**であり、そこは `createAdminClient()`（service_role、69 行）経由である。セッション/ブラウザクライアントからの直接 `profiles` UPDATE は存在しない。よって `revoke update on table public.profiles from authenticated, anon;` は既存のプロフィール更新（表示名 / API キー / アイコン / 挨拶）を壊さない。ビルドは REVOKE を予定どおり実装してよい（追加のリード判断待ちは不要）。

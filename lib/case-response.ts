@@ -72,6 +72,7 @@ export async function buildCaseResponse(
     endProposedBy: c.end_proposed_by ?? null,
     extensionVotePlaintiff: c.extension_vote_plaintiff ?? null,
     extensionVoteDefendant: c.extension_vote_defendant ?? null,
+    usesServiceKey: c.uses_service_key ?? false,
     createdAt: c.created_at,
     updatedAt: c.updated_at,
     plaintiff: { name: plaintiff?.display_name ?? "提案者", joinedAt: c.created_at },

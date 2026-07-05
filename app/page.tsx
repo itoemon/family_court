@@ -13,6 +13,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [hasApiKey, setHasApiKey] = useState(false);
+  const [credits, setCredits] = useState<number | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -21,17 +22,21 @@ export default function Home() {
 
       const { data: profile } = await supabase
         .from("profiles")
-        .select("display_name, api_key_encrypted")
+        .select("display_name, api_key_encrypted, credits")
         .eq("id", user.id)
         .single();
 
       if (profile) {
         setDisplayName(profile.display_name);
         setHasApiKey(!!profile.api_key_encrypted);
+        setCredits(profile.credits ?? null);
       }
     }
     load();
   }, [supabase, router]);
+
+  // MON-001: 非 BYOK かつクレジット 0 のとき作成を抑止する。サーバ 402 が最終防波堤。
+  const creditBlocked = !hasApiKey && credits === 0;
 
   async function handleCreate() {
     setError("");
@@ -65,16 +70,34 @@ export default function Home() {
           <p className="mt-2 text-stone-500 text-sm">大切な人と、おだやかに話し合うための場所</p>
         </div>
 
-        {/* APIキー未登録の警告 */}
-        {displayName && !hasApiKey && (
+        {/* MON-001: クレジット不足の警告（非 BYOK かつ残高 0）。作成を抑止する。 */}
+        {displayName && creditBlocked && (
+          <div className="bg-rose-50 border border-rose-100 rounded-2xl px-5 py-4 mb-5 flex items-start gap-3">
+            <span className="text-lg shrink-0">🚫</span>
+            <div>
+              <p className="text-rose-600 text-sm font-medium">クレジットが不足しています</p>
+              <p className="text-rose-500 text-xs mt-0.5">
+                ご自分の Claude API キーを
+                <Link href="/profile" className="underline font-semibold mx-1">プロフィール</Link>
+                から登録（BYOK）すると無料でご利用いただけます。
+              </p>
+              <p className="text-rose-400 text-xs mt-1">
+                クレジットの購入は準備中です。
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* APIキー未登録の警告（クレジットは残っている状態） */}
+        {displayName && !hasApiKey && !creditBlocked && (
           <div className="bg-amber-50 border border-amber-100 rounded-2xl px-5 py-4 mb-5 flex items-start gap-3">
             <span className="text-lg shrink-0">⚠️</span>
             <div>
               <p className="text-amber-700 text-sm font-medium">AIのAPIキーが未登録です</p>
               <p className="text-amber-600 text-xs mt-0.5">
-                話し合いを始める前に
+                APIキーを登録すると無料で話し合えます（未登録の場合、作成ごとに1クレジット消費・残り {credits ?? "-"}）。
                 <Link href="/profile" className="underline font-semibold ml-1">プロフィール</Link>
-                からAPIキーを登録してください。
+                から登録できます。
               </p>
             </div>
           </div>
@@ -105,10 +128,10 @@ export default function Home() {
 
           <button
             onClick={handleCreate}
-            disabled={loading || !topic.trim()}
+            disabled={loading || !topic.trim() || creditBlocked}
             className="w-full bg-brand-700 hover:bg-brand-800 disabled:bg-stone-200 disabled:text-stone-400 text-white font-semibold py-3 rounded-xl transition-colors text-sm"
           >
-            {loading ? "準備中..." : "はじめる"}
+            {loading ? "準備中..." : creditBlocked ? "クレジット不足" : "はじめる"}
           </button>
         </div>
 

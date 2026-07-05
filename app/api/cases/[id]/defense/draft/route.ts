@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient, createSessionClient } from "@/lib/supabase/server";
 import { verifyGuestToken } from "@/lib/guest-token";
-import { decryptApiKey } from "@/lib/crypto";
+import { resolveCaseAiKey } from "@/lib/case-ai-key";
 import { generateDraft } from "@/lib/defense";
 import { isUuid } from "@/lib/text-utils";
 
@@ -68,20 +68,15 @@ export async function POST(
     .eq("id", c.plaintiff_id)
     .single();
 
-  if (!plaintiffProfile?.api_key_encrypted) {
-    console.error(`[defense/draft] plaintiff ${c.plaintiff_id} has no api_key_encrypted`);
-    return NextResponse.json({ error: "APIキーが設定されていません" }, { status: 500 });
+  // MON-001: ケースの課金モードに応じてキーを解決（サービスキー or 原告 BYOK）。
+  const keyResult = resolveCaseAiKey(c, plaintiffProfile);
+  if (!keyResult.ok) {
+    console.error(`[defense/draft] key unresolved (plaintiff=${c.plaintiff_id}): ${keyResult.error}`);
+    return NextResponse.json({ error: keyResult.error }, { status: keyResult.status });
   }
+  const apiKey = keyResult.apiKey;
 
-  let apiKey: string;
-  try {
-    apiKey = decryptApiKey(plaintiffProfile.api_key_encrypted);
-  } catch (err) {
-    console.error("[defense/draft] api key decryption failed:", err);
-    return NextResponse.json({ error: "APIキーの復号に失敗しました" }, { status: 500 });
-  }
-
-  const customInstruction = (plaintiffProfile.defense_custom_instruction as string | null) ?? null;
+  const customInstruction = (plaintiffProfile?.defense_custom_instruction as string | null) ?? null;
 
   const defenseQuery = admin
     .from("defense_messages")
