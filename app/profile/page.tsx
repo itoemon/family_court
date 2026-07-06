@@ -10,6 +10,7 @@ import {
   DEFAULT_CLOSING_GREETING,
   MAX_GREETING_LENGTH,
 } from "@/lib/greetings";
+import { CREDIT_PACKAGES } from "@/lib/credit-packages";
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -20,6 +21,9 @@ export default function ProfilePage() {
   const [apiKey, setApiKey] = useState("");
   const [hasApiKey, setHasApiKey] = useState(false);
   const [credits, setCredits] = useState<number | null>(null);
+  const [purchasingId, setPurchasingId] = useState<string | null>(null);
+  const [purchaseError, setPurchaseError] = useState("");
+  const [purchaseNotice, setPurchaseNotice] = useState("");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [customInstruction, setCustomInstruction] = useState("");
   const [loading, setLoading] = useState(true);
@@ -57,6 +61,14 @@ export default function ProfilePage() {
         setCustomInstruction(profile.defense_custom_instruction ?? "");
         setOpeningGreeting(profile.opening_greeting ?? null);
         setClosingGreeting(profile.closing_greeting ?? null);
+      }
+      // 決済からの戻り（?purchase=success / cancel）のフィードバック。useSearchParams は
+      // Suspense 境界を要求するため client 限定で window から読む（この effect 内で完結）。
+      const purchaseParam = new URLSearchParams(window.location.search).get("purchase");
+      if (purchaseParam === "success") {
+        setPurchaseNotice("クレジットを追加しました。反映まで少し時間がかかる場合があります。");
+      } else if (purchaseParam === "cancel") {
+        setPurchaseNotice("購入をキャンセルしました。");
       }
       setLoading(false);
     }
@@ -203,6 +215,26 @@ export default function ProfilePage() {
     }
   }
 
+  async function handlePurchase(packageId: string) {
+    setPurchaseError("");
+    setPurchasingId(packageId);
+    try {
+      const res = await fetch("/api/credits/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ packageId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.url) {
+        throw new Error(data.error ?? "決済ページの作成に失敗しました");
+      }
+      window.location.assign(data.url); // Stripe Checkout へ遷移（このあとページを離れる）
+    } catch (err: unknown) {
+      setPurchaseError(err instanceof Error ? err.message : "決済処理でエラーが発生しました");
+      setPurchasingId(null);
+    }
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-stone-50 flex items-center justify-center">
@@ -323,6 +355,42 @@ export default function ProfilePage() {
               {saving ? "保存中..." : "保存する"}
             </button>
           </form>
+
+          {/* MON-001 PR-B: クレジット購入（Stripe Checkout） */}
+          <div id="purchase" className="pt-5 border-t border-stone-100 space-y-3">
+            <label className="block text-xs font-semibold text-stone-400 uppercase tracking-wider">
+              クレジットを購入
+            </label>
+            <p className="text-xs text-stone-400">
+              購入したクレジットで、APIキーを登録しなくても話し合いを作成できます。
+            </p>
+            <div className="space-y-2">
+              {CREDIT_PACKAGES.map((pkg) => (
+                <button
+                  key={pkg.id}
+                  type="button"
+                  onClick={() => handlePurchase(pkg.id)}
+                  disabled={purchasingId !== null}
+                  className="w-full flex items-center justify-between bg-stone-50 hover:bg-brand-50 disabled:opacity-50 border border-stone-200 rounded-xl px-4 py-3 transition-colors"
+                >
+                  <span className="text-sm font-semibold text-stone-700">{pkg.credits} クレジット</span>
+                  <span className="text-sm font-bold text-brand-800">
+                    {purchasingId === pkg.id ? "処理中..." : `¥${pkg.jpy.toLocaleString()}`}
+                  </span>
+                </button>
+              ))}
+            </div>
+            {purchaseNotice && (
+              <p className="text-sm rounded-xl px-4 py-2 text-emerald-600 bg-emerald-50 border border-emerald-100">
+                {purchaseNotice}
+              </p>
+            )}
+            {purchaseError && (
+              <p className="text-sm rounded-xl px-4 py-2 text-rose-500 bg-rose-50 border border-rose-100">
+                {purchaseError}
+              </p>
+            )}
+          </div>
 
           <div className="pt-5 border-t border-stone-100 space-y-3">
             <div>

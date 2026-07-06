@@ -3243,3 +3243,30 @@ revoke update on table public.profiles from authenticated, anon;
 #### 補足 2【検証済み・OK】: `profiles` UPDATE 権限 REVOKE は安全
 
 「注意事項」で挙げた REVOKE の影響範囲をリードが先行検証した。`profiles` への `.update()` はコードベース全体で **`app/api/profile/route.ts:69–72` の 1 箇所のみ**であり、そこは `createAdminClient()`（service_role、69 行）経由である。セッション/ブラウザクライアントからの直接 `profiles` UPDATE は存在しない。よって `revoke update on table public.profiles from authenticated, anon;` は既存のプロフィール更新（表示名 / API キー / アイコン / 挨拶）を壊さない。ビルドは REVOKE を予定どおり実装してよい（追加のリード判断待ちは不要）。
+
+## MON-001 PR-B Stripe クレジット購入
+
+### 概要
+PR-A のクレジット基盤（`profiles.credits` / `consume_credit` / `refund_credit` / 402 ゲート）の上に、残高を増やす正規経路として Stripe Checkout 購入を追加する。カード情報は自前で扱わず Stripe ホスト型決済ページ（`mode:"payment"`、都度購入）を使い、決済成功を webhook（`checkout.session.completed`）で受けてクレジットを加算する。
+
+### データモデル（migration `20260705190002_mon001b_stripe_purchase.sql`・冪等）
+- `stripe_events(id text pk, type text, created_at timestamptz)`: webhook 冪等性用。RLS 有効・ポリシーなし = service_role のみ（guest_tokens 方針）。
+- **`record_stripe_event_and_grant(p_event_id text, p_type text, p_user_id uuid, p_amount integer)`**: イベント記録（`insert stripe_events`）とクレジット付与（`update profiles set credits = credits + p_amount`）を**単一トランザクションで原子的に**行う。`unique_violation`（既処理）なら 0 を返し付与しない。新規なら付与して amount を返す。SECURITY DEFINER / `search_path=''` / EXECUTE を public/anon/authenticated から REVOKE・service_role に GRANT。
+  - **設計判断（リード）**: task.md 素案の「insert → grant → 失敗時 500」は、dedup 行を残したまま 500 を返すと Stripe 再送が弾かれて課金済みクレジットが失われる。サブエージェント案の「失敗時に dedup 行を削除」は、付与 UPDATE が commit 済みでレスポンスがエラーの場合に再送で二重付与するリスクがある。両失敗モードを消すため、**記録と付与を 1 トランザクションに束ねた原子的 RPC** を採用した。tx 失敗時は insert も grant もロールバックされ、Stripe 再送でクリーンに再処理される。付与 commit 後の再送は `unique_violation` で 0 を返し二重付与しない。
+- 冪等化 + 末尾 `notify pgrst, 'reload schema';`。`schema.sql` にも反映。
+
+### パッケージ定義（`lib/credit-packages.ts`）
+純データの単一の真実。`credits_10`=10/¥500、`credits_30`=30/¥1200、`credits_100`=100/¥3500。`getCreditPackage(id)` で lookup。金額・クレジット数はここだけを正とし、クライアントから受け取らない。運用しながら価格調整（コード変更のみで済む）。
+
+### API
+- `POST /api/credits/checkout`（認証必須）: `{packageId}` を照合（未知→400、未認証→401）。`price_data` インライン（`currency:"jpy"`、`unit_amount=pkg.jpy`）で Session 作成。`success_url`/`cancel_url` は `NEXT_PUBLIC_SITE_URL`（未設定時 request origin）基点の `/profile?purchase=success|cancel`。`metadata:{userId,credits,packageId}` / `client_reference_id`。レスポンス `{url}`。
+- `POST /api/stripe/webhook`（認証なし・署名検証）: raw body を `req.text()` で取得し `constructEvent(raw, sig, STRIPE_WEBHOOK_SECRET)`。検証失敗 400。`checkout.session.completed` のみ処理。metadata の userId(UUID)/credits を `CREDIT_PACKAGES` と再照合し一致時のみ `record_stripe_event_and_grant` を呼ぶ（原子的記録＋付与）。返り値>0=新規付与、0=既処理、error=500（再送で原子的に再処理）。DB は admin のみ。`lib/stripe.ts` に Stripe クライアント集約（`import "server-only"`）。
+
+### UI
+`/profile` に購入セクション（`id="purchase"`、3 パッケージ）を追加。ボタン→checkout→返った `url` へ `window.location`。戻り `?purchase=success|cancel` を window から読み最小フィードバック（`useSearchParams` は Suspense 境界を要求するため client 限定で window 参照）。`app/page.tsx` の「準備中」プレースホルダを `/profile#purchase` 実リンクに差し替え。
+
+### セキュリティ
+金額/クレジット数はサーバの `CREDIT_PACKAGES` のみを正（checkout も webhook も packageId 解決 + webhook で credits 再照合）。署名検証は raw body + `STRIPE_WEBHOOK_SECRET`、検証前に DB を触らない。二重付与防止は `stripe_events(event.id)` の原子的 dedup（記録と付与が同一 tx）。付与関数は service_role のみ EXECUTE、`profiles` UPDATE は PR-A で REVOKE 済み。`STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET` はサーバ専用（`NEXT_PUBLIC_` なし）。
+
+### 制約・前提 / デプロイ
+`stripe` npm（サーバのみ import）。env は PR-A キー移設で `.env.local`/`.env.test`/Vercel Preview に設定済み、`STRIPE_WEBHOOK_SECRET` はテスト値を `.env.test`/`.env.local` に、`.env.test.example` にキー名追記。**本番/Preview の webhook endpoint 作成（デプロイ URL の `/api/stripe/webhook`）と `whsec_` の Vercel 登録はデプロイ運用作業（別途）**。本番 Stripe live キーは本番公開時。スコープ外: サブスク、購入履歴 UI、領収書/返金 UI、広告（MON-002）。

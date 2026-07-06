@@ -223,3 +223,50 @@ $$;
 
 revoke execute on function public.refund_credit(uuid) from public, anon, authenticated;
 grant  execute on function public.refund_credit(uuid) to service_role;
+
+-- MON-001 PR-B: Stripe webhook 冪等性（二重付与防止）用の記録テーブル。
+-- RLS 有効・ポリシーなし = service_role のみ（guest_tokens と同方針）。
+create table if not exists public.stripe_events (
+  id         text primary key,
+  type       text,
+  created_at timestamptz not null default now()
+);
+
+alter table public.stripe_events enable row level security;
+
+grant all on table public.stripe_events to service_role;
+
+-- MON-001 PR-B: Stripe 決済成功イベントの記録（冪等）とクレジット付与を単一トランザクションで
+-- 原子的に行う。webhook から service_role で呼ぶ。unique_violation（既処理）なら 0 を返し付与しない。
+-- 記録と付与が不可分なので二重付与も付与漏れも起きない。EXECUTE を REVOKE し service_role のみ GRANT。
+create or replace function public.record_stripe_event_and_grant(
+  p_event_id text,
+  p_type text,
+  p_user_id uuid,
+  p_amount integer
+)
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if p_amount is null or p_amount <= 0 then
+    raise exception 'record_stripe_event_and_grant: p_amount must be a positive integer (got %)', p_amount;
+  end if;
+  insert into public.stripe_events (id, type) values (p_event_id, p_type);
+  update public.profiles set credits = credits + p_amount where id = p_user_id;
+  -- 0 行更新（ユーザー不在）なら記録ごとロールバックして例外（付与漏れによるクレジット喪失を防ぐ）。
+  if not found then
+    raise exception 'record_stripe_event_and_grant: user % not found (grant rolled back)', p_user_id;
+  end if;
+  return p_amount;
+exception when unique_violation then
+  return 0;
+end;
+$$;
+
+revoke execute on function public.record_stripe_event_and_grant(text, text, uuid, integer)
+  from public, anon, authenticated;
+grant  execute on function public.record_stripe_event_and_grant(text, text, uuid, integer)
+  to service_role;
