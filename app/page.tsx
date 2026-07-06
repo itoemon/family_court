@@ -81,8 +81,10 @@ export default function Home() {
                 <Link href="/profile" className="underline font-semibold mx-1">プロフィール</Link>
                 から登録（BYOK）すると無料でご利用いただけます。
               </p>
-              <p className="text-rose-400 text-xs mt-1">
-                クレジットの購入は準備中です。
+              <p className="text-rose-500 text-xs mt-1">
+                または
+                <Link href="/profile#purchase" className="underline font-semibold mx-1">クレジットを購入</Link>
+                するとすぐにご利用いただけます。
               </p>
             </div>
           </div>
