@@ -38,10 +38,26 @@ metadata:
 - **Vercel REST API**（`vercel link`/`env pull` は使わず = `.env.local` 事故回避）で env 登録: `SERVICE_ANTHROPIC_API_KEY`=Preview+Production、`STRIPE_SECRET_KEY`/`NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`（テスト）=Preview のみ。型 `encrypted`。トークンは `~/.local/share/com.vercel.cli/auth.json` の `token`
 - `STRIPE_WEBHOOK_SECRET`（テスト値 `whsec_test_e2e_dummy_secret`）を `.env.test`/`.env.local` に設定（E2E が generateTestHeaderString で自己署名）
 
-#### MON-001 全体の残り（本番公開に向けて・別途）
+#### ⚠️ 本番の現状（2026-07-06 判明・要対応だがユーザー不在のため急がない=ダイチ判断）
 
-- **本番デプロイ手順（PR-A + PR-B をまとめて）**: ① 本番 Supabase に PR-A(`20260705190001`) + PR-B(`20260705190002`) migration を適用（`.env.local` source + 本番 ref `nhcsshqcyprbitfctyio` ガード、applied.txt 追記）② Vercel Production に `SERVICE_ANTHROPIC_API_KEY`（済）③ Stripe で **本番 webhook endpoint（本番URL の `/api/stripe/webhook`）作成 → `whsec_` を Vercel Production に登録** ④ Stripe **本番(live)キー**を Vercel Production に登録（現状 Preview にテストキーのみ）⑤ Anthropic Console でサービスキーに **Spend Limit 設定**（青天井防止）
-- **Preview での実 webhook テスト**: Stripe で Preview URL 向け endpoint 作成 → whsec を Vercel Preview に登録すれば、テストモードで購入フル通し確認可（E2E は署名自己生成のオフライン検証まで）
+**本番は中途半端に壊れた状態。ユーザーがいないので実害は小さいが、公開前に必ず解消すること。**
+
+- **本番 DB (`nhcsshqcyprbitfctyio`) にクレジット系スキーマは未適用**（credits 列 / consume_credit / grant_credit / record_stripe_event_and_grant / stripe_events 全部なし）。migration は**テスト DB のみ適用済み**
+- **PR-A の"コード"は本番にライブ**（main→本番は自動デプロイ。PR-A は Stripe 非依存でビルド成功、08:55 のデプロイ = `d19d770` がライブ）。→ **コードは `cases.uses_service_key` を INSERT・`profiles.credits` を select するが本番 DB に列が無い → ログイン済みユーザーのケース作成が 500 で壊れる**（未認証は 401 で手前で止まる）
+- **PR-B の"コード"は本番にデプロイ不能**（直近の本番デプロイが全て Error）。原因 = **`lib/stripe.ts` がモジュール読込時に `new Stripe(process.env.STRIPE_SECRET_KEY!)` を実行 → 本番に STRIPE_SECRET_KEY 未設定（Preview のみ）→ `next build` の "collect page data for /api/credits/checkout" で例外 → ビルド失敗**。CI/Preview は Stripe キーがあるので通っていた（fragility が隠れていた）
+- **根本原因（プロセスの穴）**: コードは main マージで自動デプロイされるのに migration/env は手動・後回し → コードが DB より先に出て不整合。**今後スキーマ変更は「migration を本番に先に当てる or コードを後方互換にする」を徹底**
+
+#### MON-001 本番公開手順（この順で・別途、急がない）
+
+0. **要修正コード: `lib/stripe.ts` を遅延初期化に**（`new Stripe()` をモジュール top-level でなく関数内/getter に。ビルド時に鍵を要求しない形へ。これが PR-B 本番デプロイ失敗の直接原因。小さい PR で先に直す）
+1. 本番 Supabase に PR-A(`20260705190001`) + PR-B(`20260705190002`) migration を適用（`.env.local` source + 本番 ref ガード、applied.txt 追記）
+2. Vercel Production に `SERVICE_ANTHROPIC_API_KEY`（済）
+3. Stripe で **本番 webhook endpoint（本番URL の `/api/stripe/webhook`）作成 → `whsec_` を Vercel Production に登録**
+4. Stripe **本番(live)キー**を Vercel Production に登録（現状 Preview にテストキーのみ）
+5. Anthropic Console でサービスキーに **Spend Limit 設定**（青天井防止）
+6. デプロイ成功を確認（0 の修正が入れば PR-B もビルド通る）
+- **代替: 公開までは本番をロールバック**して壊れを消しておく手もある（Vercel でクレジット導入前デプロイへ）。ユーザーが付き始める前に判断
+- **Preview での実 webhook テスト**: Stripe で Preview URL 向け endpoint 作成 → whsec を Vercel Preview に登録すれば、テストモードで購入フル通し確認可
 - スコープ③（サブスク月額）・購入履歴 UI・返金 UI・MON-002 広告 は将来
 
 #### 今セッション後半の環境トラブル（恒久知識）
