@@ -7,15 +7,30 @@ metadata:
   originSessionId: 34837e21-68ed-4d95-a47b-b25194713339
 ---
 
-リードは `./scripts/agents.sh architect|engineer|tester|auditor` を Bash ツールから自分で起動し、PR 作成まで自動で回す。ダイチに毎回「コマンド叩いて」と依頼しない。
+リードは Bash ツールからパイプラインを自分で起動し、PR 作成まで自動で回す。ダイチに毎回「コマンド叩いて」と依頼しない。
 
-**Why:** ダイチが明示。ダイチが手動でターミナルからコマンドを実行する運用は手間。リード（対話セッション）が `claude -p` のサブセッションを起動できるので、パイプライン全体をリード主導で進めるのが効率的。
+**Why:** ダイチが明示。手動でターミナルからコマンドを実行する運用は手間。リード（対話セッション）がサブエージェントを起動できるので、パイプライン全体をリード主導で進めるのが効率的。
 
-**How to apply:**
-- task.md を更新したら、リードがそのままアーキを起動し、出力をレビュー
-- アーキ OK ならビルド起動。NG なら task.md を修正して再起動
-- ビルド完了後、テスタ → オーディの順で自動的に回す
-- オーディ判定通過後、PR 作成 → コパレビュー対応 → マージまで自走
-- 長時間処理の Bash 呼び出しは `run_in_background: true` で起動して完了通知を待つ
-- 各段階の成果物（design.md / arch-to-eng.md / 実装コード / test-log / audit-log）は逐次レビューし、問題があれば差し戻し
-- ダイチには進捗を簡潔に報告し、判断が必要な場面（方針分岐・スコープ変更など）でのみ確認を仰ぐ
+## 標準フロー（2026-07-05 リーン化。MON-001 セッションの実績を反映）
+
+**リード（要件・設計レビュー・テスト・アドバサリアル・PR・memory）→ アーキ（設計）→ ビルド（実装）→ リードがテスト＋レビュー → コパ（PR レビュー）**
+
+- task.md を更新 → **アーキ**起動（`./scripts/agents.sh architect < /dev/null`）→ design.md をリードがレビュー（既存削除なし・設計妥当性）
+- アーキ OK → **ビルド**起動（`./scripts/agents.sh engineer < /dev/null`）。NG なら task.md 修正して再起動
+- **テスト＆監査はリードが直接行う**: migration をテスト DB へ適用 → playwright fast-path で E2E → お金/認可系はアドバサリアル検証（REST 直叩きで 403 等を実証）→ 設計/コードレビュー
+- 問題なければ PR 作成 → **コパ**レビュー確認（`gh api .../pulls/N/{reviews,comments}`、初回レビューを待つ [[feedback-copilot-review]]）→ 指摘を PR 内消化 → マージ → memory 更新
+- 長時間処理の Bash は `run_in_background: true`
+- ダイチには進捗を簡潔に報告、判断が必要な場面（方針分岐・スコープ変更）でのみ確認
+- **テスタ/オーディ agent は任意**（大規模変更で追加カバレッジが欲しいとき）。標準はリード＋コパで代替（コパは実バグ検出力が高い。MON-001 PR-A/PR-B とも実バグを捕捉）
+
+## パイプライン頑健化・回避策（MON-001 セッションの恒久知見）
+
+- **agents.sh の `claude -p` は `< /dev/null` + `--dangerously-skip-permissions` 必須**（2026-07-05 に全4役割へ組込済み）。前者は headless の stdin 詰まり死、後者は非対話 nested agent が権限プロンプトに詰まる `Tool permission request failed: Error: Stream closed` を防ぐ。無いとビルドが1ファイルも書けず無出力で死ぬ。
+- **"Stream closed"（権限リクエスト経路の障害）は間欠的**で、メインのリードやハーネス Agent にも起きる。自然復帰するので少し待つ/リトライ。連打は無駄。原因はリソース競合（別アプリ常駐＋多数の nested agent）と推定。
+- **ビルドが agents.sh で不安定なときの fallback**: ハーネスの Agent ツール（general-purpose サブエージェント）に task.md + design.md を仕様として渡して実装。書き込みブロックに当たったらサブエージェントが**コードをテキスト報告 → リードが全適用**する回避策も有効（PR-B で実証）。
+- **E2E は `PORT=3000` 明示**（環境に `PORT` leak があると next dev が別ポートを掴んで 3000 に繋がらず全滅）。agents.sh の dev サーバ起動にも組込済み。リード直実行時: `for p in $(lsof -ti:3000); do kill $p; done` で掃除 → `export TEST_MODE=1; PORT=3000 setsid bash -c 'npm run dev:test ...' &` → ready 待ち → playwright → 掃除 → `git checkout tsconfig.json`。
+- **`pkill -f` は使わない**（リードのシェルを巻き込み exit 144）。ポート掃除は lsof ベースで。
+
+## リーン化の理由
+
+テスタ agent は UI ターン制御で詰まりやすく、リードが playwright fast-path（admin client + REST 直叩き）を直接回す方が速く確実。監査もリードの設計レビュー＋アドバサリアル＋コパで実バグを網羅（コパが両 PR で money-critical バグを検出）。独立 CLI エージェントを増やすほど nested-agent の失敗点が増えるため、リード＋コパに集約する方が堅い。

@@ -139,11 +139,16 @@ run_architect() {
 
   log "アーキを起動します..."
 
-  # stdin は /dev/null にリダイレクトする。バックグラウンド/detached 文脈で
-  # claude -p が stdin 入力を待って詰まり、無出力のまま静かに死ぬのを防ぐ（MON-001
-  # アーキ起動で 2 回発生。"no stdin data received in 3s" 警告が兆候）。
+  # 頑健化（MON-001 セッションの知見）:
+  # - `< /dev/null`: headless の claude -p が stdin 入力を待って詰まり無出力で死ぬのを防ぐ
+  #   （"no stdin data received in 3s" 警告が兆候）。
+  # - `--dangerously-skip-permissions`: 権限リクエストを一切発生させない。非対話の nested
+  #   `claude -p` は権限プロンプトに答える対話チャンネルが無く、間欠的に
+  #   "Tool permission request failed: Error: Stream closed" で全ツールが失敗して無出力で死ぬ。
+  #   本プロジェクトは .claude/settings.local.json で既に bypassPermissions 選択済みのため
+  #   リスク profile は不変。ビルドが 1 ファイルも書けず死んだ事象の恒久対策。
   claude -p "$(load_prompt architect OUT_FILE="$out_file")" \
-    --allowedTools "Write,Read,Glob" < /dev/null
+    --allowedTools "Write,Read,Glob" --dangerously-skip-permissions < /dev/null
 
   log "設計書を出力しました: $out_file"
 }
@@ -163,7 +168,7 @@ run_engineer() {
   log "ビルドを起動します（ブランチ: $branch）..."
 
   claude -p "$(load_prompt engineer)" \
-    --allowedTools "Edit,Write,Bash,Read,Glob,Grep" < /dev/null
+    --allowedTools "Edit,Write,Bash,Read,Glob,Grep" --dangerously-skip-permissions < /dev/null
 
   # supabase/migrations/ に新規 SQL があれば自動適用
   run_migrations
@@ -187,7 +192,10 @@ start_dev_server() {
     dev_script="dev:test"
     log "TEST_MODE=1: テスト DB ターゲットで dev サーバーを起動します（.env.test を使用）"
   fi
-  setsid bash -c "cd '$REPO_ROOT' && npm run $dev_script" > /tmp/dev_server.log 2>&1 &
+  # PORT=3000 を明示。環境に PORT（例: 8801 = 別アプリ）が leak していると next dev が
+  # 3000 でなくそのポートを掴んで EADDRINUSE で起動失敗し、E2E が localhost:3000 に繋がらず
+  # 全滅する（MON-001 セッションで発生）。
+  setsid bash -c "cd '$REPO_ROOT' && PORT=3000 npm run $dev_script" > /tmp/dev_server.log 2>&1 &
   DEV_PGID=$!
   log "dev サーバーを起動しています (PGID=$DEV_PGID)..."
   local i
@@ -258,7 +266,7 @@ run_tester() {
 
   claude -p "$(load_prompt tester OUT_FILE="$out_file")" \
     --model claude-haiku-4-5-20251001 \
-    --allowedTools "Write,Read,Glob,Grep,Bash" < /dev/null
+    --allowedTools "Write,Read,Glob,Grep,Bash" --dangerously-skip-permissions < /dev/null
 
   stop_dev_server
   trap - EXIT
@@ -298,7 +306,7 @@ run_auditor() {
   log "オーディを起動します..."
 
   claude -p "$(load_prompt auditor OUT_FILE="$out_file")" \
-    --allowedTools "Write,Read,Glob,Grep,Bash" < /dev/null
+    --allowedTools "Write,Read,Glob,Grep,Bash" --dangerously-skip-permissions < /dev/null
 
   log "監査ログを出力しました: $out_file"
 
