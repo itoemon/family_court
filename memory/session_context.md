@@ -12,15 +12,45 @@ metadata:
 
 ---
 
-## 最終更新: 2026-07-05（MON-001 PR-A クレジット基盤 #61 マージ。これまでに PR #41-#61）
+## 最終更新: 2026-07-05（MON-001 PR-A #61 + PR-B Stripe購入 #62 マージ。これまでに PR #41-#62）
 
 ### 現在のブランチ・PR 状態
 
-- 現ブランチ: `main`（クリーン、HEAD `bf45a80` = PR #61 マージ後）
+- 現ブランチ: `main`（クリーン、HEAD `907b1e4` = PR #62 マージ後）
 - オープン PR: なし
-- マージ済み最新: PR #61（MON-001 PR-A クレジット基盤）
+- マージ済み最新: PR #62（MON-001 PR-B Stripe クレジット購入）
 
-### このセッション (2026-07-05) でやったこと: MON-001 PR-A（クレジット制課金の基盤）
+### このセッション後半 (2026-07-05) でやったこと: MON-001 PR-B（Stripe クレジット購入）
+
+#### PR #62 マージ: Stripe Checkout でクレジット購入
+
+- **パッケージ（`lib/credit-packages.ts` に一元化・運用しながら調整）**: credits_10=10/¥500、credits_30=30/¥1,200、credits_100=100/¥3,500。価格はダイチ一任、コード変更のみで調整可
+- **DB (migration `20260705190002`・冪等)**: `stripe_events(id text pk)`（webhook 冪等性・RLS ポリシーなし=service_role のみ）+ `record_stripe_event_and_grant(event_id,type,user_id,amount)`（**記録と付与を単一 tx で原子的**に。unique_violation→0、0行UPDATE→例外でロールバック、EXECUTE は service_role のみ）。schema.sql 反映
+- **API**: `POST /api/credits/checkout`（認証必須・packageId 照合・`price_data` インライン jpy・`payment_method_types:["card"]`・metadata に userId/credits/packageId）/ `POST /api/stripe/webhook`（認証なし・**raw body で署名検証**・`payment_status==="paid"` ガード・metadata を CREDIT_PACKAGES と再照合・原子的 RPC で付与・admin のみ）
+- **UI**: `/profile` に購入セクション（`id="purchase"`・3ボタン）+ `app/page.tsx` プレースホルダを実リンクへ。`lib/stripe.ts`（`import "server-only"`）、`stripe` npm 追加
+- **検証**: tsc/eslint クリーン。E2E mon001b 6/6（checkout/未認証401/付与/冪等/署名不正400/未払い非付与）+ リグレッション mon001-credits 4/4 + critical 4/4。**アドバサリアル: `record_stripe_event_and_grant` RPC 直叩き→403、`stripe_events` 直読み→403**。test1 は実 Stripe テストモードに checkout 実作成
+- **コパ 5 件消化（全部 money-critical）**: ①②付与 RPC の 0 行 UPDATE で記録だけ残りクレジット喪失→`if not found then raise` でロールバック ③checkout を `card` 限定 ④webhook に `payment_status==="paid"` ガード ⑤E2E に payment_status + 未払いテスト追加
+- **money 設計判断（恒久知識）**: webhook の「記録＋付与」は**単一トランザクションで原子的に**やる。「記録→付与→失敗時500」は課金済み喪失、「失敗時に記録削除」は付与commit後の再送で二重付与。両方消すには 1 tx に束ねる。さらに 0 行 UPDATE（ユーザー不在）も `if not found` でロールバックしないと記録だけ残って喪失
+
+#### キー移設・Vercel 登録（PR-A/B の間）
+
+- ダイチが `apikey.txt` をルートに配置 → 中身（Stripe テスト pub/secret + Claude サービスキー）を **`.env.local`/`.env.test` に移設 → apikey.txt 削除**（git 履歴に残さず。`.env*` は gitignore 済み）。疎通検証 Anthropic 200 / Stripe 200
+- **Vercel REST API**（`vercel link`/`env pull` は使わず = `.env.local` 事故回避）で env 登録: `SERVICE_ANTHROPIC_API_KEY`=Preview+Production、`STRIPE_SECRET_KEY`/`NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`（テスト）=Preview のみ。型 `encrypted`。トークンは `~/.local/share/com.vercel.cli/auth.json` の `token`
+- `STRIPE_WEBHOOK_SECRET`（テスト値 `whsec_test_e2e_dummy_secret`）を `.env.test`/`.env.local` に設定（E2E が generateTestHeaderString で自己署名）
+
+#### MON-001 全体の残り（本番公開に向けて・別途）
+
+- **本番デプロイ手順（PR-A + PR-B をまとめて）**: ① 本番 Supabase に PR-A(`20260705190001`) + PR-B(`20260705190002`) migration を適用（`.env.local` source + 本番 ref `nhcsshqcyprbitfctyio` ガード、applied.txt 追記）② Vercel Production に `SERVICE_ANTHROPIC_API_KEY`（済）③ Stripe で **本番 webhook endpoint（本番URL の `/api/stripe/webhook`）作成 → `whsec_` を Vercel Production に登録** ④ Stripe **本番(live)キー**を Vercel Production に登録（現状 Preview にテストキーのみ）⑤ Anthropic Console でサービスキーに **Spend Limit 設定**（青天井防止）
+- **Preview での実 webhook テスト**: Stripe で Preview URL 向け endpoint 作成 → whsec を Vercel Preview に登録すれば、テストモードで購入フル通し確認可（E2E は署名自己生成のオフライン検証まで）
+- スコープ③（サブスク月額）・購入履歴 UI・返金 UI・MON-002 広告 は将来
+
+#### 今セッション後半の環境トラブル（恒久知識）
+
+- **サブエージェントも書き込み権限 "Stream closed" に当たる**: PR-B 実装サブエージェントが Write/Edit/npm 全滅（read-only は可）。**完全な実装をテキストで報告 → リード（メインエージェント）が全適用**する回避策が有効だった。リードの Write は動いていた
+- **"Stream closed"（Tool permission）は間欠的に発生し自然復帰する**: メインの Bash も一時的に全滅（`echo` すら不可）→ 少し待つ/リトライで復帰。連打は無駄。`gh`（ネットワーク系）が特に不安定な瞬間あり
+- **lint: `window.location.href = x` は `react-hooks/immutability` で弾かれる** → `window.location.assign(x)` にする。**effect 内の直接 setState は `react-hooks/set-state-in-effect` で弾かれる** → 既存 `load()` のように async 関数内に入れる（hydration mismatch も回避）
+
+### このセッション前半 (2026-07-05) でやったこと: MON-001 PR-A（クレジット制課金の基盤）
 
 #### PR #61 マージ: クレジット制課金の第 1 段階
 
