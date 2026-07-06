@@ -256,6 +256,10 @@ begin
   end if;
   insert into public.stripe_events (id, type) values (p_event_id, p_type);
   update public.profiles set credits = credits + p_amount where id = p_user_id;
+  -- 0 行更新（ユーザー不在）なら記録ごとロールバックして例外（付与漏れによるクレジット喪失を防ぐ）。
+  if not found then
+    raise exception 'record_stripe_event_and_grant: user % not found (grant rolled back)', p_user_id;
+  end if;
   return p_amount;
 exception when unique_violation then
   return 0;

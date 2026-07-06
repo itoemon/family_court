@@ -28,6 +28,9 @@ export async function POST(req: NextRequest) {
   try {
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
+      // card 限定にして同期決済に固定する。非同期決済（支払い確定前に completed が飛ぶ手段）を
+      // 有効化させず、webhook の payment_status==="paid" ガードと合わせて未確定付与を防ぐ。
+      payment_method_types: ["card"],
       line_items: [
         {
           price_data: {

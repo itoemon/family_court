@@ -33,6 +33,15 @@ export async function POST(req: NextRequest) {
   }
 
   const session = event.data.object as Stripe.Checkout.Session;
+
+  // 支払い完了（payment_status==="paid"）のみ付与する。checkout は card 限定で同期決済のため
+  // 通常 paid だが、非同期決済（設定ドリフト等）で支払い確定前に completed が飛んだ場合に
+  // 未確定のままクレジットを付与しないための防御。未確定は付与せず 200（再送で無限ループさせない）。
+  if (session.payment_status !== "paid") {
+    console.warn("[stripe/webhook] session not paid, skipping grant:", session.payment_status);
+    return NextResponse.json({ received: true, ignored: true });
+  }
+
   const userId = session.metadata?.userId;
   const packageId = session.metadata?.packageId;
   const creditsRaw = session.metadata?.credits;

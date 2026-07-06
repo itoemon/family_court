@@ -38,6 +38,11 @@ begin
   insert into public.stripe_events (id, type) values (p_event_id, p_type);
   -- ここに到達 = 新規イベント。同一トランザクションで付与する。
   update public.profiles set credits = credits + p_amount where id = p_user_id;
+  -- 対象ユーザーが存在せず 0 行更新なら、記録の insert ごとロールバックして例外を投げる。
+  -- 「記録だけ残って付与漏れ（Stripe 再送でも復旧不能なクレジット喪失）」を防ぐ。
+  if not found then
+    raise exception 'record_stripe_event_and_grant: user % not found (grant rolled back)', p_user_id;
+  end if;
   return p_amount;   -- 付与した数
 exception when unique_violation then
   return 0;          -- 既処理（二重付与しない）

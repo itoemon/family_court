@@ -55,7 +55,13 @@ async function loginAs(page: import('@playwright/test').Page, email: string, pas
   await page.waitForURL('/', { timeout: 15_000 });
 }
 
-function buildCompletedEventPayload(p: { eventId: string; userId: string; credits: number; packageId: string }): string {
+function buildCompletedEventPayload(p: {
+  eventId: string;
+  userId: string;
+  credits: number;
+  packageId: string;
+  paymentStatus?: string;
+}): string {
   const event = {
     id: p.eventId,
     object: 'event',
@@ -66,6 +72,7 @@ function buildCompletedEventPayload(p: { eventId: string; userId: string; credit
       object: {
         id: `cs_test_${Math.random().toString(16).slice(2, 12)}`,
         object: 'checkout.session',
+        payment_status: p.paymentStatus ?? 'paid', // 付与ガード（webhook は paid のみ付与）
         metadata: { userId: p.userId, credits: String(p.credits), packageId: p.packageId },
       },
     },
@@ -170,6 +177,33 @@ test('MON-001b: 署名が不正な webhook は 400 で付与されない', async
     expect(await getCredits(admin, user.id)).toBe(3);
 
     // dedup 記録も作られていない（署名検証は DB 操作前に走る）。
+    const { data: evt } = await admin.from('stripe_events').select('id').eq('id', eventId).maybeSingle();
+    expect(evt).toBeNull();
+  } finally {
+    await admin.from('stripe_events').delete().eq('id', eventId);
+    await admin.auth.admin.deleteUser(user.id);
+  }
+});
+
+// ── 5. 未払い（payment_status !== "paid"）は付与しない ────────
+test('MON-001b: payment_status が paid でない completed イベントは付与しない', async ({ request }) => {
+  const admin = createAdminClient();
+  const stripe = stripeClient();
+  const user = await createEphemeralUser(admin, 'unpaid');
+  const eventId = `evt_test_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+  try {
+    const payload = buildCompletedEventPayload({
+      eventId, userId: user.id, credits: 10, packageId: 'credits_10', paymentStatus: 'unpaid',
+    });
+    const sig = stripe.webhooks.generateTestHeaderString({ payload, secret: process.env.STRIPE_WEBHOOK_SECRET! });
+
+    const res = await request.post('/api/stripe/webhook', {
+      headers: { 'stripe-signature': sig, 'content-type': 'application/json' },
+      data: payload,
+    });
+    expect(res.status()).toBe(200); // 200 で受理するが付与はしない（再送で無限ループさせない）
+    expect(await getCredits(admin, user.id)).toBe(3); // 付与されていない
+    // dedup 記録も作られていない（未払いは記録前に skip する）。
     const { data: evt } = await admin.from('stripe_events').select('id').eq('id', eventId).maybeSingle();
     expect(evt).toBeNull();
   } finally {
