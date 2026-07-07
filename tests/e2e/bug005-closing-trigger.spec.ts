@@ -287,7 +287,12 @@ test('BUG-005-2: 延長投票で両者 finish → closing greeting + AI 閉廷�
       .select('phase')
       .eq('id', caseId)
       .single();
-    expect(judgingCase?.phase).toBe('judging');
+    // 参加者の CaseRoom は phase=judging を検知すると自動で /verdict を叩く（SEC-001 後は
+    // 参加者なら成功する）。requestVerdict の TEST_MODE モックで生成が一瞬で完了するため、
+    // judging 到達直後に verdict へ進むことがある。閉廷 greeting / AI 閉廷宣告は judging 遷移時
+    // （verdict 発火より前）に挿入済みなので順序は不変。ここでは「judging に到達した」ことの
+    // 確認として judging|verdict の両方を許容する。
+    expect(['judging', 'verdict']).toContain(judgingCase?.phase);
 
     // 検証: closing greeting (arguments) は必ず 2 行 (FEAT-006 既存挙動)
     const { data: closingGreetings, error: argErr } = await admin
@@ -395,7 +400,12 @@ test('BUG-005-3: 早期終了 (end-proposal) 両者合意 → closing greeting +
       .select('phase, end_proposed_by, plaintiff_id')
       .eq('id', caseId)
       .single();
-    expect(judgingCase?.phase).toBe('judging');
+    // 参加者の CaseRoom は phase=judging を検知すると自動で /verdict を叩く（SEC-001 後は
+    // 参加者なら成功する）。requestVerdict の TEST_MODE モックで生成が一瞬で完了するため、
+    // judging 到達直後に verdict へ進むことがある。閉廷 greeting / AI 閉廷宣告は judging 遷移時
+    // （verdict 発火より前）に挿入済みなので順序は不変。ここでは「judging に到達した」ことの
+    // 確認として judging|verdict の両方を許容する。
+    expect(['judging', 'verdict']).toContain(judgingCase?.phase);
     expect(judgingCase?.end_proposed_by).toBeNull();
 
     // 検証: closing greeting (arguments) は必ず 2 行
@@ -524,7 +534,12 @@ test('BUG-005-4: api_key SET 経路 → AI(モック) 閉廷宣告が judge_mess
       .select('phase')
       .eq('id', caseId)
       .single();
-    expect(judgingCase?.phase).toBe('judging');
+    // 参加者の CaseRoom は phase=judging を検知すると自動で /verdict を叩く（SEC-001 後は
+    // 参加者なら成功する）。requestVerdict の TEST_MODE モックで生成が一瞬で完了するため、
+    // judging 到達直後に verdict へ進むことがある。閉廷 greeting / AI 閉廷宣告は judging 遷移時
+    // （verdict 発火より前）に挿入済みなので順序は不変。ここでは「judging に到達した」ことの
+    // 確認として judging|verdict の両方を許容する。
+    expect(['judging', 'verdict']).toContain(judgingCase?.phase);
 
     // closing greeting (arguments) は 2 行
     const { data: closingGreetings, error: argErr } = await admin

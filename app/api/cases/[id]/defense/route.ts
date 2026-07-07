@@ -1,49 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createAdminClient, createSessionClient } from "@/lib/supabase/server";
-import { verifyGuestToken } from "@/lib/guest-token";
+import { createAdminClient } from "@/lib/supabase/server";
+import { resolveCaseAuth } from "@/lib/case-auth";
 import { resolveCaseAiKey } from "@/lib/case-ai-key";
 import { generateDefenseResponse } from "@/lib/defense";
 import { DefenseMessage } from "@/lib/types";
 import { isUuid } from "@/lib/text-utils";
 
 type RouteContext = { params: Promise<{ id: string }> };
-
-async function resolveAuth(req: NextRequest, id: string) {
-  const admin = createAdminClient();
-  const { data: c } = await admin.from("cases").select("*").eq("id", id).single();
-  if (!c) return { error: "ケースが見つかりません", status: 404 } as const;
-
-  try {
-    const session = await createSessionClient();
-    const { data: { user } } = await session.auth.getUser();
-
-    if (user) {
-      if (user.id !== c.plaintiff_id && user.id !== c.defendant_id) {
-        return { error: "このケースへの参加権限がありません", status: 403 } as const;
-      }
-      const userRole: "plaintiff" | "defendant" =
-        user.id === c.plaintiff_id ? "plaintiff" : "defendant";
-      return { user, userId: user.id as string | null, c, userRole, admin } as const;
-    }
-  } catch (err) {
-    console.error("createSessionClient failed:", err);
-    return { error: "サーバー設定エラーが発生しました。管理者に連絡してください。", status: 500 } as const;
-  }
-
-  if (c.defendant_guest_name) {
-    try {
-      const cookieToken = req.cookies.get(`guest_defendant_${id}`)?.value;
-      if (cookieToken && await verifyGuestToken(id, cookieToken)) {
-        return { user: null, userId: null, c, userRole: "defendant" as const, admin } as const;
-      }
-    } catch (err) {
-      console.error("verifyGuestToken failed:", err);
-      return { error: "サーバー設定エラーが発生しました。管理者に連絡してください。", status: 500 } as const;
-    }
-  }
-
-  return { error: "認証が必要です", status: 401 } as const;
-}
 
 async function resolveApiKey(
   caseRow: { plaintiff_id: string; uses_service_key: boolean },
@@ -90,7 +53,7 @@ export async function GET(
   if (!isUuid(id)) {
     return NextResponse.json({ error: "不正な ID 形式です" }, { status: 400 });
   }
-  const auth = await resolveAuth(req, id);
+  const auth = await resolveCaseAuth(req, id);
   if ("error" in auth) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
@@ -119,7 +82,7 @@ export async function POST(
   if (!isUuid(id)) {
     return NextResponse.json({ error: "不正な ID 形式です" }, { status: 400 });
   }
-  const auth = await resolveAuth(req, id);
+  const auth = await resolveCaseAuth(req, id);
   if ("error" in auth) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
