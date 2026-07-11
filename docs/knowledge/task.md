@@ -2,150 +2,95 @@
 
 > **優先順位**: このファイルの内容は最優先。設計書・handoff メモと矛盾する場合は必ずこちらを優先すること。
 >
-> **重要 1（design.md 取り扱い）**: `docs/knowledge/design.md` は永続累積資料である。既存設計（FEAT-003/004・MON-001 PR-A 等）を**絶対に削除・短縮・全面書き換えしないこと**。**末尾に新規セクション `## MON-001 PR-B Stripe クレジット購入` を純追記**する。
+> **重要 1（design.md 取り扱い）**: `docs/knowledge/design.md` は永続累積資料。既存設計を削除・短縮・全面書き換えしない。**末尾に新規セクション `## SEC-001/003 判決ルート堅牢化` を純追記**する。
 >
-> **重要 2（実装体制）**: 本タスクはリードがハーネスの Agent（サブエージェント）で実装する。agents.sh の engineer は本環境で不安定なため使わない。実装後はリードが tsc/lint/E2E/アドバサリアル検証を直接行う。
+> **重要 2（実装体制）**: 標準フロー = リード（要件・設計レビュー・テスト・アドバサリアル・PR）→ アーキ（設計）→ ビルド（実装）→ リードがテスト＋アドバサリアル → **オーディ（独立セキュリティ監査・本タスクは必須）** → コパ。セキュリティ修正なのでオーディを必ず通す。
 >
-> **重要 3（migration の冪等化）**: 新規 migration は OPS-002 方針で冪等に（`CREATE OR REPLACE FUNCTION` / `CREATE TABLE IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS`）。`schema.sql`（本番スナップショット）と二重適用しても停止しないこと。末尾に `NOTIFY pgrst, 'reload schema';`。
->
-> **重要 4（お金のクリティカリティ）**: 本タスクは実決済が絡む。**webhook 署名検証・二重付与防止（冪等性）・金額/クレジット数の改ざん防止**を最優先で正しく実装する。曖昧点はビルドに丸投げせず設計で確定する。
+> **重要 3**: セキュリティ修正のため、**「直したつもりで直っていない」を防ぐ**。実際に「未認証/第三者が verdict を叩けない」ことをリードがアドバサリアル検証（本番でなくテスト DB + REST 直叩き）で実証する。
 
 ## 今回のタスク
 
-MON-001 の第 2 段階 = PR-B。**Stripe Checkout でクレジットを購入できる**ようにする。PR-A で導入したクレジット基盤（`profiles.credits` / `consume_credit` / 402 ゲート）の上に、残高を**増やす**正規経路（決済）を追加する。
+判決ルート `app/api/cases/[id]/verdict/route.ts` のセキュリティ穴（SEC-001）と出力未検証（SEC-003）を塞ぐ。由来: 2026-07-07 全ディレクトリ・コードレビュー（`docs/backlog.md` の SEC-001 / SEC-003）。
 
-**バックログ ID**: MON-001（クレジット制課金）PR-B
-**依存**: MON-001 PR-A（PR #61、`profiles.credits` / `consume_credit` / `refund_credit`）、Stripe。
-
----
-
-### スコープ確定事項（2026-07-05 ダイチ確認 / リード決定）
-
-1. **決済手段**: Stripe **Checkout**（Stripe ホスト型の決済ページ）。カード情報は自前で扱わない。`mode: "payment"`（都度購入、サブスクではない。サブスクはスコープ③で将来）。
-2. **クレジットパッケージ（3 段。価格はリードに一任・運用しながら調整）**:
-   | id | クレジット | 価格(JPY) |
-   |---|---|---|
-   | `credits_10` | 10 | 500 |
-   | `credits_30` | 30 | 1200 |
-   | `credits_100` | 100 | 3500 |
-   - パッケージ定義は**コードに一元化**（`lib/credit-packages.ts`）。Stripe 側に Product/Price を事前作成せず、Checkout Session 作成時に **`price_data` をインライン指定**（`currency: "jpy"`、`unit_amount` は JPY なので**最小単位＝円そのまま**＝500/1200/3500、`quantity: 1`）。価格変更はコード変更のみで済む。
-3. **付与単位**: 決済成功（`checkout.session.completed`）を **webhook** で受けて、購入者の `profiles.credits` にパッケージのクレジット数を加算する。
-4. **冪等性**: Stripe は webhook を複数回送りうる。**同一イベント/セッションで二重付与しない**こと（後述の `stripe_events` テーブルで dedup）。
+**バックログ ID**: SEC-001（HIGH）+ SEC-003（MEDIUM）
+**依存**: MON-001 PR-A/PR-B（`uses_service_key` / `resolveCaseAiKey`）。
 
 ---
 
-### データモデル変更
+### 背景（実コードで裏取り済み）
 
-新規 migration `supabase/migrations/<timestamp>_mon001b_stripe_purchase.sql`（既存最大 timestamp `20260705190001` より後・冪等）:
-
-1. **`grant_credit(p_user_id uuid, p_amount integer)`**: クレジットを原子的に加算する関数（PR-A の consume/refund と同じ堅牢化）。
-   - `security definer` / `set search_path = ''` / `update public.profiles set credits = credits + p_amount where id = p_user_id returning credits`。
-   - `p_amount` の妥当性（正の整数・上限）は**呼び出し側（webhook）でパッケージ定義と照合して保証**する（関数は素直に加算）。防御的に `p_amount > 0` の check を関数内に入れてもよい。
-   - `revoke execute ... from public, anon, authenticated` + `grant execute ... to service_role`（RPC 非露出・admin のみ）。
-2. **`stripe_events` テーブル（webhook 冪等性・二重付与防止）**:
-   - `create table if not exists public.stripe_events ( id text primary key, type text, created_at timestamptz default now() not null );`
-   - `id` は Stripe の **event.id**（`evt_...`）。webhook 処理の最初に `insert ... on conflict (id) do nothing` し、**挿入行数が 0 なら既処理**として付与をスキップする（原子的 dedup）。
-   - `alter table public.stripe_events enable row level security;`（ポリシーなし = service_role のみアクセス。guest_tokens と同じ方針）。
-   - `grant` は付けない（service_role は RLS/grant をバイパス）。
-3. `schema.sql` にも `grant_credit` 関数・`stripe_events` テーブルを反映（スナップショット整合）。
-4. 末尾 `notify pgrst, 'reload schema';`。
+- `verdict/route.ts` は **認証・認可が一切ない**。ガードは `if (c.phase !== "judging")` のみ（20 行目）。middleware は `/api` を除外するため、**ケース UUID を知る第三者（未ログイン含む）が POST で判決生成を叩ける**。
+  - 影響: (1) `requestVerdict` が Claude を呼ぶ → **サービスキーモード（`uses_service_key=true`）なら運営が課金される**、(2) 他人のケースに verdict 書き込み・`phase='verdict'` 強制進行、(3) `phase` チェック → `update`（87 行目）間に排他がなく、**同時リクエストで二重生成＝二重課金**（TOCTOU）。
+- 対照的に `defense/route.ts` は `resolveAuth`（`getUser` + 参加者チェック + `verifyGuestToken`）で認証済み。**verdict だけ抜けている**。
+- verdict の POST 呼び出し元は `app/case/[id]/CaseRoom.tsx:154`（ケース参加者が閲覧中に叩く）。→ **認可は「そのケースの参加者（原告 / 認証被告 / ゲスト被告）」に限定**するのが正しい。
+- 出力未検証（SEC-003・`lib/claude.ts`）: `message.content[0].type`（56 行付近）は content が空配列だと実行時例外。verdict ルートは `requestVerdict` を try/catch しておらず未処理例外 → 500。`JSON.parse` 結果も未検証で `winner` enum・スコア 0–100 をクランプせず DB 保存。
 
 ---
 
-### API 仕様（追加）
+### スコープ（IN / OUT）
 
-#### 1. `POST /api/credits/checkout`（Checkout セッション作成・認証ユーザー）
-- 認証必須（未認証 401）。
-- リクエスト: `{ packageId: "credits_10" | "credits_30" | "credits_100" }`。**サーバ側で `lib/credit-packages.ts` の定義と照合**し、未知の id は 400。**金額・クレジット数はクライアントから受け取らず、必ずサーバのパッケージ定義を正**とする（改ざん防止の要）。
-- Stripe Checkout Session を作成:
-  - `mode: "payment"`
-  - `line_items: [{ price_data: { currency: "jpy", unit_amount: <pkg.jpy>, product_data: { name: "<pkg.credits> クレジット" } }, quantity: 1 }]`
-  - `success_url` / `cancel_url`: `/profile`（または `/credits`）へ。`NEXT_PUBLIC_SITE_URL` 基点（未設定時は request origin フォールバック。PR #42 の signup と同方針）。`success_url` に `?purchase=success` 等のクエリを付けて UI で完了トースト表示可。
-  - **`metadata: { userId: <user.id>, credits: <pkg.credits>, packageId }`**（webhook がこの metadata から誰にいくつ付与するか決める）。`client_reference_id: user.id` も併用してよい。
-- レスポンス: `{ url: session.url }`。クライアントは `window.location = url` で Stripe へ遷移。
-- 秘密: `STRIPE_SECRET_KEY` はサーバ専用 env。クライアントへ渡さない。
+**IN**:
+1. **共通認可ヘルパーの切り出し**: `defense/route.ts` の `resolveAuth` 相当を `lib/case-auth.ts`（新規）に切り出す。責務: 「このリクエストが対象ケースの参加者か」を判定し、`{ ok: true, userId?, isGuest? }` / `{ ok: false, status, error }` を返す。認証ユーザーは `user.id ∈ {plaintiff_id, defendant_id}`、ゲスト被告は `verifyGuestToken(id, cookieToken)`。**既存 defense の挙動を変えない**よう、まず defense の実装を移設して同一挙動を担保（defense も新ヘルパー経由に張り替え、回帰しないこと）。
+2. **verdict ルートに認可を追加**: 冒頭（`isUuid` 検証の後、DB 参照の前後どちらでも可だが Claude 呼び出しより必ず前）で `resolveCaseAuth` を通し、非参加者は 403 / 未ログイン & ゲストトークン無しは 401。ケース不在は 404。
+3. **TOCTOU（二重生成）対策**: 判決確定の `update` を**条件付き更新**にする。`update cases set phase='verdict', updated_at=now() where id=? and phase='judging'` とし、**更新行数 0 なら 409 を返して Claude 呼び出し前に弾く**。実装順序は「(a) 認可 → (b) 条件付き `phase` 更新で judging→verdict を原子的に奪取（成功した1リクエストだけが以降へ進む）→ (c) Claude 呼び出し → (d) verdict 保存」。※ (b) を Claude より前に置くのが肝（先にフェーズを奪ってから生成）。もし生成失敗時に phase を戻す要否は設計で判断（戻さないと再生成不能になる懸念 vs 二重課金防止。トレードオフを design.md に明記）。
+4. **SEC-003 出力検証**（`lib/claude.ts:requestVerdict` + verdict ルート）:
+   - `message.content` が空 / 先頭が非 text ブロックのケースをガード（例外にせずフォールバックへ）。
+   - verdict ルートで `requestVerdict` を try/catch し、失敗時は 500 を整形して返す（未処理例外にしない）。
+   - パース後に `winner ∈ {plaintiff, defendant, draw}` を検証、`plaintiffScore`/`defendantScore` を 0–100 にクランプ。異常時は既存の draw フォールバック（`lib/claude.ts` の catch 分岐）に寄せる。
+5. **E2E spec**（`tests/e2e/sec001-verdict-auth.spec.ts` 新規）: 下記テスト観点。
 
-#### 2. `POST /api/stripe/webhook`（Stripe からの決済結果通知）
-- **認証なし**（Stripe が呼ぶ）。代わりに**署名検証で正当性を担保**する。
-- **生のリクエストボディ**を取得して `stripe.webhooks.constructEvent(rawBody, sig, process.env.STRIPE_WEBHOOK_SECRET)` で検証（Next.js App Router では `await req.text()` で raw body を取得。JSON パース前の生文字列が必要）。署名不一致は 400。
-- `event.type === "checkout.session.completed"` のみ処理（他は 200 で無視）。
-- **冪等性**: `admin.from("stripe_events").insert({ id: event.id, type: event.type })`。重複（`23505` on conflict）なら**既処理として何もせず 200**。`on conflict do nothing` 相当を使い、挿入できた時のみ付与へ進む。
-- 付与: `session.metadata` から `userId` / `credits` を取得（`credits` を parseInt、サーバ定義と再照合して妥当性確認 = クライアント/セッション改ざん耐性）。`admin.rpc("grant_credit", { p_user_id: userId, p_amount: credits })`。
-- 成功時 200。付与処理中の例外は 500（Stripe が再送 → dedup で二重付与しない）。
-- **重要**: このルートは `createAdminClient()`（service_role）で DB 操作。`createSessionClient()` は使わない（Cookie 認証がないため）。
+**OUT（本 PR では扱わない）**:
+- SEC-002（AI ルートのレート制限・ケース単位の生成回数上限）→ 別 PR（次工程）。
+- SEC-004（モデル ID 集約）→ 別 PR（任意）。
+- defense/draft/argument 以外への認可ヘルパー横展開は最小限（verdict 対応が主眼。defense は移設で挙動不変）。
 
 ---
 
-### コンポーネント設計（UI）
+### 認可仕様（確定）
 
-1. **`lib/credit-packages.ts`（新規）**: パッケージ定義の単一の真実。`export const CREDIT_PACKAGES = [{ id:"credits_10", credits:10, jpy:500 }, ...] as const;` + id→定義の lookup ヘルパー。サーバ/クライアント両方から import 可（秘密を含まない・純データ）。
-2. **購入 UI**: `/profile`（残高表示の近く）に 3 パッケージの購入ボタンを置く。各ボタン → `POST /api/credits/checkout` → 返った `url` へ遷移。**PR-A の `app/page.tsx` の「クレジットの購入は準備中です」プレースホルダを、`/profile`（またはクレジット購入セクション）への導線に差し替える**（作成ガード時に「購入する」リンクを機能させる）。
-   - 専用ページ `/credits` を作るか `/profile` 内セクションかは実装判断。最小は `/profile` 内セクション + `app/page.tsx` のプレースホルダをそのリンクに。
-3. 決済完了後の戻り先（`?purchase=success`）で「クレジットを追加しました」的なフィードバック表示（任意・最小で可）。配色は既存トーン（stone / `brand-700/800`、成功は控えめに）。
-
----
-
-### セキュリティ設計
-
-- **金額/クレジット数の改ざん防止**: Checkout の金額・付与クレジット数は**サーバの `lib/credit-packages.ts` のみを正**とする。クライアントから金額・クレジット数を受け取らない（`packageId` のみ受け取りサーバで解決）。webhook でも metadata の `credits` をサーバ定義と再照合。
-- **webhook 署名検証**: `STRIPE_WEBHOOK_SECRET` で `constructEvent`。検証前に DB を触らない。raw body で検証。
-- **二重付与防止**: `stripe_events(event.id)` の原子的 dedup。付与は挿入成功時のみ。
-- **付与関数の秘匿**: `grant_credit` は service_role のみ EXECUTE（RPC 非露出）。`profiles` の UPDATE 権限は PR-A で既に authenticated/anon から REVOKE 済み → grant も admin 経由のみ。
-- **秘密の非露出**: `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` はサーバ専用（`NEXT_PUBLIC_` なし）。`NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` のみクライアント可（本実装は Checkout リダイレクト方式なので publishable すら不要な可能性 = サーバで session 作成し url へ飛ばすだけ。使わないなら import しない）。
-- webhook ルートを Next.js が body パースしてしまうと署名検証が壊れる点に注意（App Router の Route Handler は `req.text()` で raw を取れる。Pages API の `bodyParser:false` 相当の考慮）。
+- **判決をトリガーしてよいのは対象ケースの参加者**（原告 `plaintiff_id` / 認証被告 `defendant_id` / ゲスト被告=有効な guest token 保持者）。第三者・未ログインは不可。
+- 既存 `verifyGuestToken` / `createSessionClient` / `createAdminClient` / `isUuid` を流用。
+- middleware は `/api` を通さない前提なので、**API ルート内で自前認可を持つ**（defense と同じ設計）。
 
 ---
 
-### テスト観点（E2E / 統合）
+### テスト観点（テスタ／リードのアドバサリアル）
 
-Stripe のホスト決済ページは E2E で完了できないため、**webhook ハンドラと checkout セッション作成を分けて**検証する。テスト DB（`eckrccrfnblzdbflnssf`）+ `.env.test` の Stripe **テスト**キー + `STRIPE_WEBHOOK_SECRET`（テスト値）を使う。新規 spec `tests/e2e/mon001b-purchase.spec.ts`:
+E2E は `bug005` / `mon001b` の admin fast-path + 専用 ephemeral ユーザーパターンを踏襲。テスト DB 対象。`tests/e2e/sec001-verdict-auth.spec.ts`:
 
-1. **checkout セッション作成**: 認証ユーザーが `POST /api/credits/checkout {packageId:"credits_10"}` → 200 + `url` が Stripe の checkout URL（`checkout.stripe.com` 等）であること。未知 packageId → 400。金額をクライアントから渡しても無視されること（サーバ定義が使われる）。
-2. **webhook 付与**: `checkout.session.completed` イベントを **`stripe.webhooks.generateTestHeaderString({ payload, secret: STRIPE_WEBHOOK_SECRET })`** で署名して `POST /api/stripe/webhook` → 200。対象ユーザーの `credits` が +credits されること（admin で前後確認）。
-3. **冪等性**: 同一 event.id の webhook を 2 回 POST → 2 回目は付与されない（credits が 1 回分のみ増加）。
-4. **署名不正**: 不正な署名で POST → 400、付与なし。
-5. 専用 ephemeral ユーザーで検証、後始末は `profiles`(ephemeral)/`stripe_events` 掃除。`e2e_user_a` を汚染しない。
-6. 既存 mon001-credits / critical / bug005 がリグレッションしないこと。
-- **注意**: webhook spec は Stripe SDK の署名生成を使うため、`stripe` パッケージが test でも import できること。実 Stripe API 呼び出しは checkout セッション作成（テストキーで実際に Stripe test mode に作成される・無害）のみ。
+1. **未認証は弾かれる**: phase=judging のケースを用意 → **未ログインで POST /verdict → 401/403**、verdict が生成されない（`verdicts` 行が増えない・`phase` が judging のまま）。
+2. **第三者（非参加者）は弾かれる**: 別の認証ユーザーで POST → **403**、生成されない。
+3. **参加者（原告）は成功**: 原告セッションで POST → 200、verdict 生成、phase=verdict（TEST_MODE で Claude をモックできるなら活用。requestVerdict のモック有無を確認し、無ければ最小で「認可を通って処理に入る」ことを検証）。
+4. **二重生成防止**: judging のケースに参加者が並行 or 連続で 2 回 POST → 1 回だけ生成、2 回目は 409（`verdicts` 行が 1 つ）。
+5. **出力検証**: （可能なら）content 空 / 不正スコアのモックで、例外 500 でなくフォールバック（draw・クランプ）になること。
+6. 既存 spec（critical / bug005 / mon001-credits / mon001b）がリグレッションしないこと。特に **defense の認可が移設後も同一挙動**（bug004-defense-tab 等）。
+- 後始末は case→user 順。`e2e_user_a` を汚染しない。
 
----
-
-### 制約・前提条件 / デプロイ注意
-
-- `stripe` npm パッケージを追加（`npm install stripe`）。サーバでのみ import。
-- **env**: `STRIPE_SECRET_KEY` / `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`（PR-A キー移設で `.env.local`/`.env.test` + Vercel Preview に設定済み）、`STRIPE_WEBHOOK_SECRET`（テスト値は `.env.test`/`.env.local` に設定済み）。`.env.test.example` に 3 つのキー名を追記（値なし）。
-- **本番/Preview の webhook secret**: Stripe ダッシュボードで **webhook endpoint（デプロイ URL の `/api/stripe/webhook`）を作成**すると `whsec_...` が発行される。それを Vercel の該当 scope に登録する（**この作業はダイチ/リードがデプロイ時に実施**。本 PR のコード実装・オフライン検証には不要）。
-- **本番 Stripe live キー**: 現状 Preview にテストキーのみ。Production の Stripe 本番キー登録は本番公開時（別途）。
-- PR-A の migration（`profiles.credits` 等）がテスト DB 適用済み。本 PR の migration もリードがテスト DB へ適用する。
+**リードのアドバサリアル検証（必須）**: テスト DB に judging ケースを作り、(a) 未認証 REST 直叩き → 401/403、(b) 非参加者 JWT で直叩き → 403、(c) 生成されないこと（verdicts 行数・phase 不変）を実証する。
 
 ---
 
-### スコープ外（本 PR-B で実装しない）
+### オーディに対する観点（本タスクは監査必須）
 
-- サブスクリプション月額プラン（MON-001 スコープ③、将来）。
-- 返金 UI・購入履歴の詳細台帳（`stripe_events` は dedup 用の最小記録。購入履歴表示は将来）。
-- 領収書・請求書 UI（Stripe が送るメール領収書で当面代替）。
-- 広告（MON-002）。
-- 本番 Stripe live 環境の実際の endpoint 作成・live キー登録（デプロイ運用作業）。
+- verdict の全経路（認証ユーザー/ゲスト/未認証）で認可が正しく効くか。Claude 呼び出しが認可通過後にのみ走るか。
+- TOCTOU: 条件付き更新が Claude 呼び出しの**前**にあり、二重生成・二重課金が起きないか。生成失敗時の phase 復帰方針が妥当か。
+- resolveAuth 移設で defense の既存挙動が変わっていないか（回帰）。
+- 出力検証: 空 content / 不正 JSON / 範囲外スコアでクラッシュや不正保存が起きないか。
+- 情報漏洩: 認可失敗時にケース内部情報をエコーしていないか。
+- git status 最終確認（新規 spec / lib/case-auth.ts の取りこぼしなし）。
 
 ---
 
 ### 関連ファイル（想定）
-- `supabase/migrations/<timestamp>_mon001b_stripe_purchase.sql`（新規）
-- `lib/credit-packages.ts`（新規）
-- `lib/stripe.ts`（新規・Stripe クライアント初期化を集約してもよい）
-- `app/api/credits/checkout/route.ts`（新規）
-- `app/api/stripe/webhook/route.ts`（新規）
-- `app/profile/page.tsx` + 購入 UI コンポーネント（変更/新規）
-- `app/page.tsx`（プレースホルダ購入導線を実リンクへ）
-- `supabase/schema.sql`（`grant_credit`・`stripe_events` 反映）
-- `.env.test.example`（Stripe キー名追記）
-- `package.json`（`stripe` 追加）
-- `tests/e2e/mon001b-purchase.spec.ts`（新規）
-- `docs/knowledge/design.md`（**末尾に MON-001 PR-B セクションを純追記**）
 
-### 既存資産の再利用指針
-- クレジット加算は PR-A の consume/refund と同じ SECURITY DEFINER + service_role-only RPC パターン（`grant_credit`）。
-- `createAdminClient()` / `createSessionClient()` 分離、`isUuid()` 検証。
-- `NEXT_PUBLIC_SITE_URL` + origin フォールバック（PR #42）。
-- RLS ポリシーなし + service_role のみ（`guest_tokens` パターン）を `stripe_events` に踏襲。
+- `lib/case-auth.ts`（新規・共通認可ヘルパー）
+- `app/api/cases/[id]/verdict/route.ts`（認可追加・条件付き更新・try/catch）
+- `app/api/cases/[id]/defense/route.ts`（resolveAuth を新ヘルパーへ移設・挙動不変）
+- `lib/claude.ts`（`requestVerdict` の出力検証・content ガード・スコアクランプ）
+- `tests/e2e/sec001-verdict-auth.spec.ts`（新規）
+- `docs/knowledge/design.md`（**末尾に SEC-001/003 セクション追記**）
+
+### 既存資産の再利用
+
+- `defense/route.ts:resolveAuth`（getUser + 参加者 + verifyGuestToken）を土台に共通化。
+- `createSessionClient` / `createAdminClient` / `isUuid` / `verifyGuestToken` / `resolveCaseAiKey`。

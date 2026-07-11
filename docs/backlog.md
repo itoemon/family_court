@@ -27,6 +27,41 @@
 
 ---
 
+### セキュリティ / コスト（SEC）
+
+由来: 2026-07-07 リードによるコードレビュー（ディレクトリ全体レビュー依頼）。実コードで裏取り済みの指摘のみ記載。
+
+#### [SEC-001] 判決ルート（`/api/cases/[id]/verdict`）に認証・認可が一切ない（優先度: 高）
+
+- **内容**: `app/api/cases/[id]/verdict/route.ts` の POST に `auth.getUser()`・参加者チェック・ゲストトークン検証がなく、ガードは `phase === "judging"` のみ。middleware は `/api` を除外しているため、ケース UUID を知る第三者（未ログイン含む）が判決生成を叩ける。結果として (1) Claude API 呼び出し（サービスキーモードなら運営が課金）、(2) 他人のケースへの判決書き込み・`phase` 強制進行が可能。さらに phase チェック → `update` 間に排他がなく、同時リクエストで判決の二重生成（＝二重課金）が起こり得る。他ルート（defense / argument / draft）は参加者・ゲスト認証済みで、ここだけ抜けている。
+- **修整の方向性**:
+  - 冒頭で `createSessionClient().auth.getUser()` を呼び、`user.id === plaintiff_id || defendant_id` を確認。ゲスト被告経路は他ルートと同じく `verifyGuestToken` を通す（既存の defense/route.ts の `resolveAuth` を共通ヘルパー化して流用するのが望ましい）。
+  - 二重生成対策として、判決確定を `update cases set phase='verdict' where id=? and phase='judging'` の条件付き更新にし、更新行数 0 なら 409 を返して Claude 呼び出し前に弾く（TOCTOU 解消）。
+  - 参加者チェックは「そもそも判決を誰がトリガーしてよいか」の仕様（両者合意後に自動 or どちらか一方が押下）を確認したうえで確定する。
+
+#### [SEC-002] AI コストルートにレート制限がなく、MON-001 クレジットをすり抜けられる（優先度: 高）
+
+- **内容**: レートリミット（`@upstash/ratelimit`）が入っているのは `/api/users/search` の 1 本のみ。Claude を呼ぶ `defense`(POST) / `defense/draft` / `argument` / `verdict` は全て無制限。MON-001 ではクレジットを**ケース作成時に 1 回だけ**消費するが、`defense` POST と `defense/draft` は 1 ケース内で回数無制限に呼べ、その都度サービスキーで Claude を叩く（弁護チャットにラウンド上限なし）。結果、実質「1 クレジット = 無制限 API コール」となり、API 料金を賄う MON-001 の目的が崩れる。
+- **修整の方向性**:
+  - ユーザー（およびゲスト）単位のレートリミットを AI 呼び出しルート全てに横展開。`users/search` の実装を `lib/ratelimit.ts` 的なヘルパーに切り出して共通化する。
+  - サービスキーモード（`uses_service_key = true`）のケースに対しては、弁護チャット/下書き生成の回数上限をケース単位で設ける（例: `defense_messages` 件数上限、または 1 ケースあたりの生成回数を DB で管理）。BYOK は当人負担なので緩めでよい。
+  - キー種別で閾値を変える設計にしておくと MON の課金プラン拡張と噛み合う。
+- **備考**: MON-001 の防御と一体。PR-A（クレジット基盤）の次工程として扱うのが自然。
+
+#### [SEC-003] `requestVerdict` の出力未検証とクラッシュ経路（優先度: 中）
+
+- **内容**: `lib/claude.ts`。(1) `message.content[0].type`（56 行目付近）は content が空配列だと実行時例外。verdict ルートは `requestVerdict` を try/catch しておらず未処理例外 → 500。(2) `JSON.parse` 結果を検証しておらず、`winner` の enum も `plaintiffScore/defendantScore` の 0–100 範囲もクランプせずそのまま DB 保存する。
+- **修整の方向性**:
+  - content 配列の空・非 text ブロックをガード。verdict ルート側で `requestVerdict` を try/catch し 500 を整形。
+  - パース後に `winner ∈ {plaintiff,defendant,draw}`・スコア 0–100 のクランプ/検証を通してから保存。異常時は draw フォールバック（既存の catch 分岐）へ寄せる。
+
+#### [SEC-004] Claude モデル ID のハードコード・散在（優先度: 低）
+
+- **内容**: `lib/claude.ts`（`claude-sonnet-4-6` / `claude-haiku-4-5-20251001`）や `defense.ts` 等にモデル ID が散在。集約されておらず、モデル更新時に取りこぼしやすい。ID が現行 API で有効かは本レビューでは未検証。
+- **修整の方向性**: `lib/models.ts` 等に用途別定数（判決=sonnet 系 / 補助=haiku 系）を集約し全箇所から参照。モデル ID の妥当性は別途 API で確認。
+
+---
+
 ### バグ修正（BUG）
 
 （現在、未対応の BUG はない。過去の修正は「対応済み」セクション参照。）
@@ -44,7 +79,7 @@
   - サブスクリプションプランも将来的に追加したい（月額でクレジット付与）
   - 目的: サービス側が負担する API 料金を賄う
 - **優先度**: 中（ユーザーが増えてきたタイミングで実装）
-- **備考**: Stripe 等の決済基盤が必要。BYOK 判定ロジックは既存の `validateApiKey` を流用できる。
+- **備考**: Stripe 等の決済基盤が必要。BYOK 判定ロジックは既存の `validateApiKey` を流用できる。**PR-A（クレジット基盤）は実装済みだが、SEC-002（AI ルートのレート制限・ケース単位の生成回数上限）を満たさないとクレジット消費をすり抜けられるため、両者は一体で対応すること。**
 
 ---
 

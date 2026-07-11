@@ -17,6 +17,19 @@ export async function validateApiKey(apiKey: string): Promise<boolean> {
 }
 
 export async function requestVerdict(c: Case, apiKey: string): Promise<Verdict> {
+  // テスト環境 (TEST_MODE=1) では実 Anthropic 呼び出しを避け決定的なモックを返す。
+  // 本番で誤設定されてもモックが暴発しないよう production では無視する（generateJudgeMessage と同方針）。
+  if (process.env.TEST_MODE === "1" && process.env.NODE_ENV !== "production") {
+    return {
+      winner: "draw",
+      summary: "[TEST] モック判決",
+      reasoning: "[TEST] モック判決理由",
+      plaintiffScore: 50,
+      defendantScore: 50,
+      decidedAt: new Date().toISOString(),
+    };
+  }
+
   const client = new Anthropic({ apiKey });
   const transcript = c.arguments
     .map((arg) => {
@@ -53,11 +66,13 @@ ${transcript}
     messages: [{ role: "user", content: prompt }],
   });
 
-  const text = message.content[0].type === "text" ? message.content[0].text : "";
+  // SEC-003: content が空配列 / 先頭が非 text ブロックでも例外にせずガードする。
+  const first = message.content[0];
+  const text = first && first.type === "text" ? first.text : "";
 
   let parsed: Omit<Verdict, "decidedAt">;
   try {
-    parsed = JSON.parse(text);
+    parsed = normalizeVerdict(JSON.parse(text));
   } catch {
     parsed = {
       winner: "draw",
@@ -71,6 +86,26 @@ ${transcript}
   return {
     ...parsed,
     decidedAt: new Date().toISOString(),
+  };
+}
+
+// SEC-003: モデル出力の検証・クランプ。winner は enum に矯正、スコアは 0–100 の整数に丸める。
+function normalizeVerdict(raw: unknown): Omit<Verdict, "decidedAt"> {
+  const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const winner: Verdict["winner"] =
+    o.winner === "plaintiff" || o.winner === "defendant" || o.winner === "draw"
+      ? o.winner
+      : "draw";
+  const clampScore = (n: unknown): number => {
+    const v = typeof n === "number" ? n : Number(n);
+    return Number.isFinite(v) ? Math.max(0, Math.min(100, Math.round(v))) : 50;
+  };
+  return {
+    winner,
+    summary: typeof o.summary === "string" ? o.summary : "",
+    reasoning: typeof o.reasoning === "string" ? o.reasoning : "",
+    plaintiffScore: clampScore(o.plaintiffScore),
+    defendantScore: clampScore(o.defendantScore),
   };
 }
 

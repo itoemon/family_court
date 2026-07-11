@@ -3270,3 +3270,30 @@ PR-A のクレジット基盤（`profiles.credits` / `consume_credit` / `refund_
 
 ### 制約・前提 / デプロイ
 `stripe` npm（サーバのみ import）。env は PR-A キー移設で `.env.local`/`.env.test`/Vercel Preview に設定済み、`STRIPE_WEBHOOK_SECRET` はテスト値を `.env.test`/`.env.local` に、`.env.test.example` にキー名追記。**本番/Preview の webhook endpoint 作成（デプロイ URL の `/api/stripe/webhook`）と `whsec_` の Vercel 登録はデプロイ運用作業（別途）**。本番 Stripe live キーは本番公開時。スコープ外: サブスク、購入履歴 UI、領収書/返金 UI、広告（MON-002）。
+
+## SEC-001/003 判決ルート堅牢化
+
+### 概要
+判決ルート `POST /api/cases/[id]/verdict` に**認可が一切なかった**（ガードは `phase==="judging"` のみ）。middleware は `/api` を通さないため、ケース UUID を知る第三者（未ログイン含む）が判決生成を叩け、(1) サービスキーモードなら運営が Claude 課金される、(2) 他人のケースへ verdict 書き込み・phase 強制進行、(3) phase チェック→update 間の排他なしで二重生成＝二重課金、が可能だった（SEC-001, HIGH）。加えて `requestVerdict` の出力未検証（content 空で例外・スコア未クランプ）でクラッシュ/不正保存経路があった（SEC-003, MEDIUM）。由来: 2026-07-07 全ディレクトリ・コードレビュー。
+
+### 認可（`lib/case-auth.ts` 新規）
+- `defense/route.ts` の `resolveAuth` を `resolveCaseAuth(req, id)` として切り出し、**defense・verdict の両方から使う**（defense は挙動不変で移設。bug004/bug005 で回帰確認）。
+- 認証ユーザーは `user.id ∈ {plaintiff_id, defendant_id}`、ゲスト被告は `verifyGuestToken`。非参加者 403 / 未認証 401 / ケース不在 404。失敗は `{ error, status }`、成功は `{ user, userId, c, userRole, admin }`（判別は `"error" in auth`）。
+- verdict の POST 呼び出し元は `CaseRoom.tsx`（参加者が閲覧中に自動発火）＝**参加者に限定するのが正しい**。
+
+### TOCTOU（二重生成防止）
+- 判決フェーズを**条件付き更新で原子的に奪取**する: `update cases set phase='verdict' where id=? and phase='judging' returning id`。更新行 0 なら 409（別リクエストが奪取済み）。**Claude 呼び出しより前**に行い、奪取できた 1 リクエストのみが生成へ進む。二重生成＝二重課金を排除。
+- 実装順: 認可 → phase 確認 → キー解決（read-only）→ **原子的奪取** → Claude 生成（try/catch）→ verdict 保存。生成/保存失敗時は `phase` を `judging` へ戻し（`revertPhase`）、フェーズだけ進んで判決が無い"詰み"を防ぐ（再生成可能に）。
+
+### 出力検証（`lib/claude.ts:requestVerdict`）
+- `message.content` の空配列 / 非 text ブロックをガード（`first && first.type === "text"`）。
+- パース結果を `normalizeVerdict` で検証: `winner` を `{plaintiff,defendant,draw}` に矯正、スコアを 0–100 の整数にクランプ、summary/reasoning を string 化。異常時は既存の draw フォールバックへ。
+- verdict ルートで `requestVerdict` を try/catch し未処理例外を 500 に整形。
+- **TEST_MODE=1（非 production）でモック応答**を返す（E2E で実 Claude を叩かない。generateJudgeMessage と同方針）。
+
+### テスト
+- `sec001-verdict-auth.spec.ts`: 未認証 401 / 非参加者 403 / 参加者 200・生成・phase=verdict / 連続 POST は 1 回のみ生成・2 回目 409（いずれも判決生成の有無を DB で検証）。
+- **副作用（テスト脆弱性の修正）**: TEST_MODE モックで判決生成が高速化したため、参加者ブラウザの CaseRoom が judging 到達直後に verdict を自動発火するようになった。bug005 の phase 再チェックを `judging|verdict` 許容へ緩和（閉廷 greeting/AI 閉廷宣告は judging 遷移時＝verdict 発火より前に挿入済みで順序不変）。
+
+### スコープ外
+- SEC-002（AI ルートのレート制限・ケース単位の生成回数上限）は別 PR。SEC-004（モデル ID 集約）は任意。
