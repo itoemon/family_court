@@ -12,6 +12,9 @@ test.beforeEach(() => {
   const required = ['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SECRET_KEY'];
   const missing = required.filter((k) => !process.env[k]);
   if (missing.length > 0) test.skip(true, `必須環境変数が未設定: ${missing.join(', ')}`);
+  // この spec は /verdict を叩く。TEST_MODE=1 でないと requestVerdict が実 Anthropic を
+  // 呼び得る（コスト/外部依存で不安定化）。bug005 spec と同様に TEST_MODE 必須で skip する。
+  if (process.env.TEST_MODE !== '1') test.skip(true, 'TEST_MODE=1 が未設定（実 Anthropic 呼び出し回避のため skip）');
 });
 
 function createAdminClient() {
@@ -47,10 +50,11 @@ async function createJudgingCase(admin: Admin, plaintiffId: string, defendantId:
     .single();
   if (error || !data) throw new Error(`judging ケース作成に失敗: ${error?.message}`);
   const caseId = data.id as string;
-  await admin.from('arguments').insert([
+  const { error: seedError } = await admin.from('arguments').insert([
     { case_id: caseId, role: 'plaintiff', phase: 'argument', round: 1, content: '原告の主張', is_greeting: false },
     { case_id: caseId, role: 'defendant', phase: 'argument', round: 1, content: '被告の主張', is_greeting: false },
   ]);
+  if (seedError) throw new Error(`arguments seed に失敗: ${seedError.message}`);
   return caseId;
 }
 
