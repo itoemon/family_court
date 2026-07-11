@@ -154,3 +154,30 @@ test('SEC-001: 同一ケースへの連続 verdict POST は 1 回のみ生成さ
     await cleanup(admin, caseId, [plaintiff.id, defendant.id]);
   }
 });
+
+// ── 5. 二重生成防止（TOCTOU・並行）: 同時 2 リクエストでも片方だけが奪取し判決は 1 つ ──
+// 逐次版（テスト4）は 2 回目が早期ガード phase!=="judging" で 409 になり原子的条件付き更新の
+// 並行経路を踏まない。ここでは Promise.all で同時発射し、条件付き更新（judging→verdict）の
+// 競合を実際に踏ませて「片方 200・片方 409・判決 1 つ」を実証する（SEC-001 監査 LOW-002）。
+test('SEC-001: 同時 2 リクエストの verdict POST は片方のみ生成され他方は 409', async ({ browser }) => {
+  const admin = createAdminClient();
+  const plaintiff = await createEphemeralUser(admin, 'p5');
+  const defendant = await createEphemeralUser(admin, 'd5');
+  const caseId = await createJudgingCase(admin, plaintiff.id, defendant.id);
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  try {
+    await loginAs(page, plaintiff.email, plaintiff.password);
+    const [a, b] = await Promise.all([
+      page.request.post(`/api/cases/${caseId}/verdict`),
+      page.request.post(`/api/cases/${caseId}/verdict`),
+    ]);
+    const statuses = [a.status(), b.status()].sort();
+    expect(statuses).toEqual([200, 409]); // 片方だけが奪取
+    expect(await countVerdicts(admin, caseId)).toBe(1); // 二重生成なし
+    expect(await getPhase(admin, caseId)).toBe('verdict');
+  } finally {
+    await ctx.close();
+    await cleanup(admin, caseId, [plaintiff.id, defendant.id]);
+  }
+});

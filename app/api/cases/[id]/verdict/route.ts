@@ -45,7 +45,15 @@ export async function POST(
   // 以降で失敗したらフェーズを judging へ戻し、再生成を可能にする（フェーズだけ進んで
   // 判決が無い"詰み"状態を防ぐ）。次リクエストが再度奪取できる。
   async function revertPhase() {
-    await admin.from("cases").update({ phase: "judging", updated_at: new Date().toISOString() }).eq("id", id);
+    // 自分が奪取した verdict フェーズだけを judging へ戻す（`.eq("phase","verdict")` で
+    // 想定外フェーズの上書きを防ぐ）。revert の DB 書き込み失敗は判決なしで verdict に
+    // 詰む信頼性エッジなので、握り潰さずログに残して検知可能にする（SEC-001 監査 LOW-001）。
+    const { error } = await admin
+      .from("cases")
+      .update({ phase: "judging", updated_at: new Date().toISOString() })
+      .eq("id", id)
+      .eq("phase", "verdict");
+    if (error) console.error("[verdict] revertPhase failed:", error);
   }
 
   // 原告 profile を取得し、ケースの課金モードに応じて AI 実行キーを解決。
