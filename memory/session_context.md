@@ -12,6 +12,34 @@ metadata:
 
 ---
 
+## 最終更新: 2026-07-12（SEC-001/003 PR #63 マージ + パイプライン不調=Stream closed の根治）
+
+### 現在のブランチ・PR 状態
+- 現ブランチ: `main`（`git reset --hard origin/main` で `69c39cb` に同期済み・クリーン）
+- オープン PR: なし。**PR #63（SEC-001/003）マージ済み**が最新
+- マージ時の注意（既知の落とし穴）: `gh pr merge --squash --delete-branch` はローカルを main に切り替えるが squash とローカル feature が分岐して fast-forward 失敗する。**マージ後は `git fetch && git reset --hard origin/main` でローカル同期**（作業ツリークリーン前提）
+
+### PR #63: SEC-001/003（判決ルートの認可・二重生成防止・出力検証）
+- **SEC-001**: `lib/case-auth.ts` に `resolveCaseAuth` 新設（認証ユーザー=participant 検証／ゲスト被告=verifyGuestToken）。verdict/defense ルートで共通化。Claude 呼び出しより必ず前。**TOCTOU 対策**で `phase='judging'→'verdict'` 条件付き原子更新でフェーズ奪取（同時/連続の2回目は409）→二重生成=二重課金を生成前に阻止。失敗時 `revertPhase`（`.eq("phase","verdict")` 条件＋error ログ）で judging へ戻し詰み回避
+- **SEC-003**: `requestVerdict` の content 空配列ガード＋`normalizeVerdict`（winner enum 矯正・スコア0-100クランプ）＋ルート側 try/catch。`TEST_MODE=1 && NODE_ENV!=="production"` でモック
+- **検証**: sec001 spec **5/5**（未認証401/第三者403/参加者200/連続409/**並行200+409・判決1つ**）＋リグレッション17/1skip、tsc/eslint緑
+- **独立監査（オーディ）通過** HIGH0/MED0/LOW2 → LOW2 消化（revertPhase 堅牢化＋並行TOCTOUテスト）。**コパ REQUEST CHANGES 2件（spec の TEST_MODE 必須ガード＋seed error 検査）消化**
+- **残る SEC**: **SEC-002（AIルートのレート制限・MON-001と一体・優先度高）**／SEC-004（モデルID集約・低）。backlog の SEC-001/003 は「対応済み」へ要移動（未実施）
+
+### ★パイプライン不調（Stream closed）の根治 — 恒久知識（最重要）
+- **症状**: ツール実行が間欠的に `Tool permission request failed: Error: Stream closed`。**読み取り系は通り、Edit/Write/Bash/AskUserQuestion が落ちる**。連打・並列・長streaming時に多発、自然復帰
+- **根本原因（確定）**: マシン資源でもMCPでもなく、**claude-chat（Agent SDK 駆動の自作Webアプリ `~/Documents/claude-chat`）の許可経路**。`decide()` で読み取り系は canUseTool を経ず自動許可、Write/Edit/Bash は「中身が自動許可でも」**canUseTool の stdio 往復（SDK↔server.js）が毎回発生**。この往復が壊れて Stream closed=「読めるが書けない」の正体。SDK は canUseTool を直列化してる(maxInflight=1)ので並列競合ではない
+- **修正（claude-chat 側で実施・本番昇格済み）**: `server.js` の query() が `permissionMode:"default"` ハードコードで bypass 選択時も往復してた → **bypass 時は `permissionMode:"bypassPermissions"` を実際にSDKへ渡す**(server.js:462)＝SDK内部で自動許可し**canUseTool 往復ゼロ**（実測 calls=0）。＋SDK 0.3.201→**0.3.207**＋canUseTool を try/catch 防御
+- **副作用**: bypass では AskUserQuestion カードが出ない（Claude 自己判断で進む）。**リードが方針を聞くときは AskUserQuestion でなく普通のテキストで**（往復が要らず確実）
+- **運用**: claude-chat は **blue(8801)/green(8802) の blue-green**。`~/Documents/claude-chat/{promote,rollback}.sh`（proxy 8787=本番/8788=次期、curl のみ・sudo不要・ロールバック即時）。2026-07-12 に green=修正版へ **promote 済み**（本番=green 8802・SDK0.3.207・version 2026-07-12.4）。旧 blue はロールバック用に生存
+- **default(承認必須)モードは往復が仕様上不可避=再発余地あり**が、家裁パイプラインは全自動(bypass)前提なので実害なし
+
+### 環境メモ（このセッションで判明）
+- **GRUB 既定が Windows だった**（`/etc/default/grub` の `GRUB_DEFAULT=4`=Windows Boot Manager）。`GRUB_DEFAULT=0`（Ubuntu）へ変更＋`update-grub` で `sudo reboot`→Ubuntu に。Windows を1回だけは `sudo grub-reboot 4 && sudo reboot`。UEFI 機
+- sudo が要るコマンドはリードが実行不可（非対話）→ **tmux セッションに send-keys で流してダイチがパス入力**（`igiari` セッション使用）
+
+---
+
 ## 最終更新: 2026-07-05（MON-001 PR-A #61 + PR-B Stripe購入 #62 マージ。これまでに PR #41-#62）
 
 ### 現在のブランチ・PR 状態

@@ -31,14 +31,6 @@
 
 由来: 2026-07-07 リードによるコードレビュー（ディレクトリ全体レビュー依頼）。実コードで裏取り済みの指摘のみ記載。
 
-#### [SEC-001] 判決ルート（`/api/cases/[id]/verdict`）に認証・認可が一切ない（優先度: 高）
-
-- **内容**: `app/api/cases/[id]/verdict/route.ts` の POST に `auth.getUser()`・参加者チェック・ゲストトークン検証がなく、ガードは `phase === "judging"` のみ。middleware は `/api` を除外しているため、ケース UUID を知る第三者（未ログイン含む）が判決生成を叩ける。結果として (1) Claude API 呼び出し（サービスキーモードなら運営が課金）、(2) 他人のケースへの判決書き込み・`phase` 強制進行が可能。さらに phase チェック → `update` 間に排他がなく、同時リクエストで判決の二重生成（＝二重課金）が起こり得る。他ルート（defense / argument / draft）は参加者・ゲスト認証済みで、ここだけ抜けている。
-- **修整の方向性**:
-  - 冒頭で `createSessionClient().auth.getUser()` を呼び、`user.id === plaintiff_id || defendant_id` を確認。ゲスト被告経路は他ルートと同じく `verifyGuestToken` を通す（既存の defense/route.ts の `resolveAuth` を共通ヘルパー化して流用するのが望ましい）。
-  - 二重生成対策として、判決確定を `update cases set phase='verdict' where id=? and phase='judging'` の条件付き更新にし、更新行数 0 なら 409 を返して Claude 呼び出し前に弾く（TOCTOU 解消）。
-  - 参加者チェックは「そもそも判決を誰がトリガーしてよいか」の仕様（両者合意後に自動 or どちらか一方が押下）を確認したうえで確定する。
-
 #### [SEC-002] AI コストルートにレート制限がなく、MON-001 クレジットをすり抜けられる（優先度: 高）
 
 - **内容**: レートリミット（`@upstash/ratelimit`）が入っているのは `/api/users/search` の 1 本のみ。Claude を呼ぶ `defense`(POST) / `defense/draft` / `argument` / `verdict` は全て無制限。MON-001 ではクレジットを**ケース作成時に 1 回だけ**消費するが、`defense` POST と `defense/draft` は 1 ケース内で回数無制限に呼べ、その都度サービスキーで Claude を叩く（弁護チャットにラウンド上限なし）。結果、実質「1 クレジット = 無制限 API コール」となり、API 料金を賄う MON-001 の目的が崩れる。
@@ -47,13 +39,6 @@
   - サービスキーモード（`uses_service_key = true`）のケースに対しては、弁護チャット/下書き生成の回数上限をケース単位で設ける（例: `defense_messages` 件数上限、または 1 ケースあたりの生成回数を DB で管理）。BYOK は当人負担なので緩めでよい。
   - キー種別で閾値を変える設計にしておくと MON の課金プラン拡張と噛み合う。
 - **備考**: MON-001 の防御と一体。PR-A（クレジット基盤）の次工程として扱うのが自然。
-
-#### [SEC-003] `requestVerdict` の出力未検証とクラッシュ経路（優先度: 中）
-
-- **内容**: `lib/claude.ts`。(1) `message.content[0].type`（56 行目付近）は content が空配列だと実行時例外。verdict ルートは `requestVerdict` を try/catch しておらず未処理例外 → 500。(2) `JSON.parse` 結果を検証しておらず、`winner` の enum も `plaintiffScore/defendantScore` の 0–100 範囲もクランプせずそのまま DB 保存する。
-- **修整の方向性**:
-  - content 配列の空・非 text ブロックをガード。verdict ルート側で `requestVerdict` を try/catch し 500 を整形。
-  - パース後に `winner ∈ {plaintiff,defendant,draw}`・スコア 0–100 のクランプ/検証を通してから保存。異常時は draw フォールバック（既存の catch 分岐）へ寄せる。
 
 #### [SEC-004] Claude モデル ID のハードコード・散在（優先度: 低）
 
@@ -161,4 +146,5 @@
 | PR #53 (OPS-002) | `schema.sql` と二重定義になる 3 migration（`20260524000000` judge_messages policy / `20260526000001` profiles 列 + storage policy / `20260612164035` cases・profiles・arguments の FEAT-006 列）を冪等化し（`DROP POLICY IF EXISTS` 前置 / `ADD COLUMN IF NOT EXISTS`）、「schema.sql → migrations 全実行」が 42710・duplicate column で停止する問題を解消。approach B（冪等化）採用。全オブジェクト適用済みの test DB（fresh setup 最悪ケース等価）への再適用でエラーゼロ・policy 正常再作成・cases データ無傷を実証。`scripts/setup-test-db.sh` 化の障壁を除去、由来: 2026-06-10 OPS-001 Part 2 セットアップ中に発見） |
 | PR #55 (OPS) | `scripts/setup-test-db.sh` でテスト DB セットアップを自動化（OPS-002 の冪等化を前提に、Supabase Management API 経由で `schema.sql` → `migrations/*.sql` を昇順一括適用）。本番 ref ブロック + 既初期化 preflight + `--dry-run` の安全装置。コパ LOW 4 件（`ls`→nullglob / `curl -sS`+die / `--help` shebang 除外 / docs に前提コマンド明記）を PR 内消化、由来: e2e-test-db.md 残課題「マイグレーション適用の半自動化」 |
 | PR #56 (LOW-001-BUG005) | api_key SET 経路の closing 宣告を E2E で動的検証。`lib/judge.ts:generateJudgeMessage` に `TEST_MODE=1` のモック分岐を追加（実 Anthropic 呼び出し回避、本番は通常経路）、spec に BUG-005-4 を追加（専用 plaintiff を admin で作成し `api_key_encrypted` を SET、AI(モック) 閉廷宣告が `judge_messages` へ 1 行 INSERT され greeting → AI 順序が守られることを検証、後始末で case→user 削除）。bug005 spec 4/4 通過・cleanup 残骸 0・e2e_user_a 汚染なしを確認、由来: 2026-06-15 BUG-005 オーディ 2 巡目 LOW-003 |
+| PR #63 (SEC-001/003) | 判決ルート `/api/cases/[id]/verdict` の認可欠落と二重生成・出力未検証を修正。`lib/case-auth.ts:resolveCaseAuth`（認証ユーザー=participant 検証／ゲスト被告=`verifyGuestToken`）を新設し verdict/defense で共通化、Claude 呼び出し前に必ず認可。**TOCTOU 対策**で `phase='judging'→'verdict'` の条件付き原子更新でフェーズ奪取（同時/連続の2回目は409）→二重生成=二重課金を生成前に阻止、失敗時 `revertPhase`（`.eq("phase","verdict")`＋error ログ）で詰み回避。SEC-003 は `requestVerdict` の content 空配列ガード＋`normalizeVerdict`（winner enum 矯正・スコア0-100クランプ）＋ルート try/catch。sec001 spec 5/5（未認証401/第三者403/参加者200/連続409/並行200+409・判決1つ）、独立監査 HIGH0/MED0/LOW2 消化、コパ REQUEST CHANGES 2件消化。由来: backlog SEC-001/SEC-003 |
 | PR #57 (FEAT-004) | 法案 Hub（公開・インポート）。`laws.is_public` トグル + `laws_select_public` RLS（既存ポリシー無変更で OR 評価）、`/api/laws/[id]/visibility`（オーナーのみ）・`/api/laws/public`（Hub 一覧・`owner_id` 非返却・`PublicLawListItem` 型遮断）・`/api/laws/[id]/import`（純クローン・元法律不変）、`/laws/hub` ページ（SSR + debounce 検索 + AbortController）・公開トグル UI。**付随で FEAT-003 由来の laws RLS 無限再帰（42P17）を恒久修正**（`private.is_law_member`/`is_law_owner` の SECURITY DEFINER 関数化で再帰遮断、PUBLIC EXECUTE は REVOKE、`NOTIFY pgrst` でキャッシュ再読込）。アーキ→ビルド→テスタ→オーディのフルパイプライン、テスタ通過・オーディ HIGH0/MEDIUM1/LOW2 を PR 内消化、コパ 5 件消化。feat004 spec 3/3 + laws spec 4/4 通過。本番 DB へ 2 migration 適用済み（is_public 列・RPC 封鎖・PostgREST 反映を検証）、由来: backlog FEAT-004 |
