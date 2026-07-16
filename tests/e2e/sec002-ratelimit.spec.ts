@@ -115,7 +115,12 @@ function postDefense(page: import('@playwright/test').Page, caseId: string, cont
 }
 
 // ── 1. 第 1 層: 20/分 を超えると 429（Too Many Requests）──────────────────────
+// 第 1 層は Upstash が実効な環境でのみ検証できる。テスト env は UPSTASH_* が未設定
+// （＝設計上フォールバックでスキップ素通し）のため、その場合は本テストを skip する。
+// money を守る第 2 層は DB（consume_service_ai_call）で担保され Upstash に依存しない（Test 2-4 で検証）。
 test('SEC-002: AI ルートは 20 req/分/識別子を超えると 429（第 1 層レート制限）', async ({ browser }) => {
+  const upstashConfigured = !!process.env.UPSTASH_REDIS_REST_URL && !!process.env.UPSTASH_REDIS_REST_TOKEN;
+  test.skip(!upstashConfigured, 'UPSTASH_* 未設定（第 1 層はフォールバックで無効）のため skip');
   const admin = createAdminClient();
   const plaintiff = await createEphemeralUser(admin, 'rl_p');
   const defendant = await createEphemeralUser(admin, 'rl_d');
