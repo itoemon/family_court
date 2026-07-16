@@ -38,6 +38,15 @@ const upstashConfigured =
   !!process.env.UPSTASH_REDIS_REST_URL &&
   !!process.env.UPSTASH_REDIS_REST_TOKEN;
 
+// SEC-002 監査 MEDIUM-001: 本番で Upstash env を入れ忘れると第 1 層が黙って無効化される
+// （スタブが常に success:true を返す）ため、運用者が検知できるよう production では警告する。
+// 開発／テストは第 1 層無効が想定内（フォールバック）なので抑制する。
+if (!upstashConfigured && process.env.NODE_ENV === "production") {
+  console.warn(
+    "[ratelimit] UPSTASH_REDIS_REST_URL/TOKEN が未設定です。第1層のレート制限が無効化されています（濫用抑止が効きません）。本番では必ず設定してください。"
+  );
+}
+
 function createLimiter(config: RateLimitConfig): RateLimiter {
   if (!upstashConfigured) {
     return {

@@ -152,6 +152,7 @@ export async function POST(
     (nextPhase === "argument" || (authenticatedUserId !== null && !!insertedArg?.id));
   let serviceCapReached = false;
   let serviceConsumed = false;
+  let aiActuallyCalled = false; // 実際に Claude を呼んだか（SEC-002 監査 LOW-001）。
   if (usesServiceKey && willAttemptAi) {
     const { data: calls, error: consumeError } = await admin.rpc("consume_service_ai_call", {
       p_case_id: id,
@@ -193,6 +194,7 @@ export async function POST(
         } else if (c.defendant_guest_name) {
           defendantName = c.defendant_guest_name;
         }
+        aiActuallyCalled = true; // 実 Claude 呼び出し（consume を実消費に対応させる・LOW-001）。
         const content = await generateJudgeMessage({
           trigger: "turn",
           topic: c.topic,
@@ -236,6 +238,7 @@ export async function POST(
             .order("created_at", { ascending: false })
             .limit(15);
           if (pastArgs && pastArgs.length > 0) {
+            aiActuallyCalled = true; // 実 Claude 呼び出し（LOW-001）。
             const warning = await checkContradiction(
               {
                 currentContent: body.content.trim(),
@@ -258,6 +261,13 @@ export async function POST(
     } catch (err) {
       console.error("[contradiction] check failed:", err);
     }
+  }
+
+  // SEC-002 監査 LOW-001: consume したが実際には Claude を 1 回も呼ばなかった経路
+  // （最終ターンで judge を skip、かつ過去ケース無し等で矛盾チェックが実呼び出しに至らない）
+  // では、過大カウントでユーザーが購入回数を不当に失わないよう refund する。
+  if (serviceConsumed && !aiActuallyCalled) {
+    await refundServiceCall();
   }
 
   const caseData = await buildCaseResponse(admin, id, authenticatedUserId ?? undefined);

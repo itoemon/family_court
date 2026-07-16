@@ -3450,6 +3450,8 @@ const rateKey = auth.userId ?? `guest:${id}`;
 3. 判事メッセージ生成の**直前**に、`uses_service_key === true` なら `consume_service_ai_call`。**`NULL`（上限到達）なら 429 にせず、AI 生成のみ skip**（ターン進行は成功のまま返す）。consume 成功なら生成し、生成失敗時は refund。矛盾チェックも同じ consume の配下で扱い、上限到達時は同様に skip する（1 ターンあたり consume は 1 回に束ねる）。
 
 - 判断根拠: defense/draft は「AI 生成そのものが目的」なので上限到達＝429 で妥当だが、argument の AI は付随のため上限到達で 429 にすると**正当なターン進行まで壊す**。両者の性質差に応じて分岐を変えるのが money 抑止と正当操作の両立になる。
+- **会計上の注記（SEC-002 監査 LOW-002）**: argument は 1 ターン = 1 consume だが、その 1 消費配下で判事メッセージ（`generateJudgeMessage`）と矛盾チェック（`checkContradiction`）の**最大 2 回の Claude 呼び出し**が走りうる。したがって cap=30 に対し argument 経路の実 Claude 呼び出しは最大約 2 倍になる。ターン制（相手の協力＋ `max_rounds`＋延長で有界）・第 1 層 20/分・安価な haiku で総量は抑制されるため money 破綻には至らない、という前提での意図的トレードオフである。厳密化するなら judge と contradiction を別 consume にする。
+- **過大カウント防止（SEC-002 監査 LOW-001）**: 逆に、consume したが実際には Claude を 1 回も呼ばなかった経路（最終ターンで judge を skip、かつ過去ケース無しで矛盾チェックが実呼び出しに至らない等）では、`aiActuallyCalled` フラグで検知し `refund_service_ai_call` で戻す。過大カウントでユーザーが購入回数を不当に失わないようにする。
 
 #### `verdict`（第 1 層のみ・第 2 層は対象外＝確定判断 4）
 
