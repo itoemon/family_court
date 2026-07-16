@@ -4,6 +4,7 @@ import { resolveCaseAiKey } from "@/lib/case-ai-key";
 import { resolveCaseAuth } from "@/lib/case-auth";
 import { Case } from "@/lib/types";
 import { isUuid } from "@/lib/text-utils";
+import { aiRouteLimiter, rateLimitResponse } from "@/lib/ratelimit";
 
 export async function POST(
   req: NextRequest,
@@ -19,7 +20,15 @@ export async function POST(
   if ("error" in auth) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
-  const { c, admin } = auth;
+  const { userId, c, admin } = auth;
+
+  // SEC-002 第 1 層: 認可の直後・TOCTOU 奪取より前にレート制限を適用し、フラッドを早期に弾く。
+  // verdict は SEC-001 の原子的フェーズ奪取で 1 ケース 1 回に確定済みのため第 2 層は対象外。
+  const rateKey = userId ?? `guest:${id}`;
+  const rl = await aiRouteLimiter.limit(rateKey);
+  if (!rl.success) {
+    return rateLimitResponse(rl);
+  }
 
   if (c.phase !== "judging") {
     return NextResponse.json({ error: "まだ判決を下せるフェーズではありません" }, { status: 409 });

@@ -17,6 +17,13 @@ export async function generateDefenseResponse(
   params: DefenseParams,
   apiKey: string
 ): Promise<string> {
+  // テスト環境 (TEST_MODE=1) では実 Anthropic 呼び出しを避け決定的なモックを返す。
+  // SEC-002 の E2E が 30 回超の生成を実 API なしで高速検証できるようにするための分岐。
+  // 本番で誤設定されてもモックが暴発しないよう production では無視する（requestVerdict と同方針）。
+  if (process.env.TEST_MODE === "1" && process.env.NODE_ENV !== "production") {
+    return "[TEST] モック弁護応答";
+  }
+
   const { topic, dialogHistory, defenseHistory, userRole, customInstruction } = params;
   const client = new Anthropic({ apiKey });
   const userRoleLabel = getUserRoleLabel(userRole);
@@ -64,6 +71,12 @@ export async function generateDraft(
   params: DefenseParams,
   apiKey: string
 ): Promise<string> {
+  // テスト環境 (TEST_MODE=1) では実 Anthropic 呼び出しを避け決定的なモックを返す
+  // （generateDefenseResponse と同方針・SEC-002 E2E 用）。
+  if (process.env.TEST_MODE === "1" && process.env.NODE_ENV !== "production") {
+    return "[TEST] モック回答案";
+  }
+
   const { topic, dialogHistory, defenseHistory, userRole, customInstruction } = params;
   const client = new Anthropic({ apiKey });
   const userRoleLabel = getUserRoleLabel(userRole);

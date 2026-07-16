@@ -4,6 +4,8 @@ import { verifyGuestToken } from "@/lib/guest-token";
 import { resolveCaseAiKey } from "@/lib/case-ai-key";
 import { generateDraft } from "@/lib/defense";
 import { isUuid } from "@/lib/text-utils";
+import { aiRouteLimiter, rateLimitResponse, serviceAiCapResponse } from "@/lib/ratelimit";
+import { SERVICE_AI_CALL_CAP } from "@/lib/limits";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -62,6 +64,14 @@ export async function POST(
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 });
   }
 
+  // SEC-002 第 1 層: 身元確定後・キー解決前に横断レート制限を適用する。
+  // 識別子は認証ユーザーは user.id、ゲスト被告は case 単位の guest:{caseId}（確定判断 3）。
+  const rateKey = userId ?? `guest:${id}`;
+  const rl = await aiRouteLimiter.limit(rateKey);
+  if (!rl.success) {
+    return rateLimitResponse(rl);
+  }
+
   const { data: plaintiffProfile } = await admin
     .from("profiles")
     .select("api_key_encrypted, defense_custom_instruction")
@@ -111,6 +121,24 @@ export async function POST(
     content: r.content as string,
   }));
 
+  // SEC-002 第 2 層（money-critical）: サービスキーケースのみ、Claude 呼び出しの直前に
+  // 生成回数を原子的に消費する。NULL（上限到達）なら Claude を呼ばず 429 で弾く。draft は
+  // defense_messages に保存しないため service_ai_calls が唯一のカウンタとなる。BYOK はスキップ。
+  const usesServiceKey = c.uses_service_key === true;
+  if (usesServiceKey) {
+    const { data: calls, error: consumeError } = await admin.rpc("consume_service_ai_call", {
+      p_case_id: id,
+      p_cap: SERVICE_AI_CALL_CAP,
+    });
+    if (consumeError) {
+      console.error("[defense/draft] consume_service_ai_call failed:", consumeError);
+      return NextResponse.json({ error: "AI生成回数の確認に失敗しました" }, { status: 500 });
+    }
+    if (calls === null) {
+      return serviceAiCapResponse();
+    }
+  }
+
   let draft: string;
   try {
     draft = await generateDraft(
@@ -125,6 +153,11 @@ export async function POST(
     );
   } catch (err) {
     console.error("[defense/draft] AI generation failed:", err);
+    // consume 済みで生成が失敗したらカウントを 1 戻す（確定判断 2・refund）。
+    if (usesServiceKey) {
+      const { error: refundError } = await admin.rpc("refund_service_ai_call", { p_case_id: id });
+      if (refundError) console.error("[defense/draft] refund_service_ai_call failed:", refundError);
+    }
     return NextResponse.json({ error: "回答案の生成に失敗しました" }, { status: 500 });
   }
 
