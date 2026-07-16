@@ -3297,3 +3297,215 @@ PR-A のクレジット基盤（`profiles.credits` / `consume_credit` / `refund_
 
 ### スコープ外
 - SEC-002（AI ルートのレート制限・ケース単位の生成回数上限）は別 PR。SEC-004（モデル ID 集約）は任意。
+
+## SEC-002 AI ルートのレート制限とケース単位生成上限
+
+### 概要（変更の目的・背景）
+
+MON-001 はクレジットを**ケース作成時に 1 回だけ**消費する（`consume_credit`）。しかしケース内の AI 実行（弁護チャット `defense` POST・下書き `defense/draft`・意見 `argument` の判事メッセージ）は**回数無制限**である。したがって `uses_service_key = true` のケースでは、**1 クレジット = サービスキーによる無制限 Claude 呼び出し**となり、API 料金を賄う MON-001 の目的が崩れる（SEC-002, HIGH）。加えてレート制限は `app/api/users/search/route.ts` の 1 本に直書きされているだけで、AI ルートは濫用に対して無防備である。
+
+本設計は二層の防御を導入する。**第 1 層**は全 AI ルート横断のレート制限（20 リクエスト/分/識別子）による濫用抑止であり、**第 2 層**は `uses_service_key = true` のケースに限ったケース単位の生成回数上限（30 回/ケース）による課金上限である。第 2 層は money-critical であり、`consume_credit`・SEC-001 TOCTOU と同一思想の**原子的 RPC** で、並行・連続でも cap を超えないことを保証する。BYOK（`uses_service_key = false`）は当人負担であるため第 2 層の上限を課さず第 1 層のみを適用する。
+
+依存: MON-001 PR-A（`uses_service_key` / `resolveCaseAiKey` / `consume_credit` の原子的 RPC + EXECUTE を service_role 限定するパターン）、SEC-001（`resolveCaseAuth` の userId/isGuest 判定）、OPS-002（migration 冪等化）、FEAT-004（SECURITY DEFINER + RPC 非露出の定石）。
+
+---
+
+### データモデル（DB スキーマ・RPC）
+
+新規 migration `supabase/migrations/<timestamp>_sec002_service_ai_calls.sql` を **OPS-002 方針で冪等**に作成する（`ADD COLUMN IF NOT EXISTS` / `CREATE OR REPLACE FUNCTION`）。本番スナップショット `supabase/schema.sql` にも列・関数・GRANT/REVOKE を反映する（MON-001 と同じ運用）。
+
+#### 1. `cases.service_ai_calls` — サービスキー AI 生成の累積回数
+
+```sql
+alter table public.cases
+  add column if not exists service_ai_calls integer not null default 0;
+```
+
+- そのケースでサービスキーを用いて実行した AI 生成の累積回数。既存ケースは `0` でバックフィルされリグレッションしない。カウント対象は第 2 層の適用ルート（後述）に限る。
+
+#### 2. `consume_service_ai_call(uuid, int)` — 原子的インクリメント＋上限判定
+
+```sql
+create or replace function public.consume_service_ai_call(p_case_id uuid, p_cap integer)
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_calls integer;
+begin
+  update public.cases
+     set service_ai_calls = service_ai_calls + 1
+   where id = p_case_id
+     and uses_service_key = true
+     and service_ai_calls < p_cap
+  returning service_ai_calls into v_calls;
+  return v_calls;   -- 更新行 0（＝上限到達 or 非サービスキー）なら NULL
+end;
+$$;
+
+revoke execute on function public.consume_service_ai_call(uuid, integer) from public, anon, authenticated;
+grant  execute on function public.consume_service_ai_call(uuid, integer) to service_role;
+```
+
+- **原子性**: `UPDATE ... WHERE service_ai_calls < p_cap RETURNING` により、同時実行でも 1 行に対するインクリメントは直列化され、並行・連続でも `service_ai_calls` が `p_cap` を超えない（`consume_credit` の `WHERE credits > 0` と同思想）。TOCTOU（読取→判定→書込の隙）が存在しない。
+- **返り値の意味**: 成功時はインクリメント後の回数（整数）。**更新行 0 のとき `NULL`**（`RETURNING` が行を返さない）。`NULL` は「上限到達」または「非サービスキー」を表すが、呼び出し側は `uses_service_key = true` を確認した上でのみ本 RPC を呼ぶため、**`NULL` = 上限到達**と一意に解釈できる。`WHERE uses_service_key = true` を条件に含めるのは、万一 BYOK ケースで誤って呼ばれてもカウントを増やさない安全弁である。
+- `SECURITY DEFINER` + `set search_path = ''`（全参照をスキーマ修飾）。配置は `public`（admin クライアントの `.rpc()` から到達するため。`private` では PostgREST が露出せず到達不能）。**EXECUTE を `anon`/`authenticated`/`PUBLIC` から REVOKE し `service_role` にのみ GRANT** し、一般認証ユーザーが `/rest/v1/rpc/consume_service_ai_call` を直叩きできないようにする（改ざん防止・MON-001 と同水準）。
+
+#### 3. `refund_service_ai_call(uuid)` — 生成失敗時の原子的デクリメント（補償）
+
+```sql
+create or replace function public.refund_service_ai_call(p_case_id uuid)
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_calls integer;
+begin
+  update public.cases
+     set service_ai_calls = service_ai_calls - 1
+   where id = p_case_id
+     and service_ai_calls > 0
+  returning service_ai_calls into v_calls;
+  return v_calls;
+end;
+$$;
+
+revoke execute on function public.refund_service_ai_call(uuid) from public, anon, authenticated;
+grant  execute on function public.refund_service_ai_call(uuid) to service_role;
+```
+
+- `refund_credit` と同思想。`WHERE service_ai_calls > 0` でカウントが負に落ちないよう保護し、read-then-write の競合を避けるため SQL 式更新を service_role 専用 RPC に閉じる。
+
+#### 4. schema.sql / PostgREST
+
+- `supabase/schema.sql` に `cases.service_ai_calls` 列・両 RPC・GRANT/REVOKE を反映する（スナップショットの正直さ）。migration が真実（OPS-002）。
+- migration 末尾で `notify pgrst, 'reload schema';` を発行する（新カラムの「column does not exist」対策・belt-and-suspenders）。
+
+---
+
+### 定数集約（`lib/limits.ts`・新設）
+
+価格（`lib/credit-packages.ts`）と同様、閾値は 1 ファイルに集約し「コード変更のみで調整可能」にする。
+
+- `AI_RATE_LIMIT = { requests: 20, window: "1 m" }`（第 1 層・全 AI ルート横断）。
+- `SEARCH_RATE_LIMIT = { requests: 30, window: "1 m" }`（`users/search` の既存挙動を不変で保持）。
+- `SERVICE_AI_CALL_CAP = 30`（第 2 層・サービスキーケースあたりの累積 AI 生成上限）。
+
+将来のキー種別／プラン別閾値切替（MON の拡張）に備え、定数は「用途名 → 閾値」の形で持ち、後から関数化できる余地を残す（本 PR では固定値でよい）。
+
+---
+
+### レート制限ヘルパー（`lib/ratelimit.ts`・新設）
+
+`app/api/users/search/route.ts` の Upstash 実装を切り出して共通化する。責務は「識別子・窓・上限を受けて `{ success, limit, remaining, reset }` を返す」ことと「429 レスポンスを整形して返す（`X-RateLimit-Limit`/`Remaining`/`Reset`・`Retry-After`）」ことである。
+
+- **名前付き limiter インスタンス**を用途別に持つ: `aiRouteLimiter`（`AI_RATE_LIMIT` を使用）、`searchLimiter`（`SEARCH_RATE_LIMIT`）。既存 `users/search` は `searchLimiter` 経由へ張り替え、**挙動不変**（30/分・`user.id` キー・同一ヘッダ）を担保する。
+- **429 整形**は既存 `users/search` の実装を踏襲する（`resetSec = Math.ceil(reset/1000)`、`retryAfter = max(0, resetSec - now)`、上記 4 ヘッダ）。
+- **Upstash 未設定時のフォールバック（確定判断 1）**: `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` の env が欠落する場合、`Redis.fromEnv()` が例外を投げて全 AI ルートが 500 に倒れる。これを避けるため、ヘルパーは**モジュールロード時に env の有無を判定し、未設定なら limiter を生成せず `limit()` を「常に `success: true` で通す」スタブに切り替える**（`remaining` は上限値でダミー整形）。すなわち **env 未設定時はレート制限を無効化して通す**。
+  - 根拠と安全性: フォールバックで素通しになるのは**第 1 層（濫用抑止）のみ**であり、money を守る**第 2 層はレート制限ではなく DB（`consume_service_ai_call`）で担保する**ため、Upstash 未設定でも「1 クレジット = 無制限課金」は第 2 層が塞ぐ。したがって Upstash 未設定＝money 垂れ流しにはならない。
+  - ローカル/テスト DB は env 未設定でこのスタブ経路を通り、E2E が 500 で全滅しない。**本番は Upstash env を必須設定**とし（`environment.md` の環境変数表・デプロイ手順に明記）、第 1 層を実効化する。フォールバックはあくまで開発／テストの利便であり、本番で第 1 層を無効化してよいという意味ではない旨を design 上明示する。
+
+---
+
+### レート制限の識別子キー（確定判断 3）
+
+第 1 層の識別子は `resolveCaseAuth` の戻り値から決定する。**認証ユーザーは `userId`（= `user.id`）、ゲスト被告は `userId` が `null` のため `guest:{caseId}` を用いる**（ゲストは横断的な安定 ID を持たないためケース単位で代用する）。
+
+```
+const rateKey = auth.userId ?? `guest:${id}`;
+```
+
+- ゲストキーに `caseId` を含めることで、あるゲストのカウントが**他ケースへ混ざらない**。`guest:` プレフィクスにより認証ユーザーの UUID 空間と衝突しない（なりすまし不可）。
+- 適用箇所は**各 AI ルートで `resolveCaseAuth`（または同等の身元確定）の直後、かつ Claude 呼び出しより前**。`draft`・`argument`・`end-proposal`・`extension-vote` は現状 `resolveCaseAuth` を通していない（身元確定を各ルートにインライン）ため、少なくとも `userId`（認証なら `user.id`、ゲストなら `null`）を導出してから同じ `rateKey` を組み立てる。
+
+---
+
+### 適用ルートごとの処理順（確定判断 5）
+
+共通の順序は **「① 認可（身元確定）→ ② 第 1 層レート制限 → ③ キー解決（`uses_service_key` 判定）→ ④（service-key のみ）第 2 層 consume → ⑤ Claude 生成 → ⑥ 保存」**。第 2 層 consume は**必ず Claude 呼び出しの直前**に置き、上限到達なら Claude を呼ばない（money-critical の肝）。
+
+#### `defense`（POST）/ `defense/draft`（第 2 層カウント対象）
+
+1. `isUuid(id)` 検証。
+2. 認可（`resolveCaseAuth`。draft はインライン身元確定を維持しつつ `userId` を導出）。`rateKey = userId ?? guest:{id}`。
+3. **第 1 層**: `aiRouteLimiter.limit(rateKey)`。`!success` → 429（`Retry-After` 付き）で終了。
+4. キー解決（`resolveCaseAiKey`）。`uses_service_key` を得る。入力検証（defense: `content` 1〜1000 字／draft: 事前ヒアリング必須 422）を先に済ませ、**無駄な consume を避ける**。
+5. **第 2 層**（`uses_service_key === true` のみ）: `admin.rpc("consume_service_ai_call", { p_case_id: id, p_cap: SERVICE_AI_CALL_CAP })`。返り値 `NULL`（上限到達）→ **429**（`{ error: "このケースのAI生成回数の上限に達しました" }`、`Retry-After` は無意味なので付けない）で終了し **Claude を呼ばない**。BYOK は本ステップを丸ごとスキップ。
+6. Claude 生成（`generateDefenseResponse` / `generateDraft`）。
+7. 保存（defense POST は user／assistant 行を `defense_messages` へ INSERT。**draft は保存しない**＝ `service_ai_calls` が唯一のカウンタ）。
+8. **失敗時補償**（確定判断 2・後述）: ⑤か⑦で失敗し、かつ⑤で consume 済みなら `refund_service_ai_call(id)` を呼んでからエラー応答する。
+
+- レスポンスコード（確定）: 第 2 層の上限到達は **429**（レート系と統一。402/403 は課金・認可の含意が強く紛らわしいため採らない）。第 1 層と同じく `X-RateLimit-*` 系のうち意味のあるヘッダのみ付す。
+
+#### `argument`（第 2 層カウント対象・ただしターン進行は妨げない）
+
+`argument` の Claude 呼び出し（判事「turn」メッセージ・矛盾チェック）は**付随処理で best-effort**（現状 try/catch で失敗を握り潰す）であり、`max_rounds`＋延長で有界である。一方、`arguments` の INSERT とターン／フェーズ進行は認可済み参加者の正当操作であり、AI が上限に達しても**止めてはならない**。したがって:
+
+1. 認可（身元確定）→ `rateKey` 決定 → **第 1 層** `aiRouteLimiter.limit(rateKey)`（`!success` → 429）。
+2. `arguments` INSERT・ターン／フェーズ進行（従来どおり）。
+3. 判事メッセージ生成の**直前**に、`uses_service_key === true` なら `consume_service_ai_call`。**`NULL`（上限到達）なら 429 にせず、AI 生成のみ skip**（ターン進行は成功のまま返す）。consume 成功なら生成し、生成失敗時は refund。矛盾チェックも同じ consume の配下で扱い、上限到達時は同様に skip する（1 ターンあたり consume は 1 回に束ねる）。
+
+- 判断根拠: defense/draft は「AI 生成そのものが目的」なので上限到達＝429 で妥当だが、argument の AI は付随のため上限到達で 429 にすると**正当なターン進行まで壊す**。両者の性質差に応じて分岐を変えるのが money 抑止と正当操作の両立になる。
+
+#### `verdict`（第 1 層のみ・第 2 層は対象外＝確定判断 4）
+
+- **第 1 層のレート制限を適用**（認可の直後、TOCTOU 奪取より前に置き、フラッドを早期に弾く）。
+- **第 2 層のカウント対象には含めない**。verdict は SEC-001 の条件付き原子的フェーズ奪取（`phase='judging'→'verdict'`）により**1 ケース 1 回**に確定済みで二重生成＝二重課金が既に排除されているため、`consume_service_ai_call` で二重に上限管理する必要がない。含めても最大 +1 で cap に対して無視できるため、実装単純化のため除外する。
+
+#### `end-proposal` / `extension-vote`（第 1 層のみ・第 2 層は対象外）
+
+- Claude を呼ぶのは `phase → judging` 遷移時の**閉廷宣告 judge メッセージ 1 回のみ**で、いずれも楽観ロック（`.eq("phase", ...)`）で 1 回に絞られ有界である。したがって**第 1 層のレート制限のみ適用**し、第 2 層 consume は課さない（有界かつ 1 回のため）。
+
+#### `users/search`（挙動不変の張り替え）
+
+- `searchLimiter` 経由へ移設。30/分・`user.id` キー・同一 429 ヘッダを厳密に維持する。
+
+---
+
+### 失敗時のカウント補償（確定判断 2）
+
+`consume_service_ai_call` で consume した後に Claude 生成または保存が失敗した場合、**`refund_service_ai_call` でカウントを 1 戻す**（refund する）方針を採る。
+
+- トレードオフ: **戻さない**と、DB 接続断等の一過性の失敗のたびにユーザーが購入した 30 回のうち 1 回を**永久に失う**（ユーザーが不当に損する）。**戻す**と、「Claude は成功して課金が発生したが直後の保存が失敗し refund された」ケースで理論上カウントが実消費を下回りうる（抜け穴）。
+- 採用理由: 後者の抜け穴は (a) 保存失敗を意図的に誘発するのは攻撃者に制御困難な一過性インフラ障害であり、(b) 仮に成立しても**第 1 層（20/分）と第 2 層（cap 到達時は consume 前に弾く）で総量が抑えられ**、青天井にはならない。一方、前者のユーザー損は日常的に発生しうる現実的な UX 被害である。よって MON-001 の `refund_credit` と同じく **refund を採用**する。
+- 原子性との両立: consume は必ず Claude の**前**に行う（並行・連続で cap を超えないため）。refund は失敗パスでのみ発生し、`WHERE service_ai_calls > 0` で負に落ちない。in-flight で consume 済みの呼び出しが同時刻に cap を超えないという不変条件は refund の有無に関わらず保たれる。
+
+---
+
+### セキュリティ設計
+
+- **第 2 層の原子性（money-critical）**: `consume_service_ai_call` の `WHERE service_ai_calls < p_cap` + `RETURNING` で、並行・連続でも cap を超えない。Claude 呼び出しの**前**に consume し、`NULL`（上限到達）なら呼ばない。
+- **改ざん防止**: `cases.service_ai_calls` の UPDATE と両 RPC の EXECUTE を `service_role` のみに絞る（`authenticated`/`anon`/`PUBLIC` から REVOKE）。一般認証ユーザーは RPC を直叩きできず、`service_ai_calls` を直接書き換えられない（`cases` の UPDATE 権限も一般ロールに無いこと＝MON-001 の `profiles` REVOKE と同水準であることをビルド／オーディが確認）。
+- **識別子の分離**: ゲストキー `guest:{caseId}` はケース単位で他ケースと混ざらず、認証ユーザーの UUID とも衝突しない。
+- **BYOK と service-key の分岐**: 第 2 層 consume は `uses_service_key === true` のケースにのみ適用し、BYOK に不要な上限を課さない。逆に service-key で consume を取りこぼす経路（defense POST / draft / argument）が無いことを担保する。
+- **フォールバックの安全性**: Upstash 未設定時に素通しになるのは第 1 層のみで、money を守る第 2 層は DB で担保されるため垂れ流しにならない。本番は Upstash env 必須。
+- **認可の非緩和**: 各ルートの既存認可（`resolveCaseAuth`・ゲストトークン検証・ターン／フェーズガード）は本タスクで一切緩めない。レート制限・第 2 層はいずれも認可通過後に適用する。
+
+---
+
+### テスト観点（`tests/e2e/sec002-ratelimit.spec.ts`・新設）
+
+`mon001-credits` / `sec001` の admin fast-path + 専用 ephemeral ユーザーパターンを踏襲し、テスト DB を対象とする。`e2e_user_a` を汚染せず後始末は case→user 順。
+
+1. **第 1 層**: 同一識別子で AI ルートを短時間に上限＋1 回叩き、超過分が **429**（`Retry-After` ヘッダ有り）になり、窓内でカウントが効くこと。
+2. **第 2 層（service-key）**: `uses_service_key = true` のケースで defense 生成を 30 まで行い、**31 回目が弾かれ Claude を呼ばない**（`service_ai_calls` が 30 で頭打ち・`defense_messages` の assistant 行が増えない）。
+3. **並行で抜けない（原子性）**: 上限直前のケースへ並行複数 POST を投げ、`service_ai_calls` が cap を超えないこと。
+4. **BYOK は上限なし**: `uses_service_key = false` は第 2 層に掛からない（第 1 層のみ）こと。
+5. **Upstash 未設定フォールバック**: env 未設定時に 500 で全滅せず、第 1 層を素通しつつ第 2 層は効くこと。
+6. **リグレッション**: 既存 spec（critical / mon001-credits / mon001b / sec001 / bug004 / bug005）が回帰せず、defense/argument の正常系が上限内で従来どおり通ること。
+
+**TEST_MODE モックの追加**: `lib/defense.ts` の `generateDefenseResponse` / `generateDraft` には現状 TEST_MODE 分岐が**無い**（`verdict`・`judge` にはある）。E2E で実 Anthropic を叩かず 30 回超の生成を高速に検証するため、両関数へ `TEST_MODE=1（非 production）でモック応答を返す`最小分岐を追加する（SEC-001 の verdict と同方針）。
+
+**リードのアドバサリアル検証（必須）**: テスト DB に service-key ケースを作り、(a) 上限まで生成 → 上限超の REST 直叩きが弾かれ `defense_messages` が増えない、(b) 並行 POST で `service_ai_calls` が cap を超えない、(c) `consume_service_ai_call` / `refund_service_ai_call` の RPC 直叩きが 403（service_role のみ）を実証する。
+
+---
+
+### スコープ外（本 PR で扱わない）
+
+- SEC-004（モデル ID 集約）は別 PR（任意）。
+- サブスク／プラン別の閾値切替は設計に「キー種別で閾値を変える余地」を残すのみ（`lib/limits.ts` の定数化で対応）。
+- 既存のクレジット消費モデル（ケース作成時 1 消費）自体は変更しない。
