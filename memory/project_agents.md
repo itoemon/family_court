@@ -9,12 +9,14 @@ metadata:
 
 | ニックネーム | 役割 | 実体 | 位置づけ |
 |---|---|---|---|
-| **リード** | 要件定義・方針決定・PM・設計/コードレビュー・最終アドバサリアル検証・PR 判断 | Claude Code（対話チャット） | 中核 |
-| **アーキ** | 設計書作成 | Claude CLI エージェント（agents.sh） | 中核 |
-| **ビルド** | コード実装 | Claude CLI エージェント（agents.sh）/ ハーネス Agent（fallback） | 中核 |
-| **オーディ** | **独立セキュリティ監査**・品質監査 | Claude CLI エージェント（agents.sh） | **中核**（security/お金絡みは必須） |
-| **テスタ** | E2E 実行 | Claude CLI エージェント（agents.sh） | **任意**（リードが直接 playwright を回す方が速く確実） |
+| **リード** | 要件定義・方針決定・PM・設計/コードレビュー・最終アドバサリアル検証・PR 判断・編成 | Claude Code（対話チャット・harness） | 中核 |
+| **アーキ** | 設計書作成 | **harness サブエージェント（Agent ツール・general-purpose）** | 中核 |
+| **ビルド** | コード実装 | **harness サブエージェント（Agent ツール・general-purpose）** | 中核 |
+| **オーディ** | **独立セキュリティ監査**・品質監査 | **harness サブエージェント（Agent ツール・general-purpose）** | **中核**（security/お金絡みは必須） |
+| **テスタ** | E2E 実行 | リード直の playwright fast-path | **任意**（リードが直接回す方が速く確実。agent 化しない） |
 | **コパ** | PR最終レビュー | GitHub Copilot | 中核（実バグ検出力が高い） |
+
+**★2026-07-16 実行基盤の再設計:** アーキ/ビルド/オーディの実体を **`scripts/agents.sh`（nested `claude -p`）から harness の `Agent` ツール（独立サブエージェント）へ全面移行**。agents.sh は無出力死・観測性ゼロ・孤児化で信頼できず **deprecated**。harness サブエージェントは信頼性・観測性（構造化結果が返る）・独立性すべてで上回る。リードが Agent ツールで各役割を独立起動して編成する。詳細は [[feedback-pipeline-runner]]。
 
 **Why:** 打ちやすさ重視でカタカナ短縮形に統一。役割が直感的に伝わる命名。
 

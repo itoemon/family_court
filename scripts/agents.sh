@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
 # Usage: ./scripts/agents.sh <architect|engineer|tester|auditor>
+#
+# ============================================================================
+# ★DEPRECATED（2026-07-16）: 本スクリプト（nested `claude -p`）はパイプラインの
+#   実行基盤としては廃止された。理由: 重タスクで無出力死・エラーを飲み込み観測性ゼロ・
+#   background 実行の孤児化で信頼できない。
+#   現行方式は「リードが harness の Agent ツール（独立サブエージェント）で
+#   architect / engineer / auditor を編成する」。詳細:
+#     memory/feedback_pipeline_runner.md（2026-07-16 ゼロベース再設計）
+#     memory/project_agents.md
+#   本スクリプトは参照・緊急時の手動フォールバック用に残置する。将来「リード不在の
+#   完全自律実行」が必要になった場合は本スクリプト延命でなく Workflow で作り直すこと。
+# ============================================================================
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
