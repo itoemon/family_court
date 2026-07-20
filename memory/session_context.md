@@ -12,6 +12,33 @@ metadata:
 
 ---
 
+## 最終更新: 2026-07-16（SEC-002 PR #65 マージ + パイプラインをゼロベース再設計）
+
+### 現在のブランチ・PR 状態
+- 現ブランチ: `main`（`3378a21` = SEC-002 #65 マージ後・ローカル同期済み）
+- **オープン PR: #64（パイプライン再設計・chore）= ダイチのレビュー待ち**（未マージ）
+- マージ済み最新: PR #65（SEC-002）
+
+### PR #65: SEC-002（AI ルートのレート制限＋service-key ケース生成上限・money-critical）
+- **第1層**: `lib/ratelimit.ts` に Upstash 共通化（named limiter `aiRouteLimiter`/`searchLimiter`＋429整形）。全 AI ルートに 20req/分/識別子（**認証=user.id / ゲスト=`guest:{caseId}`**）。**Upstash 未設定はフォールバックで第1層スキップ**（本番は起動時警告＋`environment.md` に必須明記）
+- **第2層（money）**: migration `20260716000000`＝`cases.service_ai_calls` 列＋原子的 `consume_service_ai_call(uuid,int)`（`UPDATE ... WHERE service_ai_calls<p_cap RETURNING`・TOCTOU なし・`consume_credit` 踏襲）＋補償 `refund_service_ai_call`。両 RPC・列 UPDATE は **service_role 限定**。service-key ケースを **30 生成/ケース** で cap（BYOK 無制限）。defense/draft=429、argument=AI skip でターン維持、verdict/end-proposal/extension-vote=1回有界で第1層のみ。定数は `lib/limits.ts` 集約
+- **検証**: sec002 spec 3passed/1skip（第1層は Upstash 未設定で skip）＋リグレッション26/26。アドバサリアル: `consume/refund_service_ai_call` を anon 直叩き→401、`service_ai_calls` 直 UPDATE→401。独立監査 HIGH0/MED1/LOW2 消化（第1層サイレント無効化の警告＋文書 / argument 過大カウントの refund / 会計乖離の明記）。コパ3件消化（end-proposal/extension-vote のレートキーが役割+caseId で回避可能→user.id 化 / draft 空応答 refund）
+- **★本番デプロイ未実施（要対応）**: 本番 Supabase に SEC-002 migration 適用＋**Vercel Production に `UPSTASH_REDIS_REST_URL`/`_TOKEN` 設定**が必要（未設定だと第1層無効・警告ログ）。MON-001 本番未適用（後述）と併せて公開前に一括対応
+
+### ★パイプラインをゼロベース再設計（PR #64・レビュー待ち）
+- **実行基盤を `scripts/agents.sh`（nested `claude -p`）→「リードが harness の Agent ツールで architect/engineer/auditor を編成」へ全面移行**。agents.sh は無出力死・観測性ゼロ・孤児化で信頼できず **deprecated**（削除せず緊急フォールバックに残置）
+- **今セッションで SEC-002 を agents.sh 抜き・harness サブエージェントのみで完走**（設計/実装/監査すべて成功・中断ゼロ）＝再設計の正しさを実証
+- 中核ドキュメント: `memory/feedback_pipeline_runner.md`（全面改訂・現行フロー＋運用知見集約）/ `memory/project_agents.md`（実体列を harness Agent へ）/ `docs/pipeline.md`（改訂）/ `scripts/agents.sh`（DEPRECATED ヘッダ）。将来の完全自律は Workflow(opt-in) で
+- **agents.sh architect が死んだ真因**: `--allowedTools` に Edit が無く、肥大 design.md への追記が Write 全書き直し→headless claude -p が巨大出力で無出力死。Write は atomic なので途中死で 1 バイトも残らない（PR #64 で Edit 追加＋deprecation）
+- **harness サブエージェント運用の勘所**: プロンプトは自己完結（会話文脈なし・絶対パス/厳守事項/最終報告形式を明記）。実装と監査は別インスタンス（独立性）。中断で孤児化しても成果物は disk に landed していることが多い→`git status`＋tsc/eslint で確認しリードが引き取る
+
+### 環境・運用の知見（今セッション）
+- **Supabase `SUPABASE_ACCESS_TOKEN`（`.env.test`）は失効する** → Management API が 401。ダイチが Supabase → Account → Access Tokens で再発行 → `.env.test` 更新。テスト DB への migration 適用に必須
+- **多層防御の下位閾値に先に当たる**: 第1層(20/分)＜第2層(cap30) なので cap 検証は admin で `service_ai_calls` を境界(cap-1)に seed してから叩く
+- **UPSTASH は `.env.test` では空**（ローカル E2E は第1層フォールバック＝設計どおり）。第1層 E2E は Upstash 実効環境のみ（spec は UPSTASH 未設定なら skip）
+
+---
+
 ## 最終更新: 2026-07-12（SEC-001/003 PR #63 マージ + パイプライン不調=Stream closed の根治）
 
 ### 現在のブランチ・PR 状態

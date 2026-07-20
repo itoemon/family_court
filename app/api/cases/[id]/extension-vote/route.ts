@@ -6,6 +6,7 @@ import { isUuid } from "@/lib/text-utils";
 import { insertClosingGreetingsForCase } from "@/lib/greetings";
 import { insertClosingJudgeMessage } from "@/lib/case-closing";
 import { resolveCaseAiKey } from "@/lib/case-ai-key";
+import { aiRouteLimiter, rateLimitResponse } from "@/lib/ratelimit";
 
 type Actor = "plaintiff" | "defendant" | "guest";
 
@@ -76,6 +77,21 @@ export async function POST(
   if (!actor) {
     return NextResponse.json({ error: "このケースを操作する権限がありません" }, { status: 403 });
   }
+
+  // SEC-002 第 1 層: 状態変更より前に横断レート制限を適用する（両者 finish で judging 遷移時に
+  // 閉廷宣告の Claude を 1 回呼ぶため。第 2 層は有界・1 回のため対象外）。識別子は他 AI ルートと
+  // 統一し「認証=user.id / ゲスト=guest:{caseId}」とする（コパ指摘）。actor=plaintiff/defendant の
+  // ときは case 行の該当 user.id（ケース横断で安定）を用いる。役割+caseId だと同一ユーザーが
+  // ケースを変えて 20/分制限を実質回避できてしまうため。
+  const rateKey =
+    actor === "plaintiff" ? c.plaintiff_id :
+    actor === "defendant" && c.defendant_id ? c.defendant_id :
+    `guest:${id}`;
+  const rl = await aiRouteLimiter.limit(rateKey);
+  if (!rl.success) {
+    return rateLimitResponse(rl);
+  }
+
   // 投票者は plaintiff か defendant/guest のいずれか。プロパティ名を決める。
   const side: "plaintiff" | "defendant" = actor === "plaintiff" ? "plaintiff" : "defendant";
   const column = side === "plaintiff" ? "extension_vote_plaintiff" : "extension_vote_defendant";

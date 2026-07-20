@@ -2,95 +2,122 @@
 
 > **優先順位**: このファイルの内容は最優先。設計書・handoff メモと矛盾する場合は必ずこちらを優先すること。
 >
-> **重要 1（design.md 取り扱い）**: `docs/knowledge/design.md` は永続累積資料。既存設計を削除・短縮・全面書き換えしない。**末尾に新規セクション `## SEC-001/003 判決ルート堅牢化` を純追記**する。
+> **重要 1（design.md 取り扱い）**: `docs/knowledge/design.md` は永続累積資料。既存設計を削除・短縮・全面書き換えしない。**末尾に新規セクション `## SEC-002 AI ルートのレート制限とケース単位生成上限` を純追記**する。
 >
-> **重要 2（実装体制）**: 標準フロー = リード（要件・設計レビュー・テスト・アドバサリアル・PR）→ アーキ（設計）→ ビルド（実装）→ リードがテスト＋アドバサリアル → **オーディ（独立セキュリティ監査・本タスクは必須）** → コパ。セキュリティ修正なのでオーディを必ず通す。
+> **重要 2（実装体制）**: 標準フロー = リード（要件・設計レビュー・テスト・アドバサリアル・PR）→ アーキ（設計）→ ビルド（実装）→ リードがテスト＋アドバサリアル → **オーディ（独立セキュリティ監査・本タスクは必須）** → コパ。**お金（サービスキー課金）に直結するため、money-critical として原子性を厳守**する。
 >
-> **重要 3**: セキュリティ修正のため、**「直したつもりで直っていない」を防ぐ**。実際に「未認証/第三者が verdict を叩けない」ことをリードがアドバサリアル検証（本番でなくテスト DB + REST 直叩き）で実証する。
+> **重要 3**: 「1 クレジット = 無制限 API コール」を塞ぐのが本タスクの目的。**「上限を付けたつもりで、並行・連続で抜ける」を防ぐ**。ケース単位の生成カウントは**原子的**に増やし、リードがアドバサリアル検証（テスト DB + REST 直叩きで上限超が弾かれ、並行でも抜けないこと）を実証する。
 
 ## 今回のタスク
 
-判決ルート `app/api/cases/[id]/verdict/route.ts` のセキュリティ穴（SEC-001）と出力未検証（SEC-003）を塞ぐ。由来: 2026-07-07 全ディレクトリ・コードレビュー（`docs/backlog.md` の SEC-001 / SEC-003）。
+Claude を呼ぶ AI ルートに**レート制限**を横断適用し、さらに**サービスキーモードのケースには生成回数のケース単位上限**を設ける。由来: 2026-07-07 全ディレクトリ・コードレビュー（`docs/backlog.md` の SEC-002）。
 
-**バックログ ID**: SEC-001（HIGH）+ SEC-003（MEDIUM）
-**依存**: MON-001 PR-A/PR-B（`uses_service_key` / `resolveCaseAiKey`）。
+**バックログ ID**: SEC-002（HIGH）
+**依存**: MON-001 PR-A/PR-B（`uses_service_key` / `resolveCaseAiKey` / `consume_credit` の原子的 RPC パターン）。
 
 ---
 
 ### 背景（実コードで裏取り済み）
 
-- `verdict/route.ts` は **認証・認可が一切ない**。ガードは `if (c.phase !== "judging")` のみ（20 行目）。middleware は `/api` を除外するため、**ケース UUID を知る第三者（未ログイン含む）が POST で判決生成を叩ける**。
-  - 影響: (1) `requestVerdict` が Claude を呼ぶ → **サービスキーモード（`uses_service_key=true`）なら運営が課金される**、(2) 他人のケースに verdict 書き込み・`phase='verdict'` 強制進行、(3) `phase` チェック → `update`（87 行目）間に排他がなく、**同時リクエストで二重生成＝二重課金**（TOCTOU）。
-- 対照的に `defense/route.ts` は `resolveAuth`（`getUser` + 参加者チェック + `verifyGuestToken`）で認証済み。**verdict だけ抜けている**。
-- verdict の POST 呼び出し元は `app/case/[id]/CaseRoom.tsx:154`（ケース参加者が閲覧中に叩く）。→ **認可は「そのケースの参加者（原告 / 認証被告 / ゲスト被告）」に限定**するのが正しい。
-- 出力未検証（SEC-003・`lib/claude.ts`）: `message.content[0].type`（56 行付近）は content が空配列だと実行時例外。verdict ルートは `requestVerdict` を try/catch しておらず未処理例外 → 500。`JSON.parse` 結果も未検証で `winner` enum・スコア 0–100 をクランプせず DB 保存。
+- レート制限（`@upstash/ratelimit`）が入っているのは `app/api/users/search/route.ts` の **1 本のみ**（slidingWindow 30/分・`user.id` キー・429＋`X-RateLimit-*`/`Retry-After` ヘッダ）。**共通ヘルパー化されておらず直書き**。
+- Claude を呼ぶ AI ルートは無制限:
+  - `app/api/cases/[id]/defense/route.ts`（POST・弁護チャット。**1 ケース内で回数無制限**に `defense_messages` へ user→assistant を積む＝**AI 生成が青天井**）
+  - `app/api/cases/[id]/defense/draft/route.ts`（下書き生成・**回数無制限**）
+  - `app/api/cases/[id]/argument/route.ts`（意見。`max_rounds=3`＋延長で概ね有界だが AI 呼び出しは通る）
+  - `app/api/cases/[id]/verdict/route.ts`（判決。SEC-001 で認可＋TOCTOU により**1 ケース 1 回**に確定済み）
+  - `app/api/cases/[id]/end-proposal`・`extension-vote`（`phase=judging` 遷移時に閉廷宣告 judge メッセージを 1 回生成）
+- MON-001 はクレジットを**ケース作成時に 1 回だけ**消費（`consume_credit`）。よって `uses_service_key=true` のケースで defense POST / draft を無制限に叩くと、**1 クレジット = 無制限のサービスキー Claude 呼び出し**になり、API 料金を賄う MON-001 の目的が崩れる。
+- 保存モデル: `defense_messages(role in ('user','assistant'), content, case_id, created_at)`。AI 生成 = `role='assistant'`。draft は `defense_messages` に保存しない生成もある（要実装確認）。
 
 ---
 
 ### スコープ（IN / OUT）
 
 **IN**:
-1. **共通認可ヘルパーの切り出し**: `defense/route.ts` の `resolveAuth` 相当を `lib/case-auth.ts`（新規）に切り出す。責務: 「このリクエストが対象ケースの参加者か」を判定し、`{ ok: true, userId?, isGuest? }` / `{ ok: false, status, error }` を返す。認証ユーザーは `user.id ∈ {plaintiff_id, defendant_id}`、ゲスト被告は `verifyGuestToken(id, cookieToken)`。**既存 defense の挙動を変えない**よう、まず defense の実装を移設して同一挙動を担保（defense も新ヘルパー経由に張り替え、回帰しないこと）。
-2. **verdict ルートに認可を追加**: 冒頭（`isUuid` 検証の後、DB 参照の前後どちらでも可だが Claude 呼び出しより必ず前）で `resolveCaseAuth` を通し、非参加者は 403 / 未ログイン & ゲストトークン無しは 401。ケース不在は 404。
-3. **TOCTOU（二重生成）対策**: 判決確定の `update` を**条件付き更新**にする。`update cases set phase='verdict', updated_at=now() where id=? and phase='judging'` とし、**更新行数 0 なら 409 を返して Claude 呼び出し前に弾く**。実装順序は「(a) 認可 → (b) 条件付き `phase` 更新で judging→verdict を原子的に奪取（成功した1リクエストだけが以降へ進む）→ (c) Claude 呼び出し → (d) verdict 保存」。※ (b) を Claude より前に置くのが肝（先にフェーズを奪ってから生成）。もし生成失敗時に phase を戻す要否は設計で判断（戻さないと再生成不能になる懸念 vs 二重課金防止。トレードオフを design.md に明記）。
-4. **SEC-003 出力検証**（`lib/claude.ts:requestVerdict` + verdict ルート）:
-   - `message.content` が空 / 先頭が非 text ブロックのケースをガード（例外にせずフォールバックへ）。
-   - verdict ルートで `requestVerdict` を try/catch し、失敗時は 500 を整形して返す（未処理例外にしない）。
-   - パース後に `winner ∈ {plaintiff, defendant, draw}` を検証、`plaintiffScore`/`defendantScore` を 0–100 にクランプ。異常時は既存の draw フォールバック（`lib/claude.ts` の catch 分岐）に寄せる。
-5. **E2E spec**（`tests/e2e/sec001-verdict-auth.spec.ts` 新規）: 下記テスト観点。
+
+1. **レート制限の共通化（濫用防止・第 1 層）**
+   - `app/api/users/search/route.ts` の Upstash 実装を **`lib/ratelimit.ts`（新規）に切り出して共通化**。`users/search` も新ヘルパー経由に張り替え、**挙動不変**（30/分・user.id キー・同一ヘッダ）を担保。
+   - `lib/ratelimit.ts` は「識別子（string）と窓・上限を受け取り、`{ success, limit, remaining, reset }` を返す」形＋「429 レスポンスを整形して返すユーティリティ（`X-RateLimit-*` / `Retry-After`）」を提供。用途別に**名前付きの limiter インスタンス**を持てるようにする（例: `aiRouteLimiter`、`searchLimiter`）。
+   - **AI 呼び出しルート全て**（defense POST / defense/draft / argument / verdict / end-proposal / extension-vote のうち Claude を実際に呼ぶ経路）に**横断適用**。
+     - **識別子キー**: 認証ユーザーは `user.id`。**ゲスト被告は `guest:{caseId}`**（ゲストは user.id を持たないため case 単位で代用）。`resolveCaseAuth` の戻りから userId/isGuest を判定して決める。
+     - 上限（**確定値**・定数集約）: **AI ルート横断 = 20 リクエスト/分/識別子**。超過は **429**（`Retry-After` 付き）。
+   - Upstash 未設定（`UPSTASH_*` env なし）でも**落ちない**フォールバック方針を design で決める（例: env 未設定時は rate-limit をスキップして通す。テスト DB / ローカルの扱いを明記）。
+
+2. **ケース単位の生成上限（MON-001 の本丸・money-critical・第 2 層）**
+   - `uses_service_key=true` のケースに対し、**弁護チャット/下書きの生成回数をケース単位で上限**。BYOK（`uses_service_key=false`）は当人負担なので**上限なし（第 1 層のレート制限のみ）**。
+   - **DB（migration・冪等）**: `cases` に `service_ai_calls int not null default 0`（サービスキー AI 生成の累積回数）を追加。**原子的にインクリメント＋上限判定する RPC** を新設（`consume_credit` と同じ思想）:
+     - 例: `consume_service_ai_call(p_case_id uuid, p_cap int) returns int`。`update cases set service_ai_calls = service_ai_calls + 1 where id=p_case_id and uses_service_key=true and service_ai_calls < p_cap returning service_ai_calls` 相当。**更新行 0（＝上限到達 or 非サービスキー）なら上限到達を表す値/例外**を返し、呼び出し側が Claude 呼び出し前に弾く。`consume_credit` 同様 **EXECUTE を service_role のみ**に絞る。schema.sql にも反映。
+   - **適用ルート**: `defense`(POST) / `defense/draft` / `argument`（サービスキーで per-turn 生成する経路）。**Claude 呼び出しの直前**に `uses_service_key` の場合のみ `consume_service_ai_call` を呼び、上限到達なら **429（or 402/403 は design で確定）**を返して Claude を呼ばない。
+     - `verdict` は 1 回確定済みなのでケース上限のカウント対象に含めるかは design で判断（含めても 1、除外でも可。二重課金防止は SEC-001 で担保済み）。
+   - **上限値（確定）**: **service-key ケースあたり AI 生成 30 回**（弁護往復＋下書き合算）。定数に集約し後から調整可能に。
+   - **失敗時補償**: `consume_service_ai_call` 成功後に Claude 呼び出しや保存が失敗した場合、カウントを戻すか（`refund` 相当）を design で判断（MON-001 の `refund_credit` と同じ論点。過大カウントでユーザーが損する vs 抜け穴。トレードオフを design.md に明記）。
+
+3. **定数集約**: レート上限（20/分）・ケース上限（30/ケース）・窓を **1 ファイルに集約**（例 `lib/limits.ts`）。価格と同様「コード変更のみで調整可能」にする。
+
+4. **E2E spec**（`tests/e2e/sec002-ratelimit.spec.ts` 新規）: 下記テスト観点。
 
 **OUT（本 PR では扱わない）**:
-- SEC-002（AI ルートのレート制限・ケース単位の生成回数上限）→ 別 PR（次工程）。
 - SEC-004（モデル ID 集約）→ 別 PR（任意）。
-- defense/draft/argument 以外への認可ヘルパー横展開は最小限（verdict 対応が主眼。defense は移設で挙動不変）。
+- サブスク/プラン別の閾値切替（MON の将来拡張）→ 設計に「キー種別で閾値を変える余地」を残すのみ。
+- 既存のクレジット消費モデル（ケース作成時 1 消費）自体の変更はしない。
 
 ---
 
-### 認可仕様（確定）
+### 仕様（確定）
 
-- **判決をトリガーしてよいのは対象ケースの参加者**（原告 `plaintiff_id` / 認証被告 `defendant_id` / ゲスト被告=有効な guest token 保持者）。第三者・未ログインは不可。
-- 既存 `verifyGuestToken` / `createSessionClient` / `createAdminClient` / `isUuid` を流用。
-- middleware は `/api` を通さない前提なので、**API ルート内で自前認可を持つ**（defense と同じ設計）。
+- **第 1 層（レート制限）**: 全 AI ルート、20 リクエスト/分/識別子（認証=user.id、ゲスト=`guest:{caseId}`）、超過 429＋`Retry-After`。
+- **第 2 層（ケース上限）**: `uses_service_key=true` のみ、ケース累積 AI 生成 30 回、超過は Claude を呼ばず弾く。BYOK は上限なし。
+- 原子性: ケース上限のカウントは**原子的 RPC**（並行・連続で抜けない）。`consume_credit` / SEC-001 TOCTOU と同じ思想。
+- 既存 `resolveCaseAuth`（SEC-001 で新設）・`resolveCaseAiKey`・`isUuid` を流用。認可は各ルート既存のものを維持（本タスクで緩めない）。
 
 ---
 
 ### テスト観点（テスタ／リードのアドバサリアル）
 
-E2E は `bug005` / `mon001b` の admin fast-path + 専用 ephemeral ユーザーパターンを踏襲。テスト DB 対象。`tests/e2e/sec001-verdict-auth.spec.ts`:
+E2E は `mon001-credits` / `sec001` の admin fast-path + 専用 ephemeral ユーザーパターンを踏襲。テスト DB 対象。`tests/e2e/sec002-ratelimit.spec.ts`:
 
-1. **未認証は弾かれる**: phase=judging のケースを用意 → **未ログインで POST /verdict → 401/403**、verdict が生成されない（`verdicts` 行が増えない・`phase` が judging のまま）。
-2. **第三者（非参加者）は弾かれる**: 別の認証ユーザーで POST → **403**、生成されない。
-3. **参加者（原告）は成功**: 原告セッションで POST → 200、verdict 生成、phase=verdict（TEST_MODE で Claude をモックできるなら活用。requestVerdict のモック有無を確認し、無ければ最小で「認可を通って処理に入る」ことを検証）。
-4. **二重生成防止**: judging のケースに参加者が並行 or 連続で 2 回 POST → 1 回だけ生成、2 回目は 409（`verdicts` 行が 1 つ）。
-5. **出力検証**: （可能なら）content 空 / 不正スコアのモックで、例外 500 でなくフォールバック（draw・クランプ）になること。
-6. 既存 spec（critical / bug005 / mon001-credits / mon001b）がリグレッションしないこと。特に **defense の認可が移設後も同一挙動**（bug004-defense-tab 等）。
-- 後始末は case→user 順。`e2e_user_a` を汚染しない。
+1. **レート制限（第 1 層）**: 同一ユーザーで AI ルートを短時間に上限＋1 回叩く → **超過分が 429**（`Retry-After` ヘッダ有り）。窓内でのカウントが効くこと。
+2. **ケース上限（第 2 層・service-key）**: `uses_service_key=true` のケースで defense 生成を上限（30）まで → **31 回目が弾かれ Claude を呼ばない**（`defense_messages` の assistant 行 / `service_ai_calls` が上限で頭打ち）。
+3. **並行で抜けない（原子性）**: 上限直前のケースに **並行で複数 POST** → 上限を超えて生成されない（`service_ai_calls` が cap を超えない）。
+4. **BYOK は上限なし**: `uses_service_key=false` のケースは第 2 層の上限に掛からない（第 1 層のみ）。
+5. **Upstash 未設定フォールバック**: env 未設定時に 500 で全滅せず、design で決めた方針どおり動く。
+6. 既存 spec（critical / mon001-credits / mon001b / sec001 / bug004-defense-tab / bug005）が**リグレッションしない**こと。特に defense/argument の正常系が上限内で従来どおり通ること。
+- 後始末は case→user 順。`e2e_user_a` を汚染しない。TEST_MODE で Claude をモック（`generateDefenseResponse` 等の TEST_MODE 分岐の有無を確認、無ければ最小追加）。
 
-**リードのアドバサリアル検証（必須）**: テスト DB に judging ケースを作り、(a) 未認証 REST 直叩き → 401/403、(b) 非参加者 JWT で直叩き → 403、(c) 生成されないこと（verdicts 行数・phase 不変）を実証する。
+**リードのアドバサリアル検証（必須）**: テスト DB に service-key ケースを作り、(a) 上限まで生成 → 上限超の REST 直叩きが弾かれ `defense_messages` が増えない、(b) **並行 POST で `service_ai_calls` が cap を超えない**、(c) `consume_service_ai_call` RPC の直叩きが 403（service_role のみ）を実証する。
 
 ---
 
-### オーディに対する観点（本タスクは監査必須）
+### オーディに対する観点（本タスクは監査必須・money-critical）
 
-- verdict の全経路（認証ユーザー/ゲスト/未認証）で認可が正しく効くか。Claude 呼び出しが認可通過後にのみ走るか。
-- TOCTOU: 条件付き更新が Claude 呼び出しの**前**にあり、二重生成・二重課金が起きないか。生成失敗時の phase 復帰方針が妥当か。
-- resolveAuth 移設で defense の既存挙動が変わっていないか（回帰）。
-- 出力検証: 空 content / 不正 JSON / 範囲外スコアでクラッシュや不正保存が起きないか。
-- 情報漏洩: 認可失敗時にケース内部情報をエコーしていないか。
-- git status 最終確認（新規 spec / lib/case-auth.ts の取りこぼしなし）。
+- 第 2 層の原子性: `consume_service_ai_call` が並行・連続で cap を超えないか（TOCTOU なし）。Claude 呼び出しの**前**に消費し、上限到達なら呼ばないか。
+- 補償方針: 生成失敗時のカウント戻し（or 戻さない）の判断が妥当か。過大カウントでユーザーが不当に損しないか / 抜け穴にならないか。
+- 権限: `service_ai_calls` の UPDATE / `consume_service_ai_call` の EXECUTE が service_role のみに絞られているか（改ざん防止・MON-001 と同水準）。
+- レート制限の識別子: ゲストキー `guest:{caseId}` が他ケースと混ざらないか。認証ユーザーのなりすまし不可か。
+- フォールバック: Upstash 未設定時に「無制限に素通し」して money を垂れ流さないか（テスト環境と本番の差を design で明示）。
+- BYOK と service-key の分岐が正しいか（BYOK に不要な上限を掛けていないか / service-key の抜けがないか）。
+- 既存ルートの認可・挙動が回帰していないか。git status 最終確認（新規 spec / lib/ratelimit.ts / lib/limits.ts / migration の取りこぼしなし）。
 
 ---
 
 ### 関連ファイル（想定）
 
-- `lib/case-auth.ts`（新規・共通認可ヘルパー）
-- `app/api/cases/[id]/verdict/route.ts`（認可追加・条件付き更新・try/catch）
-- `app/api/cases/[id]/defense/route.ts`（resolveAuth を新ヘルパーへ移設・挙動不変）
-- `lib/claude.ts`（`requestVerdict` の出力検証・content ガード・スコアクランプ）
-- `tests/e2e/sec001-verdict-auth.spec.ts`（新規）
-- `docs/knowledge/design.md`（**末尾に SEC-001/003 セクション追記**）
+- `lib/ratelimit.ts`（新規・Upstash 共通ヘルパー＋429 整形）
+- `lib/limits.ts`（新規・上限定数集約：AI 20/分、ケース 30/ケース、窓）
+- `app/api/users/search/route.ts`（新ヘルパーへ移設・挙動不変）
+- `app/api/cases/[id]/defense/route.ts`（レート制限＋service-key ケース上限）
+- `app/api/cases/[id]/defense/draft/route.ts`（同上）
+- `app/api/cases/[id]/argument/route.ts`（レート制限＋ケース上限）
+- `app/api/cases/[id]/verdict/route.ts`（レート制限。ケース上限は判断）
+- `app/api/cases/[id]/end-proposal/route.ts`・`extension-vote/route.ts`（Claude を呼ぶ経路にレート制限）
+- `supabase/migrations/<timestamp>_sec002_service_ai_calls.sql`（新規・冪等。`cases.service_ai_calls` 列＋`consume_service_ai_call` RPC＋EXECUTE 権限）
+- `supabase/schema.sql`（列・関数・権限を反映）
+- `tests/e2e/sec002-ratelimit.spec.ts`（新規）
+- `docs/knowledge/design.md`（**末尾に SEC-002 セクション追記**）
 
 ### 既存資産の再利用
 
-- `defense/route.ts:resolveAuth`（getUser + 参加者 + verifyGuestToken）を土台に共通化。
-- `createSessionClient` / `createAdminClient` / `isUuid` / `verifyGuestToken` / `resolveCaseAiKey`。
+- `users/search` の Upstash 実装（限界値・ヘッダ整形）。
+- `consume_credit` / `refund_credit` の**原子的 RPC + EXECUTE を service_role 限定**パターン（MON-001 PR-A）。
+- SEC-001 の `resolveCaseAuth`（userId / isGuest 判定）でレート制限キーを決める。
+- `resolveCaseAiKey`（`uses_service_key` 判定）。

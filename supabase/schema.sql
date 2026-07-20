@@ -81,6 +81,8 @@ create table public.cases (
                          check (extension_vote_defendant is null or extension_vote_defendant in ('continue','finish')),
   -- MON-001: このケースの AI 実行にサービスキーを使うか（作成時に確定）。
   uses_service_key     boolean not null default false,
+  -- SEC-002 第 2 層: サービスキーを用いた AI 生成の累積回数（ケース単位の課金上限カウンタ）。
+  service_ai_calls     integer not null default 0,
   created_at           timestamptz default now() not null,
   updated_at           timestamptz default now() not null,
   -- 被告は「認証済みアカウント」か「ゲスト名」のどちらか一方のみ
@@ -223,6 +225,55 @@ $$;
 
 revoke execute on function public.refund_credit(uuid) from public, anon, authenticated;
 grant  execute on function public.refund_credit(uuid) to service_role;
+
+-- SEC-002 第 2 層: サービスキーケースの AI 生成回数を原子的にインクリメントし上限判定する関数。
+-- UPDATE ... WHERE service_ai_calls < p_cap RETURNING により並行・連続でも p_cap を超えない
+-- （consume_credit の WHERE credits > 0 と同思想・TOCTOU なし）。更新行 0（上限到達 or 非サービス
+-- キー）なら NULL を返す。EXECUTE は service_role のみに絞る（RPC 非露出・改ざん防止）。
+create or replace function public.consume_service_ai_call(p_case_id uuid, p_cap integer)
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_calls integer;
+begin
+  update public.cases
+     set service_ai_calls = service_ai_calls + 1
+   where id = p_case_id
+     and uses_service_key = true
+     and service_ai_calls < p_cap
+  returning service_ai_calls into v_calls;
+  return v_calls;
+end;
+$$;
+
+revoke execute on function public.consume_service_ai_call(uuid, integer) from public, anon, authenticated;
+grant  execute on function public.consume_service_ai_call(uuid, integer) to service_role;
+
+-- SEC-002: 生成失敗時の補償用に service_ai_calls を原子的に 1 減算する関数（refund_credit と同思想）。
+-- WHERE service_ai_calls > 0 で負に落ちないよう保護。EXECUTE は service_role のみ。
+create or replace function public.refund_service_ai_call(p_case_id uuid)
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_calls integer;
+begin
+  update public.cases
+     set service_ai_calls = service_ai_calls - 1
+   where id = p_case_id
+     and service_ai_calls > 0
+  returning service_ai_calls into v_calls;
+  return v_calls;
+end;
+$$;
+
+revoke execute on function public.refund_service_ai_call(uuid) from public, anon, authenticated;
+grant  execute on function public.refund_service_ai_call(uuid) to service_role;
 
 -- MON-001 PR-B: Stripe webhook 冪等性（二重付与防止）用の記録テーブル。
 -- RLS 有効・ポリシーなし = service_role のみ（guest_tokens と同方針）。
