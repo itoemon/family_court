@@ -15,9 +15,9 @@ metadata:
 ## 最終更新: 2026-07-16（SEC-002 PR #65 マージ + パイプラインをゼロベース再設計）
 
 ### 現在のブランチ・PR 状態
-- 現ブランチ: `main`（`3378a21` = SEC-002 #65 マージ後・ローカル同期済み）
-- **オープン PR: #64（パイプライン再設計・chore）= ダイチのレビュー待ち**（未マージ）
-- マージ済み最新: PR #65（SEC-002）
+- 現ブランチ: `main`（`3e7560d` = PR #64 マージ後・ローカル同期済み）
+- オープン PR: なし
+- マージ済み最新: **PR #64（パイプライン再設計）＋ PR #65（SEC-002）ともマージ済み**
 
 ### PR #65: SEC-002（AI ルートのレート制限＋service-key ケース生成上限・money-critical）
 - **第1層**: `lib/ratelimit.ts` に Upstash 共通化（named limiter `aiRouteLimiter`/`searchLimiter`＋429整形）。全 AI ルートに 20req/分/識別子（**認証=user.id / ゲスト=`guest:{caseId}`**）。**Upstash 未設定はフォールバックで第1層スキップ**（本番は起動時警告＋`environment.md` に必須明記）
@@ -25,7 +25,7 @@ metadata:
 - **検証**: sec002 spec 3passed/1skip（第1層は Upstash 未設定で skip）＋リグレッション26/26。アドバサリアル: `consume/refund_service_ai_call` を anon 直叩き→401、`service_ai_calls` 直 UPDATE→401。独立監査 HIGH0/MED1/LOW2 消化（第1層サイレント無効化の警告＋文書 / argument 過大カウントの refund / 会計乖離の明記）。コパ3件消化（end-proposal/extension-vote のレートキーが役割+caseId で回避可能→user.id 化 / draft 空応答 refund）
 - **★本番デプロイ未実施（要対応）**: 本番 Supabase に SEC-002 migration 適用＋**Vercel Production に `UPSTASH_REDIS_REST_URL`/`_TOKEN` 設定**が必要（未設定だと第1層無効・警告ログ）。MON-001 本番未適用（後述）と併せて公開前に一括対応
 
-### ★パイプラインをゼロベース再設計（PR #64・レビュー待ち）
+### ★パイプラインをゼロベース再設計（PR #64・マージ済み）
 - **実行基盤を `scripts/agents.sh`（nested `claude -p`）→「リードが harness の Agent ツールで architect/engineer/auditor を編成」へ全面移行**。agents.sh は無出力死・観測性ゼロ・孤児化で信頼できず **deprecated**（削除せず緊急フォールバックに残置）
 - **今セッションで SEC-002 を agents.sh 抜き・harness サブエージェントのみで完走**（設計/実装/監査すべて成功・中断ゼロ）＝再設計の正しさを実証
 - 中核ドキュメント: `memory/feedback_pipeline_runner.md`（全面改訂・現行フロー＋運用知見集約）/ `memory/project_agents.md`（実体列を harness Agent へ）/ `docs/pipeline.md`（改訂）/ `scripts/agents.sh`（DEPRECATED ヘッダ）。将来の完全自律は Workflow(opt-in) で
