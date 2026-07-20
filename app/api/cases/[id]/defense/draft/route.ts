@@ -161,5 +161,17 @@ export async function POST(
     return NextResponse.json({ error: "回答案の生成に失敗しました" }, { status: 500 });
   }
 
+  // 空 / 空白のみの回答案は失敗扱いにする（コパ指摘）。consume 済みなら refund して 500 を返し、
+  // defense POST（空応答を失敗扱い＋refund）と対称にする。空を成功として返すとカウントだけ
+  // 消費してユーザーが 1 回分を無為に失う。
+  if (!draft.trim()) {
+    console.error("[defense/draft] AI が空の回答案を返しました");
+    if (usesServiceKey) {
+      const { error: refundError } = await admin.rpc("refund_service_ai_call", { p_case_id: id });
+      if (refundError) console.error("[defense/draft] refund_service_ai_call failed:", refundError);
+    }
+    return NextResponse.json({ error: "回答案の生成に失敗しました" }, { status: 500 });
+  }
+
   return NextResponse.json({ draft });
 }
