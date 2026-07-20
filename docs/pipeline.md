@@ -40,6 +40,8 @@
 | 2 | `docs/knowledge/design.md` | アーキ〔subagent〕 | 永続（末尾に純追記・削除/書き換え禁止） |
 | 3 | `docs/knowledge/requirements.md` / `environment.md` | リード | 永続（蓄積） |
 
+> **handoff メモ（`docs/knowledge/handoff/*.md`）について**: 現行の harness 編成ではサブエージェントが結果を直接リードへ返すため handoff ファイルは使わない。**deprecated な `scripts/agents.sh` を緊急フォールバックで動かす場合のみ**、各段が `arch-to-eng.md` / `eng-to-aud.md` 等を生成・参照する（優先度は task.md の下・design.md の上相当、ただし task.md と矛盾する記述は無視）。
+
 ---
 
 ## エージェント一覧

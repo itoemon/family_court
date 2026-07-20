@@ -46,7 +46,7 @@ metadata:
 
 ## テスト DB への migration 適用（テスト段の前提）
 
-- テスト DB へ migration を当てるのは **Supabase Management API**（`SUPABASE_ACCESS_TOKEN` + `SUPABASE_PROJECT_REF`、`.env.test` に格納）。`set -a && source .env.test && set +a` してから、本番 ref (`nhcsshqcyprbitfctyio`) ガードを噛ませて `POST /v1/projects/{ref}/database/query` に migration SQL を投げる。migration は冪等前提（`IF NOT EXISTS` / `CREATE OR REPLACE`）。
+- テスト DB へ migration を当てるのは **Supabase Management API**（`SUPABASE_ACCESS_TOKEN` + `SUPABASE_PROJECT_REF`、`.env.test` に格納）。`set -a && source .env.test && set +a` してから、**本番 ref ガード**（値は直書きせず `scripts/setup-test-db.sh` の `PROD_PROJECT_REF` に集約済み。それと一致したら中止）を噛ませて `POST /v1/projects/{ref}/database/query` に migration SQL を投げる。migration は冪等前提（`IF NOT EXISTS` / `CREATE OR REPLACE`）。
 - **`SUPABASE_ACCESS_TOKEN` は失効する**（Management API が `{"message":"Unauthorized"}` を返す＝トークン切れ）。その場合は**ダイチに更新を依頼**（Supabase ダッシュボード → Account → Access Tokens で再発行 → `.env.test` 更新）。リードは非対話で再発行できない。
 - 一括セットアップは `scripts/setup-test-db.sh`（schema.sql → migrations 全適用・本番 ref ブロック・`--dry-run`・`--clean-cases`）。単一 migration だけなら Management API 直で足りる。
 
