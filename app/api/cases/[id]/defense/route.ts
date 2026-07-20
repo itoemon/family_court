@@ -5,6 +5,8 @@ import { resolveCaseAiKey } from "@/lib/case-ai-key";
 import { generateDefenseResponse } from "@/lib/defense";
 import { DefenseMessage } from "@/lib/types";
 import { isUuid } from "@/lib/text-utils";
+import { aiRouteLimiter, rateLimitResponse, serviceAiCapResponse } from "@/lib/ratelimit";
+import { SERVICE_AI_CALL_CAP } from "@/lib/limits";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -89,6 +91,14 @@ export async function POST(
 
   const { userId, c, userRole, admin } = auth;
 
+  // SEC-002 第 1 層: 認可通過後・キー解決前に横断レート制限を適用する。
+  // 識別子は認証ユーザーは user.id、ゲスト被告は case 単位の guest:{caseId}（確定判断 3）。
+  const rateKey = userId ?? `guest:${id}`;
+  const rl = await aiRouteLimiter.limit(rateKey);
+  if (!rl.success) {
+    return rateLimitResponse(rl);
+  }
+
   const keyResult = await resolveApiKey(c, admin);
   if ("error" in keyResult) {
     return NextResponse.json({ error: keyResult.error }, { status: keyResult.status });
@@ -133,6 +143,33 @@ export async function POST(
     { role: "user" as const, content: content.trim() },
   ];
 
+  // SEC-002 第 2 層（money-critical）: サービスキーケースのみ、Claude 呼び出しの直前に
+  // 生成回数を原子的に消費する。NULL（上限到達）なら Claude を呼ばず 429 で弾く。BYOK は
+  // 当人負担のため本ステップを丸ごとスキップする（確定判断・適用ルート）。
+  const usesServiceKey = c.uses_service_key === true;
+  if (usesServiceKey) {
+    const { data: calls, error: consumeError } = await admin.rpc("consume_service_ai_call", {
+      p_case_id: id,
+      p_cap: SERVICE_AI_CALL_CAP,
+    });
+    if (consumeError) {
+      console.error("[defense] consume_service_ai_call failed:", consumeError);
+      return NextResponse.json({ error: "AI生成回数の確認に失敗しました" }, { status: 500 });
+    }
+    if (calls === null) {
+      // 上限到達（or 非サービスキーだが usesServiceKey で確認済みのため上限到達と一意）。
+      return serviceAiCapResponse();
+    }
+  }
+
+  // consume 済みで以降が失敗した場合の補償（確定判断 2）: カウントを 1 戻す。
+  // 一過性のインフラ障害でユーザーが購入回数を不当に失わないことを優先する。
+  async function refundIfConsumed() {
+    if (!usesServiceKey) return;
+    const { error } = await admin.rpc("refund_service_ai_call", { p_case_id: id });
+    if (error) console.error("[defense] refund_service_ai_call failed:", error);
+  }
+
   let aiText: string;
   try {
     aiText = await generateDefenseResponse(
@@ -147,11 +184,13 @@ export async function POST(
     );
   } catch (err) {
     console.error("[defense] AI generation failed:", err);
+    await refundIfConsumed();
     return NextResponse.json({ error: "AI応答の生成に失敗しました" }, { status: 500 });
   }
 
   if (!aiText.trim()) {
     console.error("[defense] AI returned empty response");
+    await refundIfConsumed();
     return NextResponse.json({ error: "AI応答の生成に失敗しました" }, { status: 500 });
   }
 
@@ -160,6 +199,7 @@ export async function POST(
     .insert({ case_id: id, user_id: userId, role: "user", content: content.trim() });
   if (insertUserError) {
     console.error("[defense] user message insert failed:", insertUserError);
+    await refundIfConsumed();
     return NextResponse.json({ error: "メッセージの保存に失敗しました" }, { status: 500 });
   }
 
@@ -168,6 +208,7 @@ export async function POST(
     .insert({ case_id: id, user_id: userId, role: "assistant", content: aiText });
   if (insertAIError) {
     console.error("[defense] AI message insert failed:", insertAIError);
+    await refundIfConsumed();
     return NextResponse.json({ error: "AI応答の保存に失敗しました" }, { status: 500 });
   }
 

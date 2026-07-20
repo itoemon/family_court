@@ -88,5 +88,9 @@ middleware.ts   # セッション更新・認証リダイレクト
 | `SUPABASE_SECRET_KEY` | ✅ | Supabase service role キー（サーバー専用） |
 | `ENCRYPTION_KEY` | ✅ | AES-256-GCM キー（64 桁 hex）。`openssl rand -hex 32` で生成 |
 | `GUEST_TOKEN_SECRET` | ✅ | ゲスト HMAC トークン署名キー。`openssl rand -hex 32` で生成（HIGH-001 対応後に追加） |
+| `UPSTASH_REDIS_REST_URL` | ✅（本番） | Upstash Redis REST URL。AI ルートの第 1 層レート制限（SEC-002）に使用。**未設定だと第 1 層が無効化されて濫用抑止が効かない**（起動時に警告ログ）。ローカル/テストは未設定でフォールバック（第 1 層スキップ）可 |
+| `UPSTASH_REDIS_REST_TOKEN` | ✅（本番） | Upstash Redis REST トークン。上記とペアで必須 |
 
 `NEXT_PUBLIC_` 接頭辞の変数はブラウザに公開される。秘密情報を持たせないこと。
+
+**SEC-002 注記**: `UPSTASH_*` はレート制限（第 1 層・濫用抑止）専用である。欠落しても課金上限（第 2 層・`consume_service_ai_call`）は DB で担保されるため「1 クレジット = 無制限課金」は塞がれるが、レート制限という security control が黙って消えるため本番では必ず設定すること。

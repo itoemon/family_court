@@ -147,8 +147,11 @@ run_architect() {
   #   "Tool permission request failed: Error: Stream closed" で全ツールが失敗して無出力で死ぬ。
   #   本プロジェクトは .claude/settings.local.json で既に bypassPermissions 選択済みのため
   #   リスク profile は不変。ビルドが 1 ファイルも書けず死んだ事象の恒久対策。
+  # Edit を許可する: design.md は永続累積資料で「末尾に純追記」する運用のため、
+  # Edit が無いと肥大した design.md（数千行）を Write で丸ごと書き直す羽目になり、
+  # headless claude -p が巨大出力で時間切れ・無出力死する（SEC-002 セッションで判明）。
   claude -p "$(load_prompt architect OUT_FILE="$out_file")" \
-    --allowedTools "Write,Read,Glob" --dangerously-skip-permissions < /dev/null
+    --allowedTools "Edit,Write,Read,Glob,Grep" --dangerously-skip-permissions < /dev/null
 
   log "設計書を出力しました: $out_file"
 }

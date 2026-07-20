@@ -6,6 +6,7 @@ import { isUuid } from "@/lib/text-utils";
 import { insertClosingGreetingsForCase } from "@/lib/greetings";
 import { insertClosingJudgeMessage } from "@/lib/case-closing";
 import { resolveCaseAiKey } from "@/lib/case-ai-key";
+import { aiRouteLimiter, rateLimitResponse } from "@/lib/ratelimit";
 
 type Actor = "plaintiff" | "defendant" | "guest";
 
@@ -62,6 +63,21 @@ export async function POST(
   );
   if (!actor) {
     return NextResponse.json({ error: "このケースを操作する権限がありません" }, { status: 403 });
+  }
+
+  // SEC-002 第 1 層: 状態変更より前に横断レート制限を適用する（judging 遷移時に閉廷宣告の
+  // Claude を 1 回呼ぶため。第 2 層は有界・1 回のため対象外）。状態遷移後に 429 を返すと phase
+  // だけ進んで誤解を招くため、必ず前段に置く。識別子は他 AI ルートと統一し「認証=user.id /
+  // ゲスト=guest:{caseId}」とする（コパ指摘）。actor=plaintiff/defendant のときは case 行の
+  // 該当 user.id（ケース横断で安定）を用いる。役割+caseId だと同一ユーザーがケースを変えて
+  // 20/分制限を実質回避できてしまうため。
+  const rateKey =
+    actor === "plaintiff" ? c.plaintiff_id :
+    actor === "defendant" && c.defendant_id ? c.defendant_id :
+    `guest:${id}`;
+  const rl = await aiRouteLimiter.limit(rateKey);
+  if (!rl.success) {
+    return rateLimitResponse(rl);
   }
 
   // 終了提案を受け付けるのは argument フェーズのみ
