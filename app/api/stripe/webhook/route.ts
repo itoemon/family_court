@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/server";
-import { stripe } from "@/lib/stripe";
+import { getStripe } from "@/lib/stripe";
 import { getCreditPackage } from "@/lib/credit-packages";
 import { isUuid } from "@/lib/text-utils";
 import type Stripe from "stripe";
@@ -21,6 +21,7 @@ export async function POST(req: NextRequest) {
 
   let event: Stripe.Event;
   try {
+    const stripe = getStripe(); // 遅延初期化（try 内で構築し、キー未設定は既存 catch で 400 整形）。
     event = stripe.webhooks.constructEvent(raw, sig, webhookSecret);
   } catch (err) {
     console.error("[stripe/webhook] signature verification failed:", err);
