@@ -19,9 +19,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "署名がありません" }, { status: 400 });
   }
 
+  // 遅延初期化。キー未設定（サーバ設定ミス）は署名検証失敗（クライアント側 400）と混同しないよう、
+  // 署名検証の try とは分離し 500 に倒す（オーディ LOW-1）。
+  let stripe: Stripe;
+  try {
+    stripe = getStripe();
+  } catch (err) {
+    console.error("[stripe/webhook] Stripe 初期化に失敗:", err);
+    return NextResponse.json({ error: "サーバ設定エラーが発生しました" }, { status: 500 });
+  }
+
   let event: Stripe.Event;
   try {
-    const stripe = getStripe(); // 遅延初期化（try 内で構築し、キー未設定は既存 catch で 400 整形）。
     event = stripe.webhooks.constructEvent(raw, sig, webhookSecret);
   } catch (err) {
     console.error("[stripe/webhook] signature verification failed:", err);
