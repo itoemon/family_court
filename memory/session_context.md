@@ -15,9 +15,18 @@ metadata:
 ## 最終更新: 2026-07-16（SEC-002 PR #65 マージ + パイプラインをゼロベース再設計）
 
 ### 現在のブランチ・PR 状態
-- 現ブランチ: `main`（`3e7560d` = PR #64 マージ後・ローカル同期済み）
+- 現ブランチ: `main`（`43ea13c` = PR #66 マージ後・ローカル同期済み）
 - オープン PR: なし
-- マージ済み最新: **PR #64（パイプライン再設計）＋ PR #65（SEC-002）ともマージ済み**
+- マージ済み最新: PR #64（パイプライン再設計）／ PR #65（SEC-002）／ **PR #66（lib/stripe.ts 遅延初期化＝本番公開手順ステップ0・ビルド失敗解消）**
+
+### ★次にやる: 本番デプロイ一括（公開前・ダイチ作業多め・急がない）
+PR #66 で本番ビルドのブロッカー（`lib/stripe.ts` の eager `new Stripe()`）は解消済み。残りの本番反映を一括で（MON-001 本番公開手順 ＋ SEC-002 デプロイ要件）:
+1. **本番 Supabase に未適用 migration を適用**（MON-001 `20260705190001`/`190002` ＋ SEC-002 `20260716000000`）。`.env.local` source＋本番 ref (`nhcsshqcyprbitfctyio`) ガード、applied.txt 追記
+2. **Vercel Production env**: `SERVICE_ANTHROPIC_API_KEY`（済）／`STRIPE_SECRET_KEY`・`NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`（**本番 live キー**）／`STRIPE_WEBHOOK_SECRET`（本番 endpoint 発行後）／**`UPSTASH_REDIS_REST_URL`/`_TOKEN`**（SEC-002 第1層。未設定だと第1層無効・警告ログ）
+3. **Stripe 本番 webhook endpoint**（本番URL の `/api/stripe/webhook`）作成 → `whsec_` を Vercel Production へ
+4. **Anthropic Console でサービスキーに Spend Limit**（青天井防止）
+5. 本番デプロイ成功＋主要フロー確認
+- ダイチ作業: Stripe 本番キー/webhook・Anthropic Spend Limit・Vercel env 投入。リード作業: migration 適用（要有効な `.env.local`/token）・検証
 
 ### PR #65: SEC-002（AI ルートのレート制限＋service-key ケース生成上限・money-critical）
 - **第1層**: `lib/ratelimit.ts` に Upstash 共通化（named limiter `aiRouteLimiter`/`searchLimiter`＋429整形）。全 AI ルートに 20req/分/識別子（**認証=user.id / ゲスト=`guest:{caseId}`**）。**Upstash 未設定はフォールバックで第1層スキップ**（本番は起動時警告＋`environment.md` に必須明記）
