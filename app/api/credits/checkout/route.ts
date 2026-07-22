@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createSessionClient } from "@/lib/supabase/server";
-import { stripe } from "@/lib/stripe";
+import { getStripe } from "@/lib/stripe";
 import { getCreditPackage } from "@/lib/credit-packages";
 
 // MON-001 PR-B: Stripe Checkout Session を作成する（認証ユーザーのみ）。
@@ -26,6 +26,7 @@ export async function POST(req: NextRequest) {
   const origin = process.env.NEXT_PUBLIC_SITE_URL || new URL(req.url).origin;
 
   try {
+    const stripe = getStripe(); // 遅延初期化（try 内で構築し、キー未設定は既存 catch で 500 整形）。
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       // card 限定にして同期決済に固定する。非同期決済（支払い確定前に completed が飛ぶ手段）を

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/server";
-import { stripe } from "@/lib/stripe";
+import { getStripe } from "@/lib/stripe";
 import { getCreditPackage } from "@/lib/credit-packages";
 import { isUuid } from "@/lib/text-utils";
 import type Stripe from "stripe";
@@ -17,6 +17,16 @@ export async function POST(req: NextRequest) {
   if (!sig || !webhookSecret) {
     console.error("[stripe/webhook] missing signature or webhook secret");
     return NextResponse.json({ error: "署名がありません" }, { status: 400 });
+  }
+
+  // 遅延初期化。キー未設定（サーバ設定ミス）は署名検証失敗（クライアント側 400）と混同しないよう、
+  // 署名検証の try とは分離し 500 に倒す（オーディ LOW-1）。
+  let stripe: Stripe;
+  try {
+    stripe = getStripe();
+  } catch (err) {
+    console.error("[stripe/webhook] Stripe 初期化に失敗:", err);
+    return NextResponse.json({ error: "サーバ設定エラーが発生しました" }, { status: 500 });
   }
 
   let event: Stripe.Event;
