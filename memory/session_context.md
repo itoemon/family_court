@@ -19,14 +19,15 @@ metadata:
 - オープン PR: なし
 - マージ済み最新: PR #64（パイプライン再設計）／ PR #65（SEC-002）／ **PR #66（lib/stripe.ts 遅延初期化＝本番公開手順ステップ0・ビルド失敗解消）**
 
-### ★次にやる: 本番デプロイ一括（公開前・ダイチ作業多め・急がない）
-PR #66 で本番ビルドのブロッカー（`lib/stripe.ts` の eager `new Stripe()`）は解消済み。残りの本番反映を一括で（MON-001 本番公開手順 ＋ SEC-002 デプロイ要件）:
-1. **本番 Supabase に未適用 migration を適用**（MON-001 `20260705190001`/`190002` ＋ SEC-002 `20260716000000`）。`.env.local` source＋本番 ref (`nhcsshqcyprbitfctyio`) ガード、applied.txt 追記
-2. **Vercel Production env**: `SERVICE_ANTHROPIC_API_KEY`（済）／`STRIPE_SECRET_KEY`・`NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`（**本番 live キー**）／`STRIPE_WEBHOOK_SECRET`（本番 endpoint 発行後）／**`UPSTASH_REDIS_REST_URL`/`_TOKEN`**（SEC-002 第1層。未設定だと第1層無効・警告ログ）
-3. **Stripe 本番 webhook endpoint**（本番URL の `/api/stripe/webhook`）作成 → `whsec_` を Vercel Production へ
-4. **Anthropic Console でサービスキーに Spend Limit**（青天井防止）
-5. 本番デプロイ成功＋主要フロー確認
-- ダイチ作業: Stripe 本番キー/webhook・Anthropic Spend Limit・Vercel env 投入。リード作業: migration 適用（要有効な `.env.local`/token）・検証
+### ★本番デプロイ一括 = 完了（2026-07-16）。「本番の中途半端な壊れ」は解消
+MON-001＋SEC-002 を本番に反映し、Stripe 本番課金を有効化した。以前の「本番 DB にクレジット系スキーマ未適用でケース作成が 500」「PR-B がビルド失敗でデプロイ不能」は**すべて解消**。
+1. ✅ **本番 Supabase (`nhcsshqcyprbitfctyio`=family-court) に 3 migration 適用**（MON-001 `20260705190001`/`190002` ＋ SEC-002 `20260716000000`）。`.env.local` の access token 使用（`.env.test` の token は test プロジェクトのみ・失効注意）。適用後 `profiles.credits`(default3)/`cases.uses_service_key`/`service_ai_calls`/`consume_credit`/`record_stripe_event_and_grant`/`stripe_events`/`consume_service_ai_call`/`refund_service_ai_call` 存在を検証
+2. ✅ **Vercel Production env**: `SERVICE_ANTHROPIC_API_KEY` / `STRIPE_SECRET_KEY`(live) / `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`(live) / `STRIPE_WEBHOOK_SECRET` / `UPSTASH_REDIS_REST_URL`/`_TOKEN` すべて production スコープに設定済み（test キーは preview）
+3. ✅ **Stripe 本番 webhook endpoint**（`checkout.session.completed`・URL `https://family-court.vercel.app/api/stripe/webhook`）作成 → `whsec_` を Production へ
+4. ✅ **Anthropic サービスキーに月次 Spend Limit**（ワークスペース単位。Spend Limit は組織/ワークスペース×月次のみで、ケース/リクエスト単位は不可＝ケース単位は SEC-002 の 30/ケースが担う）
+5. ✅ **本番再デプロイ**（Vercel API で最新 commit を現 env で再ビルド）→ READY。疎通: 本番トップ307 / `cases.service_ai_calls` REST select 200（新スキーマ反映）/ webhook 署名なしPOST 400（ルート生存）
+- **恒久知識**: Vercel の env 変更は自動再デプロイされない → env 投入後は再デプロイ必須（`NEXT_PUBLIC_*` はビルド時焼き込み、server env も deploy 時固定）。本番 migration は `.env.local` の Supabase access token（account PAT で prod 含む全プロジェクト可視）で当てる
+- **残・ダイチ手動**: Stripe 本番モードで実カード購入を1回通し（checkout→webhook→クレジット付与）を確認するのが最終検証（実決済のためリードでは不可）
 
 ### PR #65: SEC-002（AI ルートのレート制限＋service-key ケース生成上限・money-critical）
 - **第1層**: `lib/ratelimit.ts` に Upstash 共通化（named limiter `aiRouteLimiter`/`searchLimiter`＋429整形）。全 AI ルートに 20req/分/識別子（**認証=user.id / ゲスト=`guest:{caseId}`**）。**Upstash 未設定はフォールバックで第1層スキップ**（本番は起動時警告＋`environment.md` に必須明記）
